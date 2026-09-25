@@ -89,25 +89,34 @@ Verified this session (M0), headless — no X11 available in this session's cont
 
 ## Test coverage
 
-**None.** No gtest/rostest, no `test/` directory, no active `catkin_add_gtest`/`catkin_add_nosetests` targets (only commented-out boilerplate in `CMakeLists.txt`). This is a gap to close starting M1, per the project's working protocol (every milestone gets automated tests).
+`test/test_watchdog.cpp` (gtest, target `arm_interface-test-watchdog`) covers the torque-disable watchdog staleness check and the `command_timeout` validation used by the dynamic_reconfigure callback below — both extracted as pure functions in `include/arm_interface/watchdog.h` so they're testable without hardware. `roslaunch_add_file_check(launch)` (already configured, just never ran until the build was unblocked) is also part of `catkin_make run_tests_arm_interface`. Run with:
 
-## Known limitations (found as-is, not fixed beyond the one build-blocker below)
+```bash
+catkin_make run_tests_arm_interface
+```
 
-1. **Fixed this session (build-blocking):** `CMakeLists.txt` called `catkin_install_python()` on `scripts/arm_gazebo_bridge_node.py`, which doesn't exist — this failed CMake *configure*, blocking the entire build (not just `install`). Commented out the three lines with an explanatory comment; nothing else changed. If this script is meant to exist (Gazebo bridge, tying to the `gazebo_ros` export in `package.xml`), it needs to be written or the export/install both removed — open question below.
-2. `robot_interface.cpp` self-identifies as `ros::init(..., "bulk_read_node")` and logs `"BulkWriteLimited node initialized"` — stale identifiers copy-pasted from `bulk_read.cpp`/an earlier prototype. Cosmetic (doesn't affect function) but confusing for `rosnode`/log filtering.
-3. `bulk_read.cpp`'s hardcoded `DXL_BIAS`/`DXL_SIGN` arrays diverge from `config/ArmInterface.yaml`'s `bias`/`sign` at the joint-4/5 indices. `bulk_read` doesn't read the yaml at all — everything is hardcoded — so these two sources of truth can silently drift, as they apparently already have.
-4. `find_limits.cpp` hardcodes `num_motors = 5`, so it never sees joint_6/gripper data.
-5. `config/ArmInterface.yaml` sets `command_timeout` twice (`0.2` then `0.5`); YAML last-value-wins, so the effective value is `0.5`. Unclear which was intended.
-6. README describes `arm_sim.launch` as the GUI-control launch file; it isn't — `arm_sim_gui.launch` is. Documentation drift.
-7. `config/ArmInterfaceBad.yaml` (`num_joints: 5`, `ids: [1..5]`) is unreferenced by any launch file. Given joint_6 is the gripper, this may be a legitimate arm-only (no-gripper) config rather than the "5-DOF-era leftover" it first looked like — see open questions.
+Everything else (the hardware bridge logic in `robot_interface.cpp`, `bulk_read`, `find_limits`) still has no coverage — `robot_interface` opens a real serial port in its constructor, so unit-testing it directly requires either hardware or a larger refactor to separate control logic from I/O (see Known Limitations #1 below). Closing that gap is a candidate for M1+ as new capability code gets added on top.
 
-## Open questions
+## Known limitations
 
-1. **M1/M2 kinematics scope:** solve FK/IK over joints 1–5 (to `link_5`, pre-gripper) and treat joint_6/gripper as a separate independent DOF? This doc assumes yes based on joint_6 = gripper, but worth confirming before M1 is scoped in detail.
-2. Is `config/ArmInterfaceBad.yaml` the intended arm-only (no-gripper, 5-motor) config, or genuinely dead/legacy? Should it be deleted, kept as a documented alternate mode, or something else?
-3. Is `scripts/arm_gazebo_bridge_node.py` (referenced by the now-commented-out install line) something that should be written, or should that install line — and the `gazebo_ros` export block in `package.xml` — be removed outright since no Gazebo node currently exists in this package? (Relevant to scope for M6+ camera/Gazebo work, if Gazebo is even still the intended sim path vs. this package's own kinematic simulator.)
-4. `command_timeout`: is `0.5`s (the effective value) correct, or was `0.2`s intended?
-5. Should items 2–6 in Known Limitations above be fixed now (small, low-risk) or deferred to a dedicated cleanup milestone, to keep milestone branches focused on new capability rather than mixed with unrelated fixes?
+Numbering below reflects what was found during M0; items marked **fixed** were resolved in a follow-up cleanup pass after the open questions were answered (see git log). All fixes were verified with a clean `catkin_make run_tests_arm_interface`.
+
+1. `CMakeLists.txt` called `catkin_install_python()` on `scripts/arm_gazebo_bridge_node.py`, which doesn't exist — failed CMake *configure*, blocking the entire build. **Fixed:** commented out with an explanation. **Decision:** Gazebo references (this install line + the `gazebo_ros` export block in `package.xml`) are kept as an inactive placeholder for now, not removed — this package's own kinematic simulator (`arm_sim_validator_node`) is the actual sim path for M1–M4 per the roadmap; Gazebo may become relevant later.
+2. `robot_interface.cpp` self-identified as `ros::init(..., "bulk_read_node")` and logged `"BulkWriteLimited node initialized"` — stale, copy-pasted from `bulk_read.cpp`. **Fixed:** renamed to `robot_interface_node` / corrected log message.
+3. `bulk_read.cpp`'s hardcoded `DXL_BIAS`/`DXL_SIGN` diverged from `config/ArmInterface.yaml` at the joint-4/5 indices. **Fixed:** corrected to match, with a comment noting these are duplicated (not loaded from yaml) and must be kept in sync manually.
+4. `find_limits.cpp` hardcoded `num_motors = 5`, missing joint_6/gripper. **Fixed:** corrected to 6.
+5. `config/ArmInterface.yaml` set `command_timeout` twice (`0.2` then `0.5`). **Fixed:** deduped to the effective value, `0.5`, and made runtime-tunable via `dynamic_reconfigure` (`cfg/ArmInterface.cfg`) — since this is the torque-disable watchdog's timeout, a safety-relevant value, the reconfigure callback rejects non-positive values (keeps the previous one, logs a warning) instead of accepting anything blindly. Adjust live with `rosrun rqt_reconfigure rqt_reconfigure` while `robot_interface` is running, or `rosservice call /robot_interface/set_parameters ...`.
+6. README described `arm_sim.launch` as the GUI-control launch file; it isn't — `arm_sim_gui.launch` is. **Fixed:** corrected.
+7. `config/ArmInterfaceBad.yaml` (5-motor legacy config) was unreferenced by any launch file. **Fixed:** deleted — confirmed dead now that joint_6 is known to be the gripper (not a missing 6th arm-pose joint this file predates).
+8. **Found during the fix pass, not in original M0 scan:** `package.xml` was missing `exec_depend`s on `robot_state_publisher`, `rviz`, and `joint_state_publisher_gui`, all used by the launch files. `roslaunch_add_file_check(launch)` (already configured in `CMakeLists.txt`) was silently never catching this because the build never got far enough to run tests until the scripts/arm_gazebo_bridge_node.py fix above. **Fixed:** added the three `exec_depend`s; `roslaunch_add_file_check` now passes.
+
+## Open questions — resolved
+
+1. **M1/M2 kinematics scope:** solve FK/IK over joints 1–5 (to `link_5`, pre-gripper); joint_6/gripper is an independent DOF, not part of the pose chain. **Decided: yes**, this scopes M1.
+2. `config/ArmInterfaceBad.yaml`: **decided dead legacy — deleted** (see Known Limitations #7).
+3. `scripts/arm_gazebo_bridge_node.py` / Gazebo references: **decided keep as inactive placeholder** (see Known Limitations #1) — revisit only if/when Gazebo is actually adopted.
+4. `command_timeout`: **decided keep 0.5 as default, made runtime-tunable** via dynamic_reconfigure rather than picking one static value (see Known Limitations #5).
+5. Known-limitations cleanup timing: **decided fix now**, in a separate commit from new capability work — done (see git log: config cleanup, stale-value/doc-drift fixes, dynamic_reconfigure feature commits, each isolated from the M0 baseline commit).
 
 ## Repo/workflow state
 
