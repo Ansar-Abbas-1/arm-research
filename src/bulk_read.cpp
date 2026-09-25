@@ -13,8 +13,10 @@
 // Example mapping parameters (update as needed for your robot)
 const double DXL_RESOLUTION = 4096.0; // e.g., for 12-bit Dynamixel
 const double DXL_RAD_PER_TICK = 2.0 * M_PI / DXL_RESOLUTION;
-const double DXL_BIAS[DXL_NUM] = {1800, 3071, 2047, 3248, 2570, 1354}; // Example bias (center)
-const int DXL_SIGN[DXL_NUM] = {1, -1, -1, -1, -1, 1}; // Example sign for each joint
+// Must match config/ArmInterface.yaml's bias/sign (this node doesn't load
+// the yaml itself, so it's duplicated here — kept in sync manually).
+const double DXL_BIAS[DXL_NUM] = {1800, 3071, 2047, 300, 2570, 1354};
+const int DXL_SIGN[DXL_NUM] = {1, -1, -1, 1, 1, 1};
 
 int main(int argc, char **argv)
 {

@@ -17,7 +17,7 @@ To connect to the robot, be sure that the robot is off. Then, you have to connec
 This repository currently provides the code for three different tasks: simulate the arm with a GUI joint control, launch the robot interface with the same GUI to control real joint values, and finally launch only the robot interface without the GUI for direct API control. These tasks contribute to mainly two workflows
 
 ### GUI joint control
-The two GUI launch files (arm_sim.launch and arm_interface_gui.launch) are meant to be used mainly for testing and debugging, allowing for quick control of the joint values. No other files are required for this
+The two GUI launch files (arm_sim_gui.launch and arm_interface_gui.launch) are meant to be used mainly for testing and debugging, allowing for quick control of the joint values. No other files are required for this. (arm_sim.launch is the same simulator without the GUI slider node — publish /joint_states_out yourself to drive it.)
 
 ### Replay mode on hardware
 The third launch file (arm_interface.launch) is meant for API usage, which as of right now consists mainly in the "Replay mode" pipeline. For this, a series of steps is required.

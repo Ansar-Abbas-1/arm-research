@@ -35,7 +35,7 @@ int main(int argc, char** argv) {
 
     signal(SIGINT, signalHandler);
 
-    const size_t num_motors = 5; // Change as needed
+    const size_t num_motors = 6; // arm has 6 motors (joints 1-5 + gripper, joint_6)
     joint_names.resize(num_motors);
     joint_limits.resize(num_motors);
 
