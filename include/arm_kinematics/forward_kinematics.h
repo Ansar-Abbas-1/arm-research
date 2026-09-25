@@ -23,9 +23,12 @@ namespace arm_kinematics {
 //
 // Only REVOLUTE/CONTINUOUS (actuated, single rotational DOF) and FIXED
 // joint types are supported; the chain this class was built for
-// (arm_interface's arm.urdf, base_link -> link_5) contains only those.
-// A PRISMATIC/FLOATING/PLANAR joint anywhere in the requested chain is a
-// construction-time error rather than a silent mishandling.
+// (arm_interface's arm.urdf, base_link -> end_effector) contains only
+// those -- e.g. joint_6 (link_5 -> end_effector) is FIXED, so it
+// contributes a constant offset without being part of
+// GetActuatedJointNames(). A PRISMATIC/FLOATING/PLANAR joint anywhere in
+// the requested chain is a construction-time error rather than a silent
+// mishandling.
 class ForwardKinematicsSolver {
  public:
   // Walks `model` from `tip_link` back to `root_link` via each link's

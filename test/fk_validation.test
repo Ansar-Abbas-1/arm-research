@@ -1,6 +1,6 @@
 <launch>
-  <!-- Headless integration test: our fk_node's /computed_link5_pose vs.
-       robot_state_publisher's TF (base_link to link_5), both driven from
+  <!-- Headless integration test: our fk_node's /computed_end_effector_pose
+       vs. robot_state_publisher's TF (base_link to end_effector), both driven from
        the same URDF via arm_sim_validator_node's ideal-mode simulator.
        No rviz: it needs a display, which isn't available in an
        automated test environment (confirmed the hard way in M0). -->

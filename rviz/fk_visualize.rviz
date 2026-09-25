@@ -72,7 +72,7 @@ Visualization Manager:
           Value: true
         end_effector:
           Alpha: 1
-          Show Axes: false
+          Show Axes: true
           Show Trail: false
           Value: true
         link_1:
@@ -97,7 +97,7 @@ Visualization Manager:
           Value: true
         link_5:
           Alpha: 1
-          Show Axes: true
+          Show Axes: false
           Show Trail: false
           Value: true
         link_intermediate:
@@ -120,7 +120,7 @@ Visualization Manager:
         All Enabled: false
         base_link:
           Value: true
-        link_5:
+        end_effector:
           Value: true
       Marker Alpha: 1
       Marker Scale: 0.2
@@ -152,7 +152,7 @@ Visualization Manager:
       Shaft Length: 0.10000000149011612
       Shaft Radius: 0.009999999776482582
       Shape: Axes
-      Topic: /computed_link5_pose
+      Topic: /computed_end_effector_pose
       Unreliable: false
       Value: true
   Enabled: true

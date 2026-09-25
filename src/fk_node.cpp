@@ -21,7 +21,7 @@ class ForwardKinematicsNode {
   ForwardKinematicsNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh) {
     std::string root_link, tip_link;
     pnh.param<std::string>("root_link", root_link, "base_link");
-    pnh.param<std::string>("tip_link", tip_link, "link_5");
+    pnh.param<std::string>("tip_link", tip_link, "end_effector");
 
     urdf::Model model;
     if (!model.initParam("robot_description")) {
@@ -33,7 +33,7 @@ class ForwardKinematicsNode {
     ROS_INFO_STREAM("fk_node: solving " << root_link << " -> " << tip_link << " over "
                                          << joint_names_.size() << " actuated joints");
 
-    pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/computed_link5_pose", 10);
+    pose_pub_ = nh_.advertise<geometry_msgs::PoseStamped>("/computed_end_effector_pose", 10);
     joint_sub_ = nh_.subscribe("/joint_states_in", 10, &ForwardKinematicsNode::JointStatesCb, this);
   }
 

@@ -1,8 +1,14 @@
 # Inverse kinematics — derivation
 
 Solves for the 5 actuated joint angles (`joint_1`..`joint_5`) that achieve a
-commanded `link_5` pose in `base_link`, built on top of
+commanded `end_effector` pose in `base_link` (default `tip_link`; the math
+below is derived generically against whatever `ForwardKinematicsSolver`
+was built for), built on top of
 [`forward_kinematics.md`](forward_kinematics.md)'s `ForwardKinematicsSolver`.
+`end_effector` sits at a fixed, gripper-angle-independent offset from
+`link_5` — see forward_kinematics.md's "Extending to end_effector" for why
+that required a URDF fix (`joint_6` was wrongly modeled as revolute) and
+why it needed no changes to the solver itself.
 
 ## Task-space dimension vs. DOF: why this is a least-squares problem
 

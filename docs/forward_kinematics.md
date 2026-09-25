@@ -1,6 +1,8 @@
 # Forward kinematics — derivation
 
-Chain: `base_link → link_1 → link_2 → link_intermediate → link_3 → link_4 → link_5`, from `arm_interface/urdf/arm.urdf`. 5 actuated (revolute) joints — `joint_1..joint_5` — plus one fixed joint, `joint_intermediate`, which contributes a constant transform with no joint variable. joint_6 (gripper) is outside this chain entirely, per the M0 scoping decision.
+Chain: `base_link → link_1 → link_2 → link_intermediate → link_3 → link_4 → link_5 → end_effector`, from `arm_interface/urdf/arm.urdf`. 5 actuated (revolute) joints — `joint_1..joint_5` — plus two fixed joints: `joint_intermediate` (mid-chain) and `joint_6` (`link_5 → end_effector`, the true tip). Both contribute a constant transform with no joint variable. `end_effector`, not `link_5`, is `fk_node`/`ik_node`'s default `tip_link` — see "Extending to end_effector" below for why `joint_6` is fixed rather than actuated.
+
+The math below (per-joint transforms, the numeric cross-check, the joint_1 invariant) is all derived for the `base_link → link_5` sub-chain; the `link_5 → end_effector` extension is a separate, much simpler fixed offset, covered at the end.
 
 ## Assumptions
 
@@ -57,6 +59,18 @@ Pose(θ, q₂, q₃, q₄, q₅) = Rz(θ) · Pose(0, q₂, q₃, q₄, q₅)
 ```
 
 i.e. rotating joint_1 by θ is exactly a rigid rotation of the *entire* downstream pose about the base Z axis. This holds independent of the exact numeric link geometry, so it's a strong correctness check on composition order (a bug that applied joint_1 on the wrong side of the product, or out of order relative to the other joints, would break this even if it happened to pass the two numeric spot-checks above). Tested in `ForwardKinematicsTest.Joint1RotatesWholeChainAboutBaseZ`.
+
+## Extending to end_effector
+
+`joint_6` (`link_5 → end_effector`) was originally modeled in the URDF as **revolute** about the same axis its own `<origin>` translates along (`xyz="0 0 0.105"`, `axis="0 0 1"`). For a translation along the *same* axis a joint rotates about, rotation and translation commute and — more importantly — rotating a point that already sits on the rotation axis doesn't move it. So `end_effector`'s *position* relative to `link_5` was always exactly `(0, 0, 0.105)` along `link_5`'s own z-axis, **independent of `joint_6`'s angle**; only its *orientation* would spin with `joint_6`. That's physically backwards for what `joint_6` actually is: motor 6 actuates gripper open/close, not a rotation of the tool frame. Modeling it as revolute made `end_effector`'s orientation depend on an unrelated/unknown gripper angle for no kinematic benefit (position was unaffected either way) — this surfaced directly when M2's IK needed to target `end_effector` and hit a case where an achievable position combined with a *specific* required orientation had no exact solution with `joint_6` in the mix.
+
+Fixed by making `joint_6` a **fixed** joint in `arm.urdf` (translation-only, no `<axis>`/`<limit>`). `ForwardKinematicsSolver` already treats any FIXED joint in the requested chain as a constant transform excluded from `GetActuatedJointNames()` — the same machinery that already handled `joint_intermediate` — so extending `tip_link` from `link_5` to `end_effector` needed zero changes to the solver itself, only to the URDF and the ROS nodes' default `tip_link` param. `end_effector`'s pose is now simply:
+
+```
+T(base_link→end_effector) = T(base_link→link_5) · Trans(0, 0, 0.105)
+```
+
+exactly, for any joint configuration — verified in `ForwardKinematicsConstruction.EndEffectorChainAddsFixedOffsetPastLink5`.
 
 ## Not covered here
 

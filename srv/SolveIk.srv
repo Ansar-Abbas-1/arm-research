@@ -1,4 +1,4 @@
-# Target end-effector (link_5) pose in base_link.
+# Target end_effector pose in base_link.
 geometry_msgs/Pose target_pose
 
 # Seed joint configuration for the iterative solve, in the order

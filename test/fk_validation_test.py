@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Integration test: fk_node's /computed_link5_pose vs. the ground-truth
-TF (base_link -> link_5) that robot_state_publisher derives from the same
+"""Integration test: fk_node's /computed_end_effector_pose vs. the ground-truth
+TF (base_link -> end_effector) that robot_state_publisher derives from the same
 URDF via KDL. Two independent computations of the same chain -- this is
 the "validated against the simulator" requirement from the milestone plan,
 made automated rather than a manual spot check.
@@ -47,7 +47,7 @@ class ForwardKinematicsValidationTest(unittest.TestCase):
 
         cls.latest_pose = None
         cls.pose_sub = rospy.Subscriber(
-            "/computed_link5_pose", PoseStamped, cls._pose_cb
+            "/computed_end_effector_pose", PoseStamped, cls._pose_cb
         )
 
         # Let publishers/subscribers/TF connect and the sim start publishing.
@@ -75,19 +75,19 @@ class ForwardKinematicsValidationTest(unittest.TestCase):
                 break
 
         self.assertIsNotNone(
-            type(self).latest_pose, f"[{label}] never received /computed_link5_pose"
+            type(self).latest_pose, f"[{label}] never received /computed_end_effector_pose"
         )
 
         try:
             tf = self.tf_buffer.lookup_transform(
-                "base_link", "link_5", rospy.Time(0), rospy.Duration(2.0)
+                "base_link", "end_effector", rospy.Time(0), rospy.Duration(2.0)
             )
         except (
             tf2_ros.LookupException,
             tf2_ros.ConnectivityException,
             tf2_ros.ExtrapolationException,
         ) as e:
-            self.fail(f"[{label}] TF lookup base_link->link_5 failed: {e}")
+            self.fail(f"[{label}] TF lookup base_link->end_effector failed: {e}")
 
         computed = type(self).latest_pose.pose
         expected = tf.transform

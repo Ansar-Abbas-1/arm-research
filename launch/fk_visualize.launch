@@ -1,11 +1,12 @@
 <launch>
   <!-- Visualizes forward kinematics against the kinematic simulator:
        arm_sim_validator_node (from arm_interface) + fk_node + rviz, with
-       /computed_link5_pose overlaid as its own Pose display (magenta
-       axes) directly on link_5's own TF frame for a visual cross-check:
-       the same comparison test/fk_validation_test.py makes numerically.
-       Self-contained here rather than including arm_interface's own sim
-       launch files, since none of those expose a way to disable rviz. -->
+       /computed_end_effector_pose overlaid as its own Pose display
+       (magenta axes) directly on end_effector's own TF frame for a
+       visual cross-check: the same comparison test/fk_validation_test.py
+       makes numerically. Self-contained here rather than including
+       arm_interface's own sim launch files, since none of those expose a
+       way to disable rviz. -->
 
   <arg name="sim_mode" default="lag"/>
   <arg name="tau" default="0.1"/>

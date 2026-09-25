@@ -126,6 +126,38 @@ TEST(ForwardKinematicsConstruction, UnreachableTipLinkThrows) {
                std::runtime_error);
 }
 
+TEST(ForwardKinematicsConstruction, EndEffectorChainAddsFixedOffsetPastLink5) {
+  // joint_6 (link_5 -> end_effector) is FIXED (translation-only, per the
+  // URDF fix made when this milestone's IK target turned out to need
+  // end_effector, not link_5 -- see arm.urdf's comment on joint_6). This
+  // wasn't previously exercised: every other test's tip_link ended right
+  // after an ACTUATED joint. Confirms a chain ending after a FIXED joint
+  // still (a) excludes it from the actuated joint list, and (b) applies
+  // its constant offset correctly on top of the link_5 pose.
+  urdf::Model model = LoadArmModel();
+  arm_kinematics::ForwardKinematicsSolver link5_solver(model, "base_link", "link_5");
+  arm_kinematics::ForwardKinematicsSolver ee_solver(model, "base_link", "end_effector");
+
+  EXPECT_EQ(ee_solver.GetActuatedJointNames(), link5_solver.GetActuatedJointNames());
+
+  const std::vector<std::vector<double>> configs = {
+      {0.0, 0.0, 0.0, 0.0, 0.0},
+      {0.3, 0.5, -0.2, 0.4, -0.3},
+      {1.0, 1.5, -1.0, 2.0, -2.5},
+  };
+  for (const auto& q : configs) {
+    Eigen::Isometry3d link5_pose = link5_solver.ComputePose(q);
+    Eigen::Isometry3d ee_pose = ee_solver.ComputePose(q);
+
+    // Position offset is exactly (0,0,0.105) along link_5's own z-axis --
+    // no rotation, since joint_6 is fixed now (not revolute).
+    Eigen::Vector3d expected_ee_pos = link5_pose.translation() + link5_pose.rotation() * Eigen::Vector3d(0, 0, 0.105);
+    EXPECT_NEAR((ee_pose.translation() - expected_ee_pos).norm(), 0.0, kTightTol);
+    // Orientation is unaffected by the fixed offset.
+    EXPECT_NEAR((ee_pose.linear() - link5_pose.linear()).norm(), 0.0, kTightTol);
+  }
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

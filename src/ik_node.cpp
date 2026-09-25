@@ -21,7 +21,7 @@ class InverseKinematicsNode {
   InverseKinematicsNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) {
     std::string root_link, tip_link;
     pnh.param<std::string>("root_link", root_link, "base_link");
-    pnh.param<std::string>("tip_link", tip_link, "link_5");
+    pnh.param<std::string>("tip_link", tip_link, "end_effector");
 
     urdf::Model model;
     if (!model.initParam("robot_description")) {
