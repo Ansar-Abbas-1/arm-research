@@ -60,9 +60,11 @@ ForwardKinematicsSolver::ForwardKinematicsSolver(const urdf::Model& model,
         actuated_joint_names_.push_back(joint->name);
         if (joint->limits) {
           actuated_joint_limits_.emplace_back(joint->limits->lower, joint->limits->upper);
+          actuated_joint_velocity_limits_.push_back(joint->limits->velocity);
         } else {
           actuated_joint_limits_.emplace_back(-std::numeric_limits<double>::infinity(),
                                                std::numeric_limits<double>::infinity());
+          actuated_joint_velocity_limits_.push_back(std::numeric_limits<double>::infinity());
         }
         break;
       case urdf::Joint::FIXED:

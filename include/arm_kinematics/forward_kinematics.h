@@ -57,6 +57,15 @@ class ForwardKinematicsSolver {
     return actuated_joint_limits_;
   }
 
+  // Velocity limit (rad/s) for each actuated joint, same order as
+  // GetActuatedJointNames(). Read from the URDF's <limit velocity="...">;
+  // +inf for a CONTINUOUS joint with no limits element. Added for M3
+  // (trajectory generation), which needs it to bound joint speed --
+  // position limits alone (above) aren't enough for that.
+  const std::vector<double>& GetActuatedJointVelocityLimits() const {
+    return actuated_joint_velocity_limits_;
+  }
+
   // The world-frame (root_link frame) axis origin position and axis
   // direction of every actuated joint, evaluated at `joint_positions` --
   // exactly the (p_i, z_i) a geometric Jacobian needs. Both are taken from
@@ -98,6 +107,7 @@ class ForwardKinematicsSolver {
   std::vector<ChainJoint> chain_;  // root -> tip order
   std::vector<std::string> actuated_joint_names_;
   std::vector<std::pair<double, double>> actuated_joint_limits_;
+  std::vector<double> actuated_joint_velocity_limits_;
 };
 
 }  // namespace arm_kinematics
