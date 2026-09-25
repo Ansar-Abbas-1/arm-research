@@ -14,6 +14,7 @@ find_package(catkin REQUIRED COMPONENTS
   roslaunch
   rosbag
   urdf
+  dynamic_reconfigure
 )
 
 roslaunch_add_file_check(launch)
@@ -93,10 +94,9 @@ roslaunch_add_file_check(launch)
 ##     and list every .cfg file to be processed
 
 ## Generate dynamic reconfigure parameters in the 'cfg' folder
-# generate_dynamic_reconfigure_options(
-#   cfg/DynReconf1.cfg
-#   cfg/DynReconf2.cfg
-# )
+generate_dynamic_reconfigure_options(
+  cfg/ArmInterface.cfg
+)
 
 ###################################
 ## catkin specific configuration ##
@@ -121,7 +121,7 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -143,7 +143,7 @@ add_dependencies(find_limits ${catkin_EXPORTED_TARGETS} dynamixel_sdk)
 target_link_libraries(find_limits ${catkin_LIBRARIES} dynamixel_sdk)
 
 add_executable(robot_interface src/robot_interface.cpp)
-add_dependencies(robot_interface ${catkin_EXPORTED_TARGETS} dynamixel_sdk)
+add_dependencies(robot_interface ${catkin_EXPORTED_TARGETS} dynamixel_sdk ${PROJECT_NAME}_gencfg)
 target_link_libraries(robot_interface ${catkin_LIBRARIES} dynamixel_sdk)
 
 # ─── Simulation Validator Node (for control validation in sim) ────────────────
@@ -222,10 +222,7 @@ target_link_libraries(replay_bag ${catkin_LIBRARIES})
 #############
 
 ## Add gtest based cpp test target and link libraries
-# catkin_add_gtest(${PROJECT_NAME}-test test/test_arm_interface.cpp)
-# if(TARGET ${PROJECT_NAME}-test)
-#   target_link_libraries(${PROJECT_NAME}-test ${PROJECT_NAME})
-# endif()
+catkin_add_gtest(${PROJECT_NAME}-test-watchdog test/test_watchdog.cpp)
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)

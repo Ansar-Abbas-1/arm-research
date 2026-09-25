@@ -11,12 +11,18 @@
 #include <mutex>
 #include <std_srvs/Trigger.h>
 #include <std_srvs/SetBool.h>
+#include <dynamic_reconfigure/server.h>
+#include <arm_interface/ArmInterfaceConfig.h>
+#include <memory>
+
+#include "arm_interface/watchdog.h"
 
 
 class DynamixelArmInterface {
 public:
     DynamixelArmInterface(ros::NodeHandle& nh)
         : nh_(nh),
+          pnh_("~"),
           portHandler_(dynamixel::PortHandler::getPortHandler(getDeviceName().c_str())),
           packetHandler_(dynamixel::PacketHandler::getPacketHandler(getProtocolVersion())),
           bulkRead_(portHandler_, packetHandler_),
@@ -48,7 +54,17 @@ public:
         }
         // Initialize Dynamixel Torque
         enableTorque();
-        ROS_INFO("BulkWriteLimited node initialized and ready.");
+        ROS_INFO("robot_interface node initialized and ready.");
+
+        // dynamic_reconfigure for command_timeout: seed the server with the
+        // value already loaded from the param server/yaml so setCallback's
+        // immediate callback doesn't silently override it with the .cfg default.
+        reconfigure_server_ = std::make_shared<dynamic_reconfigure::Server<arm_interface::ArmInterfaceConfig>>(pnh_);
+        arm_interface::ArmInterfaceConfig initial_config;
+        initial_config.command_timeout = command_timeout_;
+        reconfigure_server_->updateConfig(initial_config);
+        reconfigure_server_->setCallback(
+            boost::bind(&DynamixelArmInterface::reconfigureCallback, this, _1, _2));
 
         // Add parameter storage for each Dynamixel
         for (size_t i = 0; i < num_joints_; ++i) {
@@ -218,7 +234,7 @@ private:
 
         // Watchdog: Check command timeout
         if (start_writing_) {
-            if ((ros::Time::now() - last_cmd_time_).toSec() > command_timeout_) {
+            if (arm_interface::IsCommandStale((ros::Time::now() - last_cmd_time_).toSec(), command_timeout_)) {
                 ROS_ERROR_THROTTLE(1.0, "Command timeout! No commands received for %.2f seconds. Disabling torque.", command_timeout_);
                 disableTorque();
                 start_writing_ = false; // Stop writing until next command received
@@ -395,6 +411,17 @@ private:
         }
     }
 
+    void reconfigureCallback(arm_interface::ArmInterfaceConfig& config, uint32_t /*level*/) {
+        if (!arm_interface::IsValidCommandTimeout(config.command_timeout)) {
+            ROS_WARN("Rejected command_timeout=%.3f (must be > 0); keeping %.3f",
+                     config.command_timeout, command_timeout_);
+            config.command_timeout = command_timeout_;  // reflect the rejection back in rqt_reconfigure
+            return;
+        }
+        command_timeout_ = config.command_timeout;
+        ROS_INFO("command_timeout updated to %.3f s", command_timeout_);
+    }
+
     void jointStatesOutCb(const sensor_msgs::JointState::ConstPtr& msg) {
         if (!start_writing_) {
             ROS_INFO("Received command joint state, enabling torque and starting to write to motors.");
@@ -519,6 +546,8 @@ private:
     }
 
     ros::NodeHandle& nh_;
+    ros::NodeHandle pnh_;
+    std::shared_ptr<dynamic_reconfigure::Server<arm_interface::ArmInterfaceConfig>> reconfigure_server_;
     std::vector<ros::Publisher> pos_in_enc_pubs_;
     std::vector<ros::Publisher> pos_out_enc_pubs_;
     ros::Publisher joint_in_pub_;
@@ -579,7 +608,7 @@ private:
 
 int main(int argc, char **argv)
 {
-    ros::init(argc, argv, "bulk_read_node");
+    ros::init(argc, argv, "robot_interface_node");
     ros::NodeHandle nh;
 
     ros::AsyncSpinner spinner(2);
