@@ -219,12 +219,18 @@
         </inertial>
     </link>
 
-    <joint name="joint_6" type="revolute">
+    <!-- Fixed, not revolute: motor 6 actuates gripper open/close, not a
+         rotation of the tool frame. Modeling it as a revolute joint about
+         its own offset axis made end_effector's ORIENTATION spin with the
+         gripper, with no effect on its position (the offset is along the
+         same axis it rotated about): physically wrong for what this
+         link represents (the reach/kinematics tool point), and exactly
+         the ambiguity that surfaced when arm_kinematics (M2) needed to
+         target end_effector instead of link_5. -->
+    <joint name="joint_6" type="fixed">
         <parent link="link_5"/>
         <child link="end_effector"/>
         <origin xyz="0 0 0.105" rpy="0 0 0"/>
-        <axis xyz="0 0 1"/>
-        <limit lower="-1.29" upper="1.29" effort="10" velocity="2"/>
     </joint>
 
     <link name="end_effector">
