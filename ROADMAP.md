@@ -10,8 +10,8 @@ and one new repo per milestone that adds a package, per the "new capability
 |---|---|---|
 | M0 — Orientation | **Done** (2026-09-25) | `arm_interface` (existing) |
 | M1 — Forward kinematics | **Done** (2026-09-25) | `arm_kinematics` (new) |
-| M2 — Inverse kinematics | Next, detailed below | `arm_kinematics` |
-| M3 — Trajectory generation | Sketch | TBD |
+| M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
+| M3 — Trajectory generation | Next, detailed below | `arm_trajectory` (new, proposed) |
 | M4 — Joy-controller teleop | Sketch | TBD |
 | M5 — Sim-to-real | Sketch | — |
 | M6 — Camera + calibration | Sketch | TBD |
@@ -48,50 +48,64 @@ Full derivation: [`src/arm_kinematics/docs/forward_kinematics.md`](src/arm_kinem
 
 ---
 
-## M2 — Inverse kinematics (detailed)
+## M2 — Inverse kinematics (done, 2026-09-25)
 
-**Goal:** given a commanded `link_5` pose (position + orientation) in `base_link`, solve for joint angles 1–5 that best achieve it, reporting reachability explicitly rather than returning garbage for infeasible targets.
+Full derivation: [`src/arm_kinematics/docs/inverse_kinematics.md`](src/arm_kinematics/docs/inverse_kinematics.md).
 
-**Scope:** 5-DOF only (joints 1–5), consistent with M0/M1. Builds directly on M1's `ForwardKinematicsSolver` — package: `arm_kinematics`, same repo, branch `milestone-2-inverse-kinematics`. Does not modify `arm_interface`/`DynamixelSDK`.
+**Delivered:** analytical geometric Jacobian (`J_v,i = z_i × (p_e−p_i)`, `J_ω,i = z_i`), cross-checked in gtest against an independent finite-difference Jacobian of M1's FK. Damped least-squares (Levenberg-Marquardt) IK on top: task space is 6D over 5 joints (overdetermined — the roadmap sketch's draft formula had this backwards, using the redundant-manipulator right-pseudo-inverse form; corrected to the left/normal-equations form). `InverseKinematicsSolver::Solve` accepts a full 6D target pose and minimizes weighted position+orientation error via damped least squares, returning the residual (including any structurally-unreachable component) rather than hiding it.
 
-**A structural fact that shapes this milestone:** joint_1's axis is `z` (base yaw); joints 2–5 all end up with *parallel* axes in the base frame — each of their origins only rotates about `y` before applying the joint's own `y`-axis rotation, and a rotation about `y` doesn't move the `y` axis itself. So this chain is effectively "1 yaw + 4 coplanar pitch joints": any reachable *position* is reachable, plus exactly one orientation angle (the end-effector's pitch within the vertical plane joint_1 selects) — but not full 3D orientation. **Decided:** the IK API still accepts a full 6D target pose (position + orientation) — natural for future callers like M8's vision pipeline, who shouldn't need to know the arm's internal DOF structure — and the solver minimizes a *weighted* position+orientation error via damped least squares rather than requiring an exact match. "Reachable" means the converged residual is under a documented tolerance; the residual itself (including any structurally-unreachable orientation component) is returned, not hidden.
+**Two things needed that weren't anticipated in this section's original sketch, both confirmed empirically on a 20-random-target benchmark:**
+- **Adaptive damping**, not fixed: a single fixed `λ` converged only 40% of the time (one damping value can't serve both the far-from-target and near-convergence regimes well).
+- **Random-seeded restarts on non-convergence**: adaptive damping alone converged *worse*, ~35% — this chain is redundant (1 yaw + 4 parallel-axis "elbow" joints, confirmed structurally, see M1's docs), so genuinely distinct solution basins exist and no amount of better local descent from one fixed seed finds a solution in a different basin. Restarts (`IkOptions::max_restarts`, default 20) fixed it to 100%, typically within 0–2.
 
-**Approach:**
-- **Analytical geometric Jacobian** (decided over numerical finite-difference — more work now, but exact and faster, avoiding a later revisit): for each actuated joint *i* with axis `z_i` and origin position `p_i` (both expressed in `base_link`, evaluated at the current configuration) and end-effector position `p_e`:
-  ```
-  J_v_i = z_i × (p_e − p_i)      (linear velocity column)
-  J_ω_i = z_i                     (angular velocity column)
-  J = [J_v; J_ω] ∈ R^(6×5)
-  ```
-  `z_i`/`p_i` come from the same accumulated transform chain `ForwardKinematicsSolver` already builds — extending it (or adding a sibling class) to expose per-joint intermediate transforms, not just the final pose, is the natural implementation path.
-- **Damped least squares (Levenberg-Marquardt) iteration**, adaptive damping, from a seed configuration (default: current `/joint_states_in`, overridable):
-  ```
-  Δq = (J^T W J + λ²I)^-1 · J^T W · e
-  q_{k+1} = clamp(q_k + Δq, joint_limits)
-  ```
-  **Correction to an earlier draft of this section:** task space here is 6D over 5 joints (overdetermined — `J` has more rows than columns), so this needs the *left* pseudo-inverse/normal-equations form above, not the right-pseudo-inverse redundant-manipulator form a first draft had. `e` is the weighted [position; orientation] error; `λ` is adaptive (increases on a rejected/non-improving step, decreases on an accepted one — a fixed `λ` converged only 40% of the time on a benchmark, see below).
-  
-  **Also needed in practice, not originally anticipated here:** random-seeded restarts on non-convergence. This chain is redundant (1 yaw + 4 parallel-axis "elbow" joints), so distinct solution basins genuinely exist, and adaptive damping alone still converged only ~35% on a 20-random-target benchmark — restarts fixed it to 100%, typically within 0-2. Full writeup: [`src/arm_kinematics/docs/inverse_kinematics.md`](src/arm_kinematics/docs/inverse_kinematics.md).
+**Also found and fixed mid-milestone: `joint_6` was wrongly modeled as revolute in `arm_interface`'s URDF.** M2's target needed to be `end_effector` (the actual tool point), not `link_5` — but `joint_6`'s translation was along the *same axis* it rotated about, so its position was already gripper-angle-independent while its orientation spun with the (physically unrelated) gripper motor. Fixed by making `joint_6` fixed in the URDF (`arm_interface`, separate commit) — matches what motor 6 actually does (gripper open/close, not a tool-frame rotation) and needed zero changes to the FK/IK solver itself, since it already treats any fixed chain joint as a constant offset. `fk_node`/`ik_node` now default to `end_effector`, not `link_5`.
 
-**Tests:**
-- gtest: **analytical Jacobian validated against a numerical (finite-difference) Jacobian of M1's FK** at several configurations — cheap, independent cross-check that costs nothing since M1's FK already exists, catches analytical-derivation mistakes directly (sign/axis errors) without needing hand computation.
-- gtest: IK-then-FK round trip — for many random reachable targets (generated *by* running FK on random valid joint configs, so reachability is known by construction), solve IK and verify `FK(IK(target)) ≈ target` within tolerance.
-- gtest: explicit unreachable case (e.g. a position outside the arm's max reach) returns "not reached" with the max-iteration residual, not a false success.
-- Integration/rostest: drive the sim through IK-computed joint commands for several targets, confirm `/joint_states_in` converges to the commanded pose (closing the loop through the actual simulator, not just the solver in isolation).
+**Validated:** gtest (Jacobian cross-check, IK∘FK round trip on random reachable targets, explicit unreachable case, numerical-stability stress case) + headless rostest closing the loop through the real simulator (target from the sim's own TF, solved via `/solve_ik`, driven back, confirmed against TF again, with one retry allowed given the solver's restart-based probabilistic nature). Manually confirmed live via `/solve_ik` + rviz, twice — once before the `end_effector` fix (showed `link_5` was wrong target), once after (confirmed `end_effector` lands exactly on target).
 
-**Done when:**
-- IK solver implemented, unit tested (including the Jacobian cross-check and IK∘FK round trip).
-- Unreachable targets and near-singular configurations handled explicitly and tested, not just assumed.
-- No changes to `arm_interface`/`DynamixelSDK`.
-- Hand-off test script given, same pattern as M1.
-
-The formal **Plan** step (file list, exact interface shape, wait for approval before implementing) happens when M2 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
+**Known limitation carried forward:** the position-only-reachable envelope changed slightly with the `end_effector` offset (some positions reachable at `link_5` aren't at the shifted `end_effector`, and vice versa) — expected geometrically, not a bug, not separately characterized/mapped.
 
 ---
 
-## M3 — Trajectory generation (sketch)
+## M3 — Trajectory generation (detailed)
 
-Joint-space and Cartesian-space trajectories respecting position/velocity limits, in simulation. Package TBD (possibly `arm_kinematics` again, or a new `arm_trajectory` — decide when M2 closes).
+**Goal:** given a start and goal (joint-space configuration, or Cartesian pose to be solved via M2's IK), generate a time-parameterized sequence of joint waypoints connecting them that respects each joint's velocity limit (from the URDF, same source-of-truth convention as M1/M2), for the simulator to execute — no dynamics/torque limits yet, matching M0–M4's sim-only scope.
+
+**Scope:** 5-DOF joint-space, consistent with M0–M2. Point-to-point trajectories only (one start, one goal) — multi-waypoint paths/blending are a plausible later extension, not in this cut.
+
+**Package (proposed, confirm in the Plan step):** new repo `arm_trajectory`, consuming `arm_kinematics` (M1/M2) as a dependency rather than extending it — trajectory generation is a distinct architectural layer (adds timing/velocity-profile concerns on top of instantaneous kinematics) even though M2 itself extended M1's package rather than starting a new one. Flagging this as a decision point, not assuming it.
+
+**Approach:**
+- **Joint-space profile: quintic (5th-order) time-scaling**, the standard smooth point-to-point profile (zero velocity *and* acceleration at both endpoints, avoiding the velocity discontinuities of a naive linear/trapezoidal profile at the start/end). For normalized time `τ = t/T ∈ [0,1]`:
+  ```
+  s(τ)  = 10τ³ − 15τ⁴ + 6τ⁵                    (s(0)=0, s(1)=1)
+  s'(τ) = 30τ² − 60τ³ + 30τ⁴
+  q(t) = q₀ + (q_goal − q₀)·s(t/T)
+  ```
+  Boundary conditions `s(0)=s'(0)=s''(0)=0` and `s(1)=1, s'(1)=s''(1)=0` hold by construction (standard quintic time-scaling, e.g. Siciliano *Robotics* ch. 4).
+
+- **Velocity-limit-driven duration, derived (not assumed):** `s'(τ)` is maximized at `τ=0.5`: `s'(0.5) = 30(0.25) − 60(0.125) + 30(0.0625) = 7.5 − 7.5 + 1.875 = 15/8`. Since `q̇(t) = Δq · s'(t/T) / T`, peak joint velocity is `|Δq|·(15/8)/T`. Setting that equal to the joint's velocity limit `v_max` (from `ForwardKinematicsSolver::GetActuatedJointLimits()`'s URDF-source sibling — velocity limits need their own small accessor, same pattern) gives the **minimum feasible duration for that joint**:
+  ```
+  T_min,i = (15/8) · |Δq_i| / v_max,i
+  ```
+  Take `T = max_i(T_min,i)` and use the *same* `T` for every joint (synchronized arrival — standard point-to-point convention, avoids joints finishing at different times and needing independent replanning).
+
+- **Cartesian-space trajectories**: interpolate the *pose* (position linearly, orientation via SLERP) between start and goal, sample at a fixed rate, and solve M2's IK at each sample — **warm-started from the previous sample's joint solution**, not from scratch each time. This isn't optional polish: since the arm is redundant (M2's finding), independent from-scratch IK at each waypoint could land in a *different* solution basin sample-to-sample, producing a trajectory that jumps between elbow configurations instead of moving smoothly. Warm-starting is what keeps consecutive samples in the same basin.
+- **Reachability is checked before returning a trajectory, not discovered mid-execution**: every sampled waypoint (Cartesian mode) or just the endpoints (joint-space mode, trivially always "reachable" since both ends are joint configurations already) is validated; if any IK solve fails to converge, the whole trajectory request fails with a clear report of which waypoint and why, rather than executing a partial/broken path.
+
+**Tests:**
+- gtest: quintic time-scaling boundary conditions (`s(0)=0, s(1)=1, s'(0)=s'(1)=0`) and the derived `T_min` formula, checked against a numerical velocity peak (differentiate `s(τ)` numerically, confirm the peak matches `15/8` and occurs at `τ=0.5`) — same independent-cross-check pattern as M1/M2's Jacobian test.
+- gtest: synchronized arrival — for a multi-joint goal, every joint reaches its target at exactly `T`, no joint's velocity exceeds its limit at any sampled `t`.
+- gtest: Cartesian trajectory warm-starting — construct a case where independent per-waypoint IK (no warm-start) would plausibly jump basins (e.g. near a redundancy-heavy region) and confirm the warm-started version doesn't.
+- Integration/rostest: command a trajectory through the real simulator, confirm `/joint_states_in` tracks the generated profile within tolerance throughout, not just at the endpoint.
+
+**Done when:**
+- Joint-space and Cartesian-space trajectory generation implemented and unit tested.
+- Velocity limits provably respected (tested, not assumed) for every joint, every sampled time.
+- Unreachable/infeasible requests reported before execution, not silently truncated.
+- No changes to `arm_interface`/`DynamixelSDK`.
+- Hand-off test script given, same pattern as M1/M2.
+
+The formal **Plan** step (file list, exact interface shape, package decision, wait for approval before implementing) happens when M3 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
 
 ## M4 — Joy-controller teleop (sketch)
 
