@@ -1,0 +1,245 @@
+#include "arm_trajectory/cartesian_trajectory.h"
+
+#include <algorithm>
+#include <cmath>
+#include <sstream>
+
+#include <ros/duration.h>
+
+#include "arm_trajectory/quintic_time_scaling.h"
+
+namespace arm_trajectory {
+
+namespace {
+
+Eigen::Isometry3d InterpolatePose(const Eigen::Isometry3d& start, const Eigen::Isometry3d& goal,
+                                   double fraction) {
+  Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
+  pose.translation() = start.translation() + fraction * (goal.translation() - start.translation());
+  Eigen::Quaterniond q_start(start.rotation());
+  Eigen::Quaterniond q_goal(goal.rotation());
+  pose.linear() = q_start.slerp(fraction, q_goal).toRotationMatrix();
+  return pose;
+}
+
+// IK options for INTERIOR path samples: looser than the default IK
+// tolerance, and (unlike the goal check) never treated as a hard failure
+// -- see the "best-effort tracking" note on GenerateCartesianTrajectory.
+// The looser tolerance just avoids grinding on a residual that isn't
+// going to shrink further: this chain has 5 DOF over a 6D task space (M2
+// finding), so linear-position+SLERP-orientation interpolation between
+// two exactly-reachable poses does NOT generally stay on the reachable 5D
+// submanifold. Confirmed empirically: every restart from every seed
+// converged to the *same* small residual for a struggling interior
+// sample, and the residual grows with distance into the interpolation --
+// the signature of a genuine best-fit minimum on a path that leaves the
+// reachable manifold, not a stuck solver (a bug would vary by
+// seed/restart and wouldn't grow smoothly with path position). See
+// docs/trajectory_generation.md.
+//
+// max_restarts = 0 is deliberate and load-bearing, not just "skip the
+// extra work": Solve()'s restart mechanism explicitly abandons the
+// warm-started attempt and tries seeds from anywhere in joint space when
+// that attempt doesn't hit the target tolerance -- exactly what we do NOT
+// want here, since a random restart can land in a different elbow
+// configuration with marginally lower residual and get accepted as
+// "best", destroying warm-start continuity between samples. That
+// discontinuity isn't just an aesthetic problem: it produces a large
+// finite-differenced joint velocity between consecutive samples, which
+// then feeds the velocity-based duration-scaling loop in
+// GenerateCartesianTrajectory and can blow up the requested duration (and
+// hence sample count) without bound. Found by hanging a test for 15+
+// minutes generating an exploding number of samples -- restarts on
+// interior points is what did it, not the loosened tolerance.
+arm_kinematics::IkOptions PathTrackingIkOptions() {
+  arm_kinematics::IkOptions options;
+  options.position_tolerance = 1e-3;     // 10x looser than the IK default (1e-4)
+  options.orientation_tolerance = 5e-3;  // 5x looser than the IK default (1e-3)
+  options.max_restarts = 0;              // see above -- load-bearing, not an optimization
+  // Best-effort means we accept whatever residual a sample settles at
+  // regardless -- burning the full default iteration/retry budget (100 x
+  // 10) on a sample that structurally can't converge further wastes work
+  // for no benefit, and across hundreds of samples in a long/hard path
+  // that adds up to real wall-clock time (found empirically: one test
+  // case took 10s, another didn't finish in 60s, before this). A much
+  // smaller budget still lets a genuinely-reachable sample converge
+  // quickly; it just stops sooner on one that can't.
+  options.max_iterations = 20;
+  options.max_inner_retries = 5;
+  return options;
+}
+
+struct SampleAttempt {
+  std::vector<std::vector<double>> q_samples;
+  std::vector<double> t_samples;
+  double peak_position_deviation;     // meters, worst interior-sample residual (best-effort tracking)
+  double peak_orientation_deviation;  // radians
+};
+
+SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsSolver& fk_solver,
+                                         const std::vector<double>& q_start,
+                                         const Eigen::Isometry3d& pose_start,
+                                         const Eigen::Isometry3d& pose_goal, double duration,
+                                         double sample_rate_hz) {
+  // Own solver, looser tolerances -- see PathTrackingIkOptions().
+  arm_kinematics::InverseKinematicsSolver path_ik_solver(fk_solver, PathTrackingIkOptions());
+
+  int num_samples = std::max(2, static_cast<int>(std::round(duration * sample_rate_hz)) + 1);
+
+  SampleAttempt attempt;
+  attempt.q_samples.reserve(num_samples);
+  attempt.t_samples.reserve(num_samples);
+  attempt.peak_position_deviation = 0.0;
+  attempt.peak_orientation_deviation = 0.0;
+
+  std::vector<double> q_prev = q_start;
+  for (int k = 0; k < num_samples; ++k) {
+    double t = duration * static_cast<double>(k) / static_cast<double>(num_samples - 1);
+    double tau = t / duration;
+    double frac = QuinticPosition(tau);
+
+    Eigen::Isometry3d target = (k == num_samples - 1) ? pose_goal
+                               : (k == 0)              ? pose_start
+                                                        : InterpolatePose(pose_start, pose_goal, frac);
+
+    // Best-effort: take whatever IK finds, converged or not -- an
+    // interior waypoint not being exactly reachable is expected on this
+    // chain (see above), not a failure condition. Only the goal (checked
+    // by the caller before this function runs) must be exact.
+    arm_kinematics::IkResult ik = path_ik_solver.Solve(target, q_prev);
+    attempt.peak_position_deviation =
+        std::max(attempt.peak_position_deviation, ik.residual.head<3>().norm());
+    attempt.peak_orientation_deviation =
+        std::max(attempt.peak_orientation_deviation, ik.residual.tail<3>().norm());
+
+    attempt.q_samples.push_back(ik.joint_positions);
+    attempt.t_samples.push_back(t);
+    q_prev = ik.joint_positions;
+  }
+
+  return attempt;
+}
+
+// Returns the largest (|finite-difference velocity| / limit) ratio found
+// across all joints and consecutive sample pairs; <= 1.0 means every
+// joint stayed within its velocity limit throughout.
+double WorstVelocityRatio(const std::vector<std::vector<double>>& q_samples,
+                           const std::vector<double>& t_samples,
+                           const std::vector<double>& velocity_limits) {
+  double worst = 0.0;
+  for (size_t k = 1; k < q_samples.size(); ++k) {
+    double dt = t_samples[k] - t_samples[k - 1];
+    for (size_t i = 0; i < velocity_limits.size(); ++i) {
+      double v = std::fabs(q_samples[k][i] - q_samples[k - 1][i]) / dt;
+      worst = std::max(worst, v / velocity_limits[i]);
+    }
+  }
+  return worst;
+}
+
+}  // namespace
+
+CartesianTrajectoryResult GenerateCartesianTrajectory(
+    const arm_kinematics::ForwardKinematicsSolver& fk_solver,
+    const arm_kinematics::InverseKinematicsSolver& ik_solver, const std::vector<double>& q_start,
+    const Eigen::Isometry3d& pose_goal, const std::vector<double>& velocity_limits,
+    const std::vector<std::string>& joint_names, double sample_rate_hz,
+    int max_duration_iterations) {
+  CartesianTrajectoryResult result;
+  Eigen::Isometry3d pose_start = fk_solver.ComputePose(q_start);
+
+  // Seed the joint-space delta (and hence duration) with a single IK
+  // solve at the goal -- also validates the goal is reachable at all
+  // before any sampling work.
+  arm_kinematics::IkResult goal_ik = ik_solver.Solve(pose_goal, q_start);
+  if (!goal_ik.converged) {
+    result.success = false;
+    result.message = "goal pose did not converge: position error " +
+                      std::to_string(goal_ik.residual.head<3>().norm()) + " m, orientation error " +
+                      std::to_string(goal_ik.residual.tail<3>().norm()) + " rad, after " +
+                      std::to_string(goal_ik.restarts_used) + " restarts";
+    return result;
+  }
+
+  double duration = 0.0;
+  for (size_t i = 0; i < q_start.size(); ++i) {
+    duration = std::max(
+        duration, MinDurationForVelocityLimit(goal_ik.joint_positions[i] - q_start[i], velocity_limits[i]));
+  }
+
+  if (duration == 0.0) {
+    trajectory_msgs::JointTrajectory traj;
+    traj.joint_names = joint_names;
+    trajectory_msgs::JointTrajectoryPoint point;
+    point.positions = q_start;
+    point.velocities.assign(q_start.size(), 0.0);
+    point.time_from_start = ros::Duration(0.0);
+    traj.points.push_back(point);
+    result.success = true;
+    result.trajectory = traj;
+    return result;
+  }
+
+  // Defensive sanity cap, independent of PathTrackingIkOptions'
+  // max_restarts=0 fix for the root cause (a discontinuous warm-start):
+  // duration-scaling multiplies by whatever worst_ratio comes back, so
+  // one anomalous sample could in principle still blow it up. This turns
+  // "generate an absurd number of samples" into a clean failure instead
+  // -- found the hard way by a test that hung for 15+ minutes before this
+  // existed.
+  constexpr int kMaxReasonableSamples = 5000;
+
+  SampleAttempt attempt;
+  for (int iter = 0; iter < max_duration_iterations; ++iter) {
+    int projected_samples = std::max(2, static_cast<int>(std::round(duration * sample_rate_hz)) + 1);
+    if (projected_samples > kMaxReasonableSamples) {
+      result.success = false;
+      result.message = "projected sample count (" + std::to_string(projected_samples) +
+                        ") exceeds sanity limit (" + std::to_string(kMaxReasonableSamples) +
+                        ") at duration=" + std::to_string(duration) + "s -- likely runaway duration scaling";
+      return result;
+    }
+
+    attempt = GenerateSamplesAtDuration(fk_solver, q_start, pose_start, pose_goal, duration,
+                                        sample_rate_hz);
+
+    double worst_ratio = WorstVelocityRatio(attempt.q_samples, attempt.t_samples, velocity_limits);
+    if (worst_ratio <= 1.0) {
+      break;
+    }
+    if (iter == max_duration_iterations - 1) {
+      result.success = false;
+      result.message = "could not satisfy velocity limits within " +
+                        std::to_string(max_duration_iterations) +
+                        " duration-scaling iterations (worst ratio " + std::to_string(worst_ratio) +
+                        ")";
+      return result;
+    }
+    duration *= worst_ratio * 1.01;  // small safety margin past the exact scaling factor
+  }
+
+  trajectory_msgs::JointTrajectory traj;
+  traj.joint_names = joint_names;
+  traj.points.reserve(attempt.q_samples.size());
+  for (size_t k = 0; k < attempt.q_samples.size(); ++k) {
+    trajectory_msgs::JointTrajectoryPoint point;
+    point.positions = attempt.q_samples[k];
+    point.velocities.assign(joint_names.size(), 0.0);
+    if (k > 0) {
+      double dt = attempt.t_samples[k] - attempt.t_samples[k - 1];
+      for (size_t i = 0; i < joint_names.size(); ++i) {
+        point.velocities[i] = (attempt.q_samples[k][i] - attempt.q_samples[k - 1][i]) / dt;
+      }
+    }
+    point.time_from_start = ros::Duration(attempt.t_samples[k]);
+    traj.points.push_back(point);
+  }
+
+  result.success = true;
+  result.trajectory = traj;
+  result.peak_position_deviation = attempt.peak_position_deviation;
+  result.peak_orientation_deviation = attempt.peak_orientation_deviation;
+  return result;
+}
+
+}  // namespace arm_trajectory

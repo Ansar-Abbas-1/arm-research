@@ -1,0 +1,29 @@
+<launch>
+  <!-- Headless integration test: /generate_trajectory + the
+       follow_joint_trajectory action executed against the real
+       simulator, confirming /joint_states_in tracks the generated
+       profile throughout its duration (not just at the endpoint), plus
+       that mid-execution preemption actually stops playback. No rviz:
+       needs a display, not available here. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+
+  <test test-name="trajectory_execution_test" pkg="arm_trajectory" type="trajectory_execution_test.py"
+        time-limit="90.0" />
+</launch>
