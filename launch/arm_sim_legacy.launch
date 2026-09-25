@@ -1,0 +1,14 @@
+<launch>
+    <!-- Launch the robot_state_publisher with the URDF file -->
+    <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+        <param name="publish_frequency" type="double" value="50.0" />
+    </node>
+
+    <!-- Joint State Publisher GUI for moving the joints -->
+    <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui" type="joint_state_publisher_gui" output="screen" />
+
+    <!-- RViz to visualize the robot -->
+    <node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find arm_interface)/rviz/arm.rviz" />
+</launch>

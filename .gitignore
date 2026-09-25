@@ -1,0 +1,10 @@
+# catkin build artifacts (workspace-level build/devel dirs live above this package)
+build/
+devel/
+
+# graphify tooling output (regenerable)
+graphify-out/
+
+# editor/OS cruft
+*.swp
+.vscode/

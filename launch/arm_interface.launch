@@ -1,0 +1,17 @@
+<launch>
+    <!-- Launch the robot_state_publisher with the URDF file -->
+    <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+    
+    <!-- Remap joint_states topic for robot_state_publisher -->
+    <node name="robot_state_publisher" pkg="robot_state_publisher" type="robot_state_publisher" output="screen">
+        <remap from="joint_states" to="/joint_states_in" />
+    </node>
+
+    <!-- Activate the robot interface -->
+    <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+        <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+    </node>
+
+    <!-- RViz to visualize the robot -->
+    <node name="rviz" pkg="rviz" type="rviz" output="screen" args="-d $(find arm_interface)/rviz/arm.rviz" />
+</launch>
