@@ -47,6 +47,28 @@ class ForwardKinematicsSolver {
     return actuated_joint_names_;
   }
 
+  // [lower, upper] limits (radians) for each actuated joint, same order as
+  // GetActuatedJointNames()/ComputePose. Read from the URDF's <limit> tag;
+  // (-inf, +inf) for a CONTINUOUS joint with no limits element.
+  const std::vector<std::pair<double, double>>& GetActuatedJointLimits() const {
+    return actuated_joint_limits_;
+  }
+
+  // The world-frame (root_link frame) axis origin position and axis
+  // direction of every actuated joint, evaluated at `joint_positions` --
+  // exactly the (p_i, z_i) a geometric Jacobian needs. Both are taken from
+  // the accumulated transform right after a joint's fixed <origin> is
+  // applied and before its own variable rotation: unambiguous, since a
+  // rotation about a joint's own axis can't move that axis and
+  // contributes no translation, so it doesn't matter that the joint's own
+  // rotation hasn't been "applied" yet at that point.
+  struct JointFrame {
+    Eigen::Vector3d origin;
+    Eigen::Vector3d axis;
+  };
+  std::vector<JointFrame> ComputeActuatedJointFrames(
+      const std::vector<double>& joint_positions) const;
+
   const std::string& root_link() const { return root_link_; }
   const std::string& tip_link() const { return tip_link_; }
 
@@ -58,10 +80,21 @@ class ForwardKinematicsSolver {
     bool actuated;
   };
 
+  struct ChainState {
+    Eigen::Isometry3d final_pose;
+    std::vector<JointFrame> joint_frames;  // one per actuated joint
+  };
+
+  // Single shared chain-walk: both ComputePose and
+  // ComputeActuatedJointFrames read off this one computation instead of
+  // each re-implementing (and risking drift on) the same traversal.
+  ChainState ComputeChainState(const std::vector<double>& joint_positions) const;
+
   std::string root_link_;
   std::string tip_link_;
   std::vector<ChainJoint> chain_;  // root -> tip order
   std::vector<std::string> actuated_joint_names_;
+  std::vector<std::pair<double, double>> actuated_joint_limits_;
 };
 
 }  // namespace arm_kinematics

@@ -1,6 +1,7 @@
 #include "arm_kinematics/forward_kinematics.h"
 
 #include <deque>
+#include <limits>
 #include <stdexcept>
 
 namespace arm_kinematics {
@@ -57,6 +58,12 @@ ForwardKinematicsSolver::ForwardKinematicsSolver(const urdf::Model& model,
         cj.actuated = true;
         cj.axis = Eigen::Vector3d(joint->axis.x, joint->axis.y, joint->axis.z).normalized();
         actuated_joint_names_.push_back(joint->name);
+        if (joint->limits) {
+          actuated_joint_limits_.emplace_back(joint->limits->lower, joint->limits->upper);
+        } else {
+          actuated_joint_limits_.emplace_back(-std::numeric_limits<double>::infinity(),
+                                               std::numeric_limits<double>::infinity());
+        }
         break;
       case urdf::Joint::FIXED:
         cj.actuated = false;
@@ -71,24 +78,47 @@ ForwardKinematicsSolver::ForwardKinematicsSolver(const urdf::Model& model,
   }
 }
 
-Eigen::Isometry3d ForwardKinematicsSolver::ComputePose(
+ForwardKinematicsSolver::ChainState ForwardKinematicsSolver::ComputeChainState(
     const std::vector<double>& joint_positions) const {
   if (joint_positions.size() != actuated_joint_names_.size()) {
     throw std::invalid_argument(
-        "ForwardKinematicsSolver::ComputePose: expected " +
-        std::to_string(actuated_joint_names_.size()) + " joint values, got " +
-        std::to_string(joint_positions.size()));
+        "ForwardKinematicsSolver: expected " + std::to_string(actuated_joint_names_.size()) +
+        " joint values, got " + std::to_string(joint_positions.size()));
   }
+
+  ChainState state;
+  state.joint_frames.reserve(actuated_joint_names_.size());
 
   Eigen::Isometry3d pose = Eigen::Isometry3d::Identity();
   size_t actuated_idx = 0;
   for (const auto& cj : chain_) {
     pose = pose * cj.origin;
     if (cj.actuated) {
+      // (p_i, z_i) at this point -- after the fixed origin, before this
+      // joint's own rotation -- is exactly what the Jacobian needs; see
+      // the header comment on ComputeActuatedJointFrames for why the
+      // ordering doesn't matter here.
+      JointFrame frame;
+      frame.origin = pose.translation();
+      frame.axis = pose.linear() * cj.axis;
+      state.joint_frames.push_back(frame);
+
       pose = pose * Eigen::Isometry3d(Eigen::AngleAxisd(joint_positions[actuated_idx++], cj.axis));
     }
   }
-  return pose;
+  state.final_pose = pose;
+  return state;
+}
+
+Eigen::Isometry3d ForwardKinematicsSolver::ComputePose(
+    const std::vector<double>& joint_positions) const {
+  return ComputeChainState(joint_positions).final_pose;
+}
+
+std::vector<ForwardKinematicsSolver::JointFrame>
+ForwardKinematicsSolver::ComputeActuatedJointFrames(
+    const std::vector<double>& joint_positions) const {
+  return ComputeChainState(joint_positions).joint_frames;
 }
 
 }  // namespace arm_kinematics

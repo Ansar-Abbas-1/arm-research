@@ -18,6 +18,9 @@
   <depend>tf2_ros</depend>
   <depend>tf2_eigen</depend>
 
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
   <!-- fk_visualize.launch drives the sim + shows results in rviz;
        arm_interface is also needed at test time for its urdf/arm.urdf
        and arm_sim_validator_node. -->

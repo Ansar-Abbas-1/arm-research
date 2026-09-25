@@ -1,0 +1,27 @@
+<launch>
+  <!-- Headless integration test: calls /solve_ik, drives the sim via the
+       returned joint_positions, and confirms /joint_states_in converges
+       to the commanded target (closing the loop through the actual
+       simulator, not just the solver in isolation), same pattern as
+       fk_validation.test. No rviz: needs a display, not available here. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="ik_node" pkg="arm_kinematics" type="ik_node" />
+
+  <test test-name="ik_validation_test" pkg="arm_kinematics" type="ik_validation_test.py"
+        time-limit="90.0" />
+</launch>
