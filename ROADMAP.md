@@ -11,8 +11,8 @@ and one new repo per milestone that adds a package, per the "new capability
 | M0 — Orientation | **Done** (2026-09-25) | `arm_interface` (existing) |
 | M1 — Forward kinematics | **Done** (2026-09-25) | `arm_kinematics` (new) |
 | M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
-| M3 — Trajectory generation | Next, detailed below | `arm_trajectory` (new, proposed) |
-| M4 — Joy-controller teleop | Sketch | TBD |
+| M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
+| M4 — Joy-controller teleop | Next, detailed below | `arm_teleop` (new, proposed) |
 | M5 — Sim-to-real | Sketch | — |
 | M6 — Camera + calibration | Sketch | TBD |
 | M7 — Target detection/localization | Sketch | TBD |
@@ -66,50 +66,50 @@ Full derivation: [`src/arm_kinematics/docs/inverse_kinematics.md`](src/arm_kinem
 
 ---
 
-## M3 — Trajectory generation (detailed)
+## M3 — Trajectory generation (done, 2026-09-26)
 
-**Goal:** given a start and goal (joint-space configuration, or Cartesian pose to be solved via M2's IK), generate a time-parameterized sequence of joint waypoints connecting them that respects each joint's velocity limit (from the URDF, same source-of-truth convention as M1/M2), for the simulator to execute — no dynamics/torque limits yet, matching M0–M4's sim-only scope.
+Full derivation: [`src/arm_trajectory/docs/trajectory_generation.md`](src/arm_trajectory/docs/trajectory_generation.md).
 
-**Scope:** 5-DOF joint-space, consistent with M0–M2. Point-to-point trajectories only (one start, one goal) — multi-waypoint paths/blending are a plausible later extension, not in this cut.
+**Delivered:** quintic time-scaling (`s(τ)=10τ³−15τ⁴+6τ⁵`, zero velocity+acceleration at both endpoints), with the velocity-limit-derived minimum duration `T_min,i = (15/8)|Δq_i|/v_max,i` (peak of `s'(τ)` at `τ=0.5` equals exactly `15/8`, confirmed by numerically scanning rather than trusting the closed form alone). Joint-space trajectories are exact and fast (no IK). Cartesian-path trajectories interpolate position-lerp + orientation-SLERP, warm-started per-sample IK. Execution via a proper `control_msgs/FollowJointTrajectoryAction` server (`trajectory_executor_node`), not the originally-planned blocking service — changed during planning specifically because M4 needs preemption (a new joystick target arriving mid-motion) and M5 needs a cancellation path for hardware safety; building a custom blocking interface first would've meant redoing it as an action later anyway. New package `arm_trajectory`, confirmed as separate from `arm_kinematics` per your explicit instruction going into the Plan step.
 
-**Package (proposed, confirm in the Plan step):** new repo `arm_trajectory`, consuming `arm_kinematics` (M1/M2) as a dependency rather than extending it — trajectory generation is a distinct architectural layer (adds timing/velocity-profile concerns on top of instantaneous kinematics) even though M2 itself extended M1's package rather than starting a new one. Flagging this as a decision point, not assuming it.
+**Four real findings during implementation, none assumed up front:**
+1. **`{0,0,0,0,0}` is a genuine kinematic singularity** — confirmed via Jacobian SVD (smallest singular value ~1e-33): all four parallel-axis "elbow" joints sit at a limit boundary simultaneously there (fully-extended-arm singularity). Don't seed IK/Cartesian generation from it.
+2. **An interpolated Cartesian path between two exactly-reachable poses is generally NOT itself exactly reachable** — 5 DOF over a 6D task space (M2 finding) means the reachable set is a submanifold, and interpolating between two points on it doesn't stay on it. Diagnostic signature that confirmed this wasn't a bug: every restart from every seed converged to the *same*, path-position-dependent residual. Resolved with you: interior samples are **best-effort** (never fail the call), only the goal must be exactly reachable; peak deviation is reported in the result.
+3. **Restarts must be disabled for interior path samples** — otherwise `Solve()`'s restart logic can silently replace a warm-started result with a discontinuous one from an unrelated elbow configuration, which then blew up the velocity-based duration-rescaling loop into generating an exploding number of samples (a test hung for 15+ minutes before this was caught). Fixed with `max_restarts=0` for interior samples plus a defensive sample-count sanity cap.
+4. **Large Cartesian moves are slow to generate** (iterative duration-rescaling × per-sample IK) — documented as a known limitation, not solved in this milestone; worth revisiting if M4's interactive use needs faster response.
+
+**Validated:** gtest (quintic math cross-checked against finite-differences and a numerically-scanned peak; joint-space synchronized arrival and velocity-limit satisfaction; Cartesian round-trip, velocity-limit satisfaction after rescaling, warm-start continuity, unreachable-goal handling) + headless rostest driving the real simulator through the actionlib interface end to end, including an actual mid-execution preemption test (cancel, confirm playback stops early — not just structurally present). Full suite repeated 3× for flakiness given randomized restarts throughout the stack. Manually confirmed live, twice: once via direct `rosservice`/`actionlib` calls, once via the `manual_trajectory_demo.py` hand-off script (added after the fact — the service response is a full multi-point `JointTrajectory`, impractical to hand-type through `rosservice call` the way M1/M2's simpler responses were).
+
+**Known limitation carried forward:** Finding 4 above (large-Cartesian-move generation speed) — no fix attempted, flagged for reconsideration if M4 needs it.
+
+---
+
+## M4 — Joy-controller teleop (detailed)
+
+**Goal:** drive the arm interactively via a joystick in simulation — the joystick moves a target (Cartesian pose, most naturally), and the arm continuously (re)plans and follows it, preempting an in-flight motion whenever a new target arrives. This is the intended consumer of M3's preemption support, not a new mechanism of its own.
+
+**Scope:** simulation only (`arm_sim_validator_node`), per the roadmap; hardware teleop is M5's concern under the hardware safety rules. 5-DOF Cartesian jogging; joint_6/gripper toggled independently (a direct, non-kinematic command, consistent with every earlier milestone's treatment of it).
+
+**Package (proposed):** new repo `arm_teleop`, depending on `arm_trajectory` (its `/generate_trajectory` service and `follow_joint_trajectory` action client) — a clear-cut case for the "new capability → new package" convention (an interactive control loop is a different kind of thing from trajectory math), unlike M3's more ambiguous case.
 
 **Approach:**
-- **Joint-space profile: quintic (5th-order) time-scaling**, the standard smooth point-to-point profile (zero velocity *and* acceleration at both endpoints, avoiding the velocity discontinuities of a naive linear/trapezoidal profile at the start/end). For normalized time `τ = t/T ∈ [0,1]`:
-  ```
-  s(τ)  = 10τ³ − 15τ⁴ + 6τ⁵                    (s(0)=0, s(1)=1)
-  s'(τ) = 30τ² − 60τ³ + 30τ⁴
-  q(t) = q₀ + (q_goal − q₀)·s(t/T)
-  ```
-  Boundary conditions `s(0)=s'(0)=s''(0)=0` and `s(1)=1, s'(1)=s''(1)=0` hold by construction (standard quintic time-scaling, e.g. Siciliano *Robotics* ch. 4).
-
-- **Velocity-limit-driven duration, derived (not assumed):** `s'(τ)` is maximized at `τ=0.5`: `s'(0.5) = 30(0.25) − 60(0.125) + 30(0.0625) = 7.5 − 7.5 + 1.875 = 15/8`. Since `q̇(t) = Δq · s'(t/T) / T`, peak joint velocity is `|Δq|·(15/8)/T`. Setting that equal to the joint's velocity limit `v_max` (from `ForwardKinematicsSolver::GetActuatedJointLimits()`'s URDF-source sibling — velocity limits need their own small accessor, same pattern) gives the **minimum feasible duration for that joint**:
-  ```
-  T_min,i = (15/8) · |Δq_i| / v_max,i
-  ```
-  Take `T = max_i(T_min,i)` and use the *same* `T` for every joint (synchronized arrival — standard point-to-point convention, avoids joints finishing at different times and needing independent replanning).
-
-- **Cartesian-space trajectories**: interpolate the *pose* (position linearly, orientation via SLERP) between start and goal, sample at a fixed rate, and solve M2's IK at each sample — **warm-started from the previous sample's joint solution**, not from scratch each time. This isn't optional polish: since the arm is redundant (M2's finding), independent from-scratch IK at each waypoint could land in a *different* solution basin sample-to-sample, producing a trajectory that jumps between elbow configurations instead of moving smoothly. Warm-starting is what keeps consecutive samples in the same basin.
-- **Reachability is checked before returning a trajectory, not discovered mid-execution**: every sampled waypoint (Cartesian mode) or just the endpoints (joint-space mode, trivially always "reachable" since both ends are joint configurations already) is validated; if any IK solve fails to converge, the whole trajectory request fails with a clear report of which waypoint and why, rather than executing a partial/broken path.
+- Subscribe to `sensor_msgs/Joy` (standard `joy` package output; a real joystick device is needed to *use* this, but automated tests substitute a synthetic publisher — see Tests).
+- Maintain an internal target pose, updated incrementally from joystick axes at a fixed, throttled rate (e.g. 10 Hz, not raw joystick rate ~50-100 Hz): `target_{k+1} = target_k + gain · axis · dt`, clamped to a sane jogging speed. Simple integration, not a new control law — no derivation needed beyond what M1-M3 already built.
+- On each update tick where the target actually changed: call `/generate_trajectory` (joint-space goal, i.e. `cartesian_path=false` — solve IK once for the new target, then a plain joint-space move to it; a full traced Cartesian path per tick isn't needed for jogging responsiveness, and avoids Finding 4's slow-path cost on every tick) and send the result to `follow_joint_trajectory`, which **preempts** whatever was already executing — exactly the mechanism M3 built and tested in isolation, now exercised by a real caller.
+- A button (or axis) drives `joint_6` (gripper) directly — bypasses the kinematics/trajectory stack entirely, consistent with it never being part of the pose chain since M0.
 
 **Tests:**
-- gtest: quintic time-scaling boundary conditions (`s(0)=0, s(1)=1, s'(0)=s'(1)=0`) and the derived `T_min` formula, checked against a numerical velocity peak (differentiate `s(τ)` numerically, confirm the peak matches `15/8` and occurs at `τ=0.5`) — same independent-cross-check pattern as M1/M2's Jacobian test.
-- gtest: synchronized arrival — for a multi-joint goal, every joint reaches its target at exactly `T`, no joint's velocity exceeds its limit at any sampled `t`.
-- gtest: Cartesian trajectory warm-starting — construct a case where independent per-waypoint IK (no warm-start) would plausibly jump basins (e.g. near a redundancy-heavy region) and confirm the warm-started version doesn't.
-- Integration/rostest: command a trajectory through the real simulator, confirm `/joint_states_in` tracks the generated profile within tolerance throughout, not just at the endpoint.
+- Unit test: the joystick-axis-to-target-pose-increment mapping as a pure function (Joy msg + previous target + dt → new target) — no ROS/ hardware needed.
+- Integration/rostest: publish synthetic `sensor_msgs/Joy` messages (no real joystick required) simulating a stick push, confirm the target updates and the sim tracks it; then publish a *second* synthetic input while the first motion is still executing and confirm the resulting action goal actually preempts the first (validating M3's preemption is exercised by a real consumer, not just its own isolated test).
 
 **Done when:**
-- Joint-space and Cartesian-space trajectory generation implemented and unit tested.
-- Velocity limits provably respected (tested, not assumed) for every joint, every sampled time.
-- Unreachable/infeasible requests reported before execution, not silently truncated.
+- Joystick input drives the simulated arm's end-effector target smoothly, jogging speed bounded.
+- A new joystick input while a motion is executing correctly preempts it (tested, not assumed).
+- Gripper (joint_6) toggles independently of the pose-tracking loop.
 - No changes to `arm_interface`/`DynamixelSDK`.
-- Hand-off test script given, same pattern as M1/M2.
+- Hand-off test script given, same pattern as M1–M3 (a synthetic-Joy-publisher script, likely, given no real joystick hardware is assumed available for the reviewer either).
 
-The formal **Plan** step (file list, exact interface shape, package decision, wait for approval before implementing) happens when M3 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
-
-## M4 — Joy-controller teleop (sketch)
-
-User commands via a joy-compatible controller: manage trajectory targets, drive the arm (sim first). Package TBD.
+The formal **Plan** step (file list, exact interface shape, wait for approval before implementing) happens when M4 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
 
 ## M5 — Sim-to-real (sketch)
 
