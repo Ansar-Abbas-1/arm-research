@@ -182,10 +182,12 @@ target_link_libraries(replay_bag ${catkin_LIBRARIES})
 
 ## Mark executable scripts (Python etc.) for installation
 ## in contrast to setup.py, you can choose the destination
-catkin_install_python(PROGRAMS
-  scripts/arm_gazebo_bridge_node.py
-  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
-)
+## Commented out: scripts/arm_gazebo_bridge_node.py does not exist in this
+## package, which fails catkin's CMake configure step entirely (M0 finding).
+# catkin_install_python(PROGRAMS
+#   scripts/arm_gazebo_bridge_node.py
+#   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+# )
 
 ## Mark executables for installation
 ## See http://docs.ros.org/melodic/api/catkin/html/howto/format1/building_executables.html
