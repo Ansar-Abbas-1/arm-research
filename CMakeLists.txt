@@ -9,8 +9,11 @@ find_package(catkin REQUIRED COMPONENTS
   tf2
   tf2_ros
   tf2_eigen
+  roslaunch
 )
 find_package(Eigen3 REQUIRED)
+
+roslaunch_add_file_check(launch)
 
 catkin_package(
   INCLUDE_DIRS include

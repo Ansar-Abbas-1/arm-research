@@ -18,8 +18,16 @@
   <depend>tf2_ros</depend>
   <depend>tf2_eigen</depend>
 
+  <!-- fk_visualize.launch drives the sim + shows results in rviz;
+       arm_interface is also needed at test time for its urdf/arm.urdf
+       and arm_sim_validator_node. -->
+  <exec_depend>arm_interface</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joint_state_publisher_gui</exec_depend>
+  <exec_depend>rviz</exec_depend>
+
   <test_depend>rostest</test_depend>
   <test_depend>rospy</test_depend>
   <test_depend>roslib</test_depend>
-  <test_depend>arm_interface</test_depend>
 </package>
