@@ -64,12 +64,14 @@ Full derivation: [`src/arm_kinematics/docs/forward_kinematics.md`](src/arm_kinem
   J = [J_v; J_ω] ∈ R^(6×5)
   ```
   `z_i`/`p_i` come from the same accumulated transform chain `ForwardKinematicsSolver` already builds — extending it (or adding a sibling class) to expose per-joint intermediate transforms, not just the final pose, is the natural implementation path.
-- **Damped least squares (Levenberg-Marquardt-style) iteration** from a seed configuration (default: current `/joint_states_in`, overridable):
+- **Damped least squares (Levenberg-Marquardt) iteration**, adaptive damping, from a seed configuration (default: current `/joint_states_in`, overridable):
   ```
-  Δq = J^T (J·J^T + λ²I)^-1 · W · e
-  q_{k+1} = clamp(q_k + α·Δq, joint_limits)
+  Δq = (J^T W J + λ²I)^-1 · J^T W · e
+  q_{k+1} = clamp(q_k + Δq, joint_limits)
   ```
-  where `e` is the weighted [position; orientation] error and `λ` provides numerical stability near singularities (e.g. joint_3/joint_4/joint_5 axes aligning). Iterate until `|e| < tolerance` (success) or max iterations exceeded (report unreachable, return best-effort configuration + residual, never silently wrong).
+  **Correction to an earlier draft of this section:** task space here is 6D over 5 joints (overdetermined — `J` has more rows than columns), so this needs the *left* pseudo-inverse/normal-equations form above, not the right-pseudo-inverse redundant-manipulator form a first draft had. `e` is the weighted [position; orientation] error; `λ` is adaptive (increases on a rejected/non-improving step, decreases on an accepted one — a fixed `λ` converged only 40% of the time on a benchmark, see below).
+  
+  **Also needed in practice, not originally anticipated here:** random-seeded restarts on non-convergence. This chain is redundant (1 yaw + 4 parallel-axis "elbow" joints), so distinct solution basins genuinely exist, and adaptive damping alone still converged only ~35% on a 20-random-target benchmark — restarts fixed it to 100%, typically within 0-2. Full writeup: [`src/arm_kinematics/docs/inverse_kinematics.md`](src/arm_kinematics/docs/inverse_kinematics.md).
 
 **Tests:**
 - gtest: **analytical Jacobian validated against a numerical (finite-difference) Jacobian of M1's FK** at several configurations — cheap, independent cross-check that costs nothing since M1's FK already exists, catches analytical-derivation mistakes directly (sign/axis errors) without needing hand computation.
