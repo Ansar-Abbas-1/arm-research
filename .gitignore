@@ -1,0 +1,15 @@
+# This is a multi-repo catkin workspace, not a monorepo: each package under
+# src/ is its own independently-versioned git repo (arm_interface, and
+# future milestone packages). This top-level repo only tracks cross-cutting
+# project docs (ROADMAP.md, etc.) — it does not track package contents.
+src/*/
+
+# catkin build artifacts (including catkin_make's generated toplevel symlink
+# and workspace marker)
+build/
+devel/
+install/
+.catkin_workspace
+/src/CMakeLists.txt
+
+*.swp
