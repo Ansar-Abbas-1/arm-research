@@ -8,7 +8,6 @@ debug: false
 debug_error: false
 threshold: 10.0
 start_writing_: false
-command_timeout: 0.2
 
 addr_torque_enable: 64
 torque_enable: 1
