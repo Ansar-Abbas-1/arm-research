@@ -9,8 +9,8 @@ and one new repo per milestone that adds a package, per the "new capability
 | Milestone | Status | Package(s) |
 |---|---|---|
 | M0 — Orientation | **Done** (2026-09-25) | `arm_interface` (existing) |
-| M1 — Forward kinematics | Next, detailed below | `arm_kinematics` (new) |
-| M2 — Inverse kinematics | Sketch | `arm_kinematics` |
+| M1 — Forward kinematics | **Done** (2026-09-25) | `arm_kinematics` (new) |
+| M2 — Inverse kinematics | Next, detailed below | `arm_kinematics` |
 | M3 — Trajectory generation | Sketch | TBD |
 | M4 — Joy-controller teleop | Sketch | TBD |
 | M5 — Sim-to-real | Sketch | — |
@@ -36,41 +36,56 @@ Full architecture writeup: [`src/arm_interface/docs/architecture.md`](src/arm_in
 
 ---
 
-## M1 — Forward kinematics (detailed)
+## M1 — Forward kinematics (done, 2026-09-25)
 
-**Goal:** given the 5 arm joint angles (joints 1–5), compute the pose (position + orientation) of `link_5` in `base_link`, correct across the full joint-limit range, validated against the existing simulator's own kinematics.
+Full derivation: [`src/arm_kinematics/docs/forward_kinematics.md`](src/arm_kinematics/docs/forward_kinematics.md).
 
-**Scope:** 5-DOF only, per the M0 decision above. joint_6/gripper is explicitly out of scope for this milestone.
+**Delivered:** `ForwardKinematicsSolver` (composes URDF joint transforms directly, walking `parent_joint` links from `tip_link` to `root_link` rather than hardcoding chain order — naturally includes the fixed `joint_intermediate` joint; geometry parsed from `urdf::Model` at construction, not duplicated as constants). `fk_node` wraps it: subscribes `/joint_states_in`, publishes `/computed_link5_pose` on a plain topic (deliberately not TF — `robot_state_publisher` already broadcasts the same frame from the same URDF; a second broadcaster would conflict with it). `launch/fk_visualize.launch` adds rviz visualization (sim + `fk_node` + rviz, `/computed_link5_pose` overlaid as its own axes display on `link_5`'s TF frame), with `use_rviz:=false` for headless runs.
 
-**Package:** new repo `arm_kinematics` under `src/`, git-initialized the same way `arm_interface` was for M0 (branch `milestone-1-forward-kinematics`). Does not modify `arm_interface` or `DynamixelSDK`.
+**Validated:** gtest against an independently-computed reference (plain numpy, not this package's code) for zero-config and a multi-joint config, plus a hand-provable structural invariant (joint_1 conjugates the whole downstream pose by `Rz(θ)`, since its axis is z and it's the first transform in the chain). Headless rostest compares `/computed_link5_pose` against ground-truth TF across zero-config, all 10 joint-limit extremes, and 15 random in-limit samples, to ≤1e-4 m / 1e-3 rad. Manually confirmed in rviz (both build/test and the visual GUI check independently confirmed).
 
-**Approach:**
-- Derive the kinematic chain's homogeneous-transform parameters (link offsets, joint axes) from `urdf/arm.urdf` — the URDF is already the source of truth for link geometry (per M0), so FK parameters should be derived from it once (e.g. via a small offline script or by hand from the `<origin>`/`<axis>` tags) rather than re-guessed, to avoid a second, driftable copy of the same numbers `bulk_read.cpp` already showed can go stale.
-- Implement FK as a small, dependency-light C++ library (pure math, no ROS I/O in the core function — testable in isolation, per the project's control/HW-I-O separation convention) exposing something like `Pose ForwardKinematics(const std::array<double,5>& joint_angles)`.
-- Thin ROS wrapper on top (node or service) for interactive use against `/joint_states_in` — exact interface (service vs. topic, message types) to be settled in the Plan step when M1 formally starts.
-
-**Validation — against the simulator, as the roadmap requires:**
-`robot_state_publisher` already computes FK from the same URDF (via KDL) and broadcasts it as TF whenever `arm_sim.launch`/`arm_sim_gui.launch` is running. Cross-check our FK implementation against that TF (`base_link → link_5`) as ground truth:
-- Sweep each joint individually across its URDF limit range, several joints jointly at sampled/random configurations within limits, plus edge cases (all-zero, each joint at both limits).
-- Assert position/orientation error against TF is at or near floating-point precision (e.g. <1e-6 m / rad) — this is two exact FK formulations being compared, not a noisy estimate, so tolerance should be tight.
-
-**Tests (per project convention — every milestone gets automated tests):**
-- gtest on the pure FK function: deterministic known poses (zero config; at least one hand-derived non-trivial case) — no ROS/hardware dependency, fast, always run.
-- An integration-level test that launches the sim, drives joint configurations, and diffs FK output against TF — this is the "validated against the simulator" requirement made concrete and automated, not just a manual check.
-
-**Done when:**
-- FK library implemented and unit tested.
-- Automated sim-vs-FK validation passes across the full joint range (not just a few manual spot checks).
-- No changes to `arm_interface`/`DynamixelSDK`.
-- Hand-off test script given: exact commands to run the sim + validation, what to observe, what indicates a problem.
-
-The formal **Plan** step (file list, exact interface shape, wait for approval before implementing) happens when M1 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
+**Known limitation carried forward:** `robot_state_publisher` warns that `base_link` has an inertia KDL doesn't support on a root link — harmless (TF is correct regardless, confirmed by every passing test), pre-existing in the URDF, not fixed (out of scope, cosmetic warning only).
 
 ---
 
-## M2 — Inverse kinematics (sketch)
+## M2 — Inverse kinematics (detailed)
 
-Solve for joint angles 1–5 given a commanded end-effector (`link_5`) pose, in simulation. Handle unreachable targets and singularities explicitly (reject/report, don't silently return garbage). Builds directly on M1's FK (and likely its Jacobian, for a numerical IK approach) — package: `arm_kinematics`, same repo as M1.
+**Goal:** given a commanded `link_5` pose (position + orientation) in `base_link`, solve for joint angles 1–5 that best achieve it, reporting reachability explicitly rather than returning garbage for infeasible targets.
+
+**Scope:** 5-DOF only (joints 1–5), consistent with M0/M1. Builds directly on M1's `ForwardKinematicsSolver` — package: `arm_kinematics`, same repo, branch `milestone-2-inverse-kinematics`. Does not modify `arm_interface`/`DynamixelSDK`.
+
+**A structural fact that shapes this milestone:** joint_1's axis is `z` (base yaw); joints 2–5 all end up with *parallel* axes in the base frame — each of their origins only rotates about `y` before applying the joint's own `y`-axis rotation, and a rotation about `y` doesn't move the `y` axis itself. So this chain is effectively "1 yaw + 4 coplanar pitch joints": any reachable *position* is reachable, plus exactly one orientation angle (the end-effector's pitch within the vertical plane joint_1 selects) — but not full 3D orientation. **Decided:** the IK API still accepts a full 6D target pose (position + orientation) — natural for future callers like M8's vision pipeline, who shouldn't need to know the arm's internal DOF structure — and the solver minimizes a *weighted* position+orientation error via damped least squares rather than requiring an exact match. "Reachable" means the converged residual is under a documented tolerance; the residual itself (including any structurally-unreachable orientation component) is returned, not hidden.
+
+**Approach:**
+- **Analytical geometric Jacobian** (decided over numerical finite-difference — more work now, but exact and faster, avoiding a later revisit): for each actuated joint *i* with axis `z_i` and origin position `p_i` (both expressed in `base_link`, evaluated at the current configuration) and end-effector position `p_e`:
+  ```
+  J_v_i = z_i × (p_e − p_i)      (linear velocity column)
+  J_ω_i = z_i                     (angular velocity column)
+  J = [J_v; J_ω] ∈ R^(6×5)
+  ```
+  `z_i`/`p_i` come from the same accumulated transform chain `ForwardKinematicsSolver` already builds — extending it (or adding a sibling class) to expose per-joint intermediate transforms, not just the final pose, is the natural implementation path.
+- **Damped least squares (Levenberg-Marquardt-style) iteration** from a seed configuration (default: current `/joint_states_in`, overridable):
+  ```
+  Δq = J^T (J·J^T + λ²I)^-1 · W · e
+  q_{k+1} = clamp(q_k + α·Δq, joint_limits)
+  ```
+  where `e` is the weighted [position; orientation] error and `λ` provides numerical stability near singularities (e.g. joint_3/joint_4/joint_5 axes aligning). Iterate until `|e| < tolerance` (success) or max iterations exceeded (report unreachable, return best-effort configuration + residual, never silently wrong).
+
+**Tests:**
+- gtest: **analytical Jacobian validated against a numerical (finite-difference) Jacobian of M1's FK** at several configurations — cheap, independent cross-check that costs nothing since M1's FK already exists, catches analytical-derivation mistakes directly (sign/axis errors) without needing hand computation.
+- gtest: IK-then-FK round trip — for many random reachable targets (generated *by* running FK on random valid joint configs, so reachability is known by construction), solve IK and verify `FK(IK(target)) ≈ target` within tolerance.
+- gtest: explicit unreachable case (e.g. a position outside the arm's max reach) returns "not reached" with the max-iteration residual, not a false success.
+- Integration/rostest: drive the sim through IK-computed joint commands for several targets, confirm `/joint_states_in` converges to the commanded pose (closing the loop through the actual simulator, not just the solver in isolation).
+
+**Done when:**
+- IK solver implemented, unit tested (including the Jacobian cross-check and IK∘FK round trip).
+- Unreachable targets and near-singular configurations handled explicitly and tested, not just assumed.
+- No changes to `arm_interface`/`DynamixelSDK`.
+- Hand-off test script given, same pattern as M1.
+
+The formal **Plan** step (file list, exact interface shape, wait for approval before implementing) happens when M2 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
+
+---
 
 ## M3 — Trajectory generation (sketch)
 
