@@ -96,9 +96,29 @@ The original implementation solved position-IK to a slightly-offset target every
 
 Because `joint_6` is fixed, it has no real URDF `<limit>` to derive a range or rate from — `gripper_min`/`gripper_max`/`gripper_rate` are heuristic ROS-param defaults (`[-1.0, 1.0]` rad-equivalent, `0.5`/s), flagged for recalibration once real gripper hardware/limits are known (M5).
 
-## No real joystick hardware yet
+## Real joystick hardware: PS5 DualSense
 
-No `/dev/input/js*` device and no `ros-noetic-joy` in the container at the time of this milestone — confirmed, not assumed. Deferred rather than wiring up now (would need a docker-config change plus a physical gamepad); `scripts/manual_teleop_check.py` substitutes a keyboard-driven synthetic `/joy` publisher for both manual and automated (rostest) testing. Real-hardware wiring is a documented follow-up, likely alongside M5 (sim-to-real).
+No `/dev/input/js*` device and no `ros-noetic-joy` were present in the container at the start of this milestone; `scripts/manual_teleop_check.py`'s keyboard-driven synthetic `/joy` covers manual and automated (rostest) testing regardless of whether real hardware is attached. Both gaps turned out to be non-issues once a controller was actually plugged in: this container runs `--privileged`, so `/dev/input/js0` was already visible with no docker-config change needed, and `ros-noetic-joy` was already installed in the image.
+
+**PS5 DualSense mapping** (confirmed empirically via `rostopic echo /joy` while physically exercising every control — not assumed from any published reference, since these can vary by kernel/driver version):
+
+| Axis | Control | Rest → full deflection |
+|---|---|---|
+| 0/1 | Left stick X/Y | 0 → ±1.0 |
+| 2 | L2 analog | **+1.0 → −1.0** (not 0-at-rest) |
+| 3/4 | Right stick X/Y | 0 → ±1.0 |
+| 5 | R2 analog | +1.0 → −1.0 |
+| 6/7 | D-pad X/Y | 0 → ±1.0 |
+
+| Button | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| Control | ✕ | ○ | △ | □ | L1 | R1 | L2 click | R2 click | Share | Options | PS (untested) | L3 | R3 |
+
+Note △/□ landed on indices 2/3, not the commonly-assumed 3/2 — confirmed by watching the actual topic, not guessed, which is exactly why this was worth checking rather than assuming.
+
+Conveniently, `teleop_node`'s existing defaults (`axis_x=1, axis_y=0, axis_z=4, axis_pitch=3, deadman_button=4, gripper_open_button=1, gripper_close_button=0`) already match this controller — left stick jogs X/Y, right stick jogs Z/pitch, L1 is the deadman, ○/✕ are gripper open/close. Only `mode_toggle_button`/`commit_button` (originally chosen to match the keyboard script's own bindings, 6/7) need overriding, to 8 (Share) and 9 (Options). `launch/teleop_visualize.launch`'s `use_joystick`/`joystick_dev`/`mode_toggle_button`/`commit_button` args wire this up; see the launch file's own header comment for the exact command.
+
+Real-hardware jogging itself (does it feel right, does the null-space bias behave sensibly with a human in the loop) is left to manual verification — not something a rostest can meaningfully assert on.
 
 ## Testing
 

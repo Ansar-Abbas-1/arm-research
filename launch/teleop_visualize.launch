@@ -5,14 +5,33 @@
        robot_state_publisher + RobotModel display for the SET_REFERENCE
        "ghost" preview (/ghost_joint_states -> a link-renamed copy of the
        same URDF, sharing base_link as its root with the real robot so
-       both render in the same TF tree, see docs/teleop.md). No real
-       joystick assumed: run scripts/manual_teleop_check.py separately to
-       drive this. -->
+       both render in the same TF tree, see docs/teleop.md).
+
+       By default drives from scripts/manual_teleop_check.py's keyboard-
+       driven synthetic /joy (no real joystick assumed). Pass
+       use_joystick:=true to instead launch joy_node against a real
+       controller.
+
+       For a PS5 DualSense specifically, its axes/buttons were confirmed
+       empirically (not assumed, see docs/teleop.md), and happen to
+       match teleop_node's own defaults for everything except mode-toggle/
+       commit: L1 (button 4) is the deadman, left stick is X/Y, right
+       stick is Z/pitch, Cross/Circle are gripper close/open, all
+       already correct out of the box. Only these two need overriding:
+         roslaunch arm_teleop teleop_visualize.launch use_joystick:=true \
+           mode_toggle_button:=8 commit_button:=9
+       (8=Share/Create, 9=Options on this controller, vs. this launch
+       file's defaults of 6/7, which match manual_teleop_check.py's own
+       keyboard bindings instead.) -->
 
   <arg name="use_rviz" default="true"/>
   <!-- use_rviz:=false lets this run without a display, e.g. for automated
        checks: rviz needs one and none is available in an automated/CI
        context (confirmed the hard way in M0). -->
+  <arg name="use_joystick" default="false"/>
+  <arg name="joystick_dev" default="/dev/input/js0"/>
+  <arg name="mode_toggle_button" default="6"/>
+  <arg name="commit_button" default="7"/>
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
@@ -49,7 +68,17 @@
   <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
   <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
   <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
-  <node name="teleop_node" pkg="arm_teleop" type="teleop_node" output="screen" />
+
+  <group if="$(arg use_joystick)">
+    <node name="joy_node" pkg="joy" type="joy_node">
+      <param name="dev" value="$(arg joystick_dev)"/>
+    </node>
+  </group>
+
+  <node name="teleop_node" pkg="arm_teleop" type="teleop_node" output="screen">
+    <param name="mode_toggle_button" type="int" value="$(arg mode_toggle_button)"/>
+    <param name="commit_button" type="int" value="$(arg commit_button)"/>
+  </node>
 
   <group if="$(arg use_rviz)">
     <node name="rviz" pkg="rviz" type="rviz"
