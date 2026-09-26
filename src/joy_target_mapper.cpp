@@ -7,8 +7,9 @@ namespace arm_teleop {
 namespace {
 
 // Bounds-checked accessors: a Joy message from a controller with fewer
-// axes/buttons than the configured index shouldn't crash the mapper, just
-// treat the missing input as inactive.
+// axes/buttons than the configured index (or an empty "previous message"
+// placeholder before the first one ever arrives) shouldn't crash the
+// mapper, just treat the missing input as inactive.
 double Axis(const sensor_msgs::Joy& joy, int index) {
   if (index < 0 || static_cast<size_t>(index) >= joy.axes.size()) {
     return 0.0;
@@ -29,33 +30,37 @@ double ApplyDeadzone(double value, double deadzone) {
 
 }  // namespace
 
-JoyTargetUpdate ComputeJoyTargetUpdate(const sensor_msgs::Joy& joy, const JoyMapperParams& params,
-                                       double dt) {
-  JoyTargetUpdate update;
+JoyCommand ComputeJoyCommand(const sensor_msgs::Joy& joy, const sensor_msgs::Joy& prev_joy,
+                              const JoyMapperParams& params) {
+  JoyCommand cmd;
 
-  if (!Button(joy, params.deadman_button)) {
-    return update;  // deadman not held: no motion, no gripper change
+  cmd.deadman_held = Button(joy, params.deadman_button);
+  if (!cmd.deadman_held) {
+    return cmd;  // deadman not held: no motion, no gripper change, no mode/commit edge
   }
 
-  double ax = ApplyDeadzone(Axis(joy, params.axis_x), params.axis_deadzone);
-  double ay = ApplyDeadzone(Axis(joy, params.axis_y), params.axis_deadzone);
-  double az = ApplyDeadzone(Axis(joy, params.axis_z), params.axis_deadzone);
-
-  if (ax != 0.0 || ay != 0.0 || az != 0.0) {
-    update.moving = true;
-    update.dx = ax * params.linear_gain * dt;
-    update.dy = ay * params.linear_gain * dt;
-    update.dz = az * params.linear_gain * dt;
-  }
+  cmd.vx = ApplyDeadzone(Axis(joy, params.axis_x), params.axis_deadzone) * params.linear_gain;
+  cmd.vy = ApplyDeadzone(Axis(joy, params.axis_y), params.axis_deadzone) * params.linear_gain;
+  cmd.vz = ApplyDeadzone(Axis(joy, params.axis_z), params.axis_deadzone) * params.linear_gain;
+  cmd.pitch_rate =
+      ApplyDeadzone(Axis(joy, params.axis_pitch), params.axis_deadzone) * params.pitch_gain;
 
   bool open_held = Button(joy, params.gripper_open_button);
   bool close_held = Button(joy, params.gripper_close_button);
   if (open_held != close_held) {  // exactly one: both-held is treated as no change
-    update.gripper_changed = true;
-    update.gripper_delta = (open_held ? 1.0 : -1.0) * params.gripper_rate * dt;
+    cmd.gripper_active = true;
+    cmd.gripper_rate = (open_held ? 1.0 : -1.0) * params.gripper_rate;
   }
 
-  return update;
+  bool mode_toggle_now = Button(joy, params.mode_toggle_button);
+  bool mode_toggle_prev = Button(prev_joy, params.mode_toggle_button);
+  cmd.mode_toggled = mode_toggle_now && !mode_toggle_prev;
+
+  bool commit_now = Button(joy, params.commit_button);
+  bool commit_prev = Button(prev_joy, params.commit_button);
+  cmd.commit_pressed = commit_now && !commit_prev;
+
+  return cmd;
 }
 
 }  // namespace arm_teleop

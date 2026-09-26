@@ -1,13 +1,13 @@
-// Unit tests for the pure joystick-to-target-delta mapping -- no ROS node,
-// no running master needed (sensor_msgs::Joy is a plain message struct).
+// Unit tests for the pure joystick-to-command mapping -- no ROS node, no
+// running master needed (sensor_msgs::Joy is a plain message struct).
 
 #include <gtest/gtest.h>
 
 #include "arm_teleop/joy_target_mapper.h"
 
-using arm_teleop::ComputeJoyTargetUpdate;
+using arm_teleop::ComputeJoyCommand;
+using arm_teleop::JoyCommand;
 using arm_teleop::JoyMapperParams;
-using arm_teleop::JoyTargetUpdate;
 
 namespace {
 
@@ -22,84 +22,132 @@ constexpr double kTol = 1e-9;
 
 }  // namespace
 
-TEST(JoyTargetMapper, DeadmanNotHeldSuppressesEverything) {
+TEST(JoyTargetMapper, DeadmanNotHeldSuppressesEverythingIncludingEdges) {
   JoyMapperParams params;
+  sensor_msgs::Joy prev = MakeJoy(8, 8);
   sensor_msgs::Joy joy = MakeJoy(8, 8);
   joy.axes[params.axis_x] = 1.0f;
   joy.buttons[params.gripper_open_button] = 1;
+  joy.buttons[params.mode_toggle_button] = 1;  // a rising edge, but deadman is unpressed
   // deadman_button left unpressed
 
-  JoyTargetUpdate update = ComputeJoyTargetUpdate(joy, params, 0.1);
-  EXPECT_FALSE(update.moving);
-  EXPECT_FALSE(update.gripper_changed);
-  EXPECT_NEAR(update.dx, 0.0, kTol);
-  EXPECT_NEAR(update.gripper_delta, 0.0, kTol);
+  JoyCommand cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_FALSE(cmd.deadman_held);
+  EXPECT_NEAR(cmd.vx, 0.0, kTol);
+  EXPECT_FALSE(cmd.gripper_active);
+  EXPECT_FALSE(cmd.mode_toggled);
+  EXPECT_FALSE(cmd.commit_pressed);
 }
 
-TEST(JoyTargetMapper, FullStickDeflectionScalesWithGainAndDt) {
+TEST(JoyTargetMapper, FullStickDeflectionScalesWithGainOnly) {
   JoyMapperParams params;
   params.linear_gain = 0.2;
+  params.pitch_gain = 0.4;
+  sensor_msgs::Joy prev = MakeJoy(8, 8);
   sensor_msgs::Joy joy = MakeJoy(8, 8);
   joy.buttons[params.deadman_button] = 1;
   joy.axes[params.axis_x] = 1.0f;
   joy.axes[params.axis_y] = -1.0f;
+  joy.axes[params.axis_pitch] = 0.5f;
 
-  JoyTargetUpdate update = ComputeJoyTargetUpdate(joy, params, 0.5);
-  EXPECT_TRUE(update.moving);
-  EXPECT_NEAR(update.dx, 0.2 * 1.0 * 0.5, kTol);
-  EXPECT_NEAR(update.dy, 0.2 * -1.0 * 0.5, kTol);
-  EXPECT_NEAR(update.dz, 0.0, kTol);
+  JoyCommand cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_TRUE(cmd.deadman_held);
+  EXPECT_NEAR(cmd.vx, 0.2 * 1.0, kTol);
+  EXPECT_NEAR(cmd.vy, 0.2 * -1.0, kTol);
+  EXPECT_NEAR(cmd.vz, 0.0, kTol);
+  EXPECT_NEAR(cmd.pitch_rate, 0.4 * 0.5, kTol);
 }
 
 TEST(JoyTargetMapper, DeadzoneSuppressesSmallNoise) {
   JoyMapperParams params;
   params.axis_deadzone = 0.1;
+  sensor_msgs::Joy prev = MakeJoy(8, 8);
   sensor_msgs::Joy joy = MakeJoy(8, 8);
   joy.buttons[params.deadman_button] = 1;
   joy.axes[params.axis_x] = 0.05f;  // below deadzone
 
-  JoyTargetUpdate update = ComputeJoyTargetUpdate(joy, params, 0.1);
-  EXPECT_FALSE(update.moving);
-  EXPECT_NEAR(update.dx, 0.0, kTol);
+  JoyCommand cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_NEAR(cmd.vx, 0.0, kTol);
 }
 
 TEST(JoyTargetMapper, GripperOpenAndCloseAreOpposite) {
   JoyMapperParams params;
   params.gripper_rate = 0.4;
+  sensor_msgs::Joy prev = MakeJoy(8, 8);
   sensor_msgs::Joy joy = MakeJoy(8, 8);
   joy.buttons[params.deadman_button] = 1;
   joy.buttons[params.gripper_open_button] = 1;
 
-  JoyTargetUpdate open_update = ComputeJoyTargetUpdate(joy, params, 0.25);
-  EXPECT_TRUE(open_update.gripper_changed);
-  EXPECT_NEAR(open_update.gripper_delta, 0.4 * 0.25, kTol);
+  JoyCommand open_cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_TRUE(open_cmd.gripper_active);
+  EXPECT_NEAR(open_cmd.gripper_rate, 0.4, kTol);
 
   joy.buttons[params.gripper_open_button] = 0;
   joy.buttons[params.gripper_close_button] = 1;
-  JoyTargetUpdate close_update = ComputeJoyTargetUpdate(joy, params, 0.25);
-  EXPECT_TRUE(close_update.gripper_changed);
-  EXPECT_NEAR(close_update.gripper_delta, -0.4 * 0.25, kTol);
+  JoyCommand close_cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_TRUE(close_cmd.gripper_active);
+  EXPECT_NEAR(close_cmd.gripper_rate, -0.4, kTol);
 }
 
 TEST(JoyTargetMapper, BothGripperButtonsHeldIsTreatedAsNoChange) {
   JoyMapperParams params;
+  sensor_msgs::Joy prev = MakeJoy(8, 8);
   sensor_msgs::Joy joy = MakeJoy(8, 8);
   joy.buttons[params.deadman_button] = 1;
   joy.buttons[params.gripper_open_button] = 1;
   joy.buttons[params.gripper_close_button] = 1;
 
-  JoyTargetUpdate update = ComputeJoyTargetUpdate(joy, params, 0.1);
-  EXPECT_FALSE(update.gripper_changed);
-  EXPECT_NEAR(update.gripper_delta, 0.0, kTol);
+  JoyCommand cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_FALSE(cmd.gripper_active);
+  EXPECT_NEAR(cmd.gripper_rate, 0.0, kTol);
+}
+
+TEST(JoyTargetMapper, ModeToggleFiresOnceOnRisingEdgeNotWhileHeld) {
+  JoyMapperParams params;
+  sensor_msgs::Joy joy = MakeJoy(8, 8);
+  joy.buttons[params.deadman_button] = 1;
+  joy.buttons[params.mode_toggle_button] = 1;
+
+  sensor_msgs::Joy prev_unpressed = MakeJoy(8, 8);
+  prev_unpressed.buttons[params.deadman_button] = 1;
+  EXPECT_TRUE(ComputeJoyCommand(joy, prev_unpressed, params).mode_toggled);
+
+  // Held for a second tick: previous tick's message already shows it
+  // pressed, so this is no longer a rising edge.
+  EXPECT_FALSE(ComputeJoyCommand(joy, joy, params).mode_toggled);
+}
+
+TEST(JoyTargetMapper, CommitFiresOnceOnRisingEdge) {
+  JoyMapperParams params;
+  sensor_msgs::Joy joy = MakeJoy(8, 8);
+  joy.buttons[params.deadman_button] = 1;
+  joy.buttons[params.commit_button] = 1;
+
+  sensor_msgs::Joy prev_unpressed = MakeJoy(8, 8);
+  prev_unpressed.buttons[params.deadman_button] = 1;
+  EXPECT_TRUE(ComputeJoyCommand(joy, prev_unpressed, params).commit_pressed);
+  EXPECT_FALSE(ComputeJoyCommand(joy, joy, params).commit_pressed);
 }
 
 TEST(JoyTargetMapper, ShortJoyMessageTreatedAsInactiveNotOutOfBounds) {
   JoyMapperParams params;  // default indices reference axes/buttons beyond this short message
+  sensor_msgs::Joy prev = MakeJoy(1, 1);
   sensor_msgs::Joy joy = MakeJoy(1, 1);
 
-  JoyTargetUpdate update = ComputeJoyTargetUpdate(joy, params, 0.1);
-  EXPECT_FALSE(update.moving);
-  EXPECT_FALSE(update.gripper_changed);
+  JoyCommand cmd = ComputeJoyCommand(joy, prev, params);
+  EXPECT_FALSE(cmd.deadman_held);
+  EXPECT_FALSE(cmd.mode_toggled);
+}
+
+TEST(JoyTargetMapper, EmptyPreviousMessageTreatedAsNoEdgeYet) {
+  JoyMapperParams params;
+  sensor_msgs::Joy empty_prev;  // no axes/buttons at all -- e.g. before the first /joy message
+  sensor_msgs::Joy joy = MakeJoy(8, 8);
+  joy.buttons[params.deadman_button] = 1;
+  joy.buttons[params.mode_toggle_button] = 1;
+
+  JoyCommand cmd = ComputeJoyCommand(joy, empty_prev, params);
+  EXPECT_TRUE(cmd.mode_toggled);
 }
 
 int main(int argc, char** argv) {

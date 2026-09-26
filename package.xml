@@ -2,7 +2,7 @@
 <package format="2">
   <name>arm_teleop</name>
   <version>0.0.0</version>
-  <description>Joystick teleoperation for the 5-DOF arm: incremental Cartesian jogging via arm_trajectory's generation/execution interfaces, plus independent gripper (joint_6) control.</description>
+  <description>Joystick teleoperation for the 5-DOF arm: resolved-rate end-effector velocity jogging (X/Y/Z + wrist pitch) or a jog-a-reference-then-commit-a-trajectory mode via arm_trajectory, plus independent gripper (joint_6) control.</description>
 
   <maintainer email="riccardo.aliotta.ra@gmail.com">Riccardo Aliotta</maintainer>
   <license>TODO</license>
@@ -13,6 +13,7 @@
   <depend>arm_kinematics</depend>
   <depend>arm_trajectory</depend>
   <depend>urdf</depend>
+  <depend>eigen</depend>
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>control_msgs</depend>
