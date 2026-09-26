@@ -19,6 +19,7 @@
   <depend>control_msgs</depend>
   <depend>actionlib</depend>
   <depend>actionlib_msgs</depend>
+  <depend>visualization_msgs</depend>
 
   <!-- test-time: real arm_interface stack + fk_node (for the test's own
        independent position readout), headless rostest -->

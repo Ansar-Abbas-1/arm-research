@@ -12,8 +12,10 @@
 #include <sensor_msgs/JointState.h>
 #include <tf2_eigen/tf2_eigen.h>
 #include <urdf/model.h>
+#include <visualization_msgs/Marker.h>
 
 #include <arm_kinematics/forward_kinematics.h>
+#include <arm_kinematics/inverse_kinematics.h>
 #include <arm_trajectory/GenerateTrajectory.h>
 
 #include "arm_teleop/joy_target_mapper.h"
@@ -44,6 +46,19 @@ namespace arm_teleop {
 //    -- a ONE-SHOT planned move, not a per-tick stream, so the service's
 //    own default (restart-enabled) IK is fine here: there's no rapid
 //    re-preemption to break continuity.
+//
+// SET_REFERENCE also previews the reference as an arrow marker
+// (/teleop_reference_marker) plus a "ghost" arm (/ghost_joint_states, a
+// full best-effort IK solution warm-started tick to tick -- default
+// IkOptions, restarts enabled: this is a non-critical visual preview, not
+// a controller loop, so occasional restart-induced elbow-configuration
+// jumps or a slower tick are cosmetic, not the correctness/safety problem
+// they were for the per-tick position-IK design this replaced; on a
+// non-converged tick the ghost just keeps its last valid configuration
+// rather than showing something wrong). In DIRECT_JOG the ghost instead
+// mirrors the real arm exactly, so a second RobotModel display pointed at
+// it (see docs/teleop.md) is visually indistinguishable from the real one
+// whenever it isn't actively being used to preview something.
 //
 // Switching modes always cancels any in-flight follow_joint_trajectory
 // goal first, so trajectory_executor_node's publisher and this node's own
@@ -95,6 +110,7 @@ class TeleopNode {
       throw std::runtime_error("teleop_node: failed to load URDF from 'robot_description' param");
     }
     fk_solver_ = std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model, root_link, tip_link);
+    ik_solver_ = std::make_unique<arm_kinematics::InverseKinematicsSolver>(*fk_solver_);
     joint_names_ = fk_solver_->GetActuatedJointNames();
     velocity_limits_ = fk_solver_->GetActuatedJointVelocityLimits();
     joint_limits_ = fk_solver_->GetActuatedJointLimits();
@@ -102,6 +118,8 @@ class TeleopNode {
     joy_sub_ = nh_.subscribe("/joy", 10, &TeleopNode::JoyCb, this);
     joint_sub_ = nh_.subscribe("/joint_states_in", 10, &TeleopNode::JointStatesCb, this);
     joint_out_pub_ = nh_.advertise<sensor_msgs::JointState>("/joint_states_out", 10);
+    ghost_pub_ = nh_.advertise<sensor_msgs::JointState>("/ghost_joint_states", 10);
+    marker_pub_ = nh_.advertise<visualization_msgs::Marker>("/teleop_reference_marker", 1);
     generate_client_ = nh_.serviceClient<arm_trajectory::GenerateTrajectory>("/generate_trajectory");
 
     ROS_INFO("teleop_node: waiting for /generate_trajectory and follow_joint_trajectory ...");
@@ -151,6 +169,53 @@ class TeleopNode {
     joint_out_pub_.publish(cmd);
   }
 
+  void PublishGhost() {
+    sensor_msgs::JointState ghost;
+    ghost.header.stamp = ros::Time::now();
+    ghost.name = joint_names_;
+    ghost.name.push_back("joint_6");
+    ghost.position = ghost_joint_positions_;
+    ghost.position.push_back(gripper_position_);
+    ghost_pub_.publish(ghost);
+  }
+
+  void PublishReferenceMarker(int action) {
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = fk_solver_->root_link();
+    marker.header.stamp = ros::Time::now();
+    marker.ns = "teleop_reference";
+    marker.id = 0;
+    marker.type = visualization_msgs::Marker::ARROW;
+    marker.action = action;
+    if (action == visualization_msgs::Marker::ADD) {
+      marker.pose = tf2::toMsg(reference_pose_);
+      marker.scale.x = 0.10;   // arrow length
+      marker.scale.y = 0.015;  // head diameter
+      marker.scale.z = 0.015;  // head length
+      marker.color.r = 1.0;
+      marker.color.g = 0.5;
+      marker.color.b = 0.0;
+      marker.color.a = 0.9;
+    }
+    marker_pub_.publish(marker);
+  }
+
+  // Best-effort full IK preview for the ghost arm: warm-started tick to
+  // tick like DIRECT_JOG's resolved-rate control needs to be, but via
+  // plain Solve() (restarts enabled) rather than a bespoke recovery
+  // scheme -- this is a cosmetic preview, not a safety-relevant control
+  // loop, so an occasional restart-induced jump or a slower tick doesn't
+  // carry the same weight it did for the design this replaced. On a
+  // non-converged tick, ghost_joint_positions_ is left unchanged (the
+  // preview freezes at its last valid configuration rather than showing
+  // something wrong).
+  void UpdateGhostFromReference() {
+    arm_kinematics::IkResult ik = ik_solver_->Solve(reference_pose_, ghost_joint_positions_);
+    if (ik.converged) {
+      ghost_joint_positions_ = ik.joint_positions;
+    }
+  }
+
   void CommitReference() {
     arm_trajectory::GenerateTrajectory srv;
     srv.request.goal_pose = tf2::toMsg(reference_pose_);
@@ -182,6 +247,9 @@ class TeleopNode {
       return;
     }
     std::vector<double> q = ActualJointPositions();
+    if (ghost_joint_positions_.empty()) {
+      ghost_joint_positions_ = q;  // seed before the first-ever PublishGhost() call
+    }
 
     if (!have_joy_ || (ros::Time::now() - last_joy_stamp_).toSec() > joy_timeout_) {
       return;  // no joystick input, or it went stale (disconnected/topic died): stay put
@@ -198,9 +266,11 @@ class TeleopNode {
       if (mode_ == Mode::kDirectJog) {
         mode_ = Mode::kSetReference;
         reference_pose_ = fk_solver_->ComputePose(q);
+        ghost_joint_positions_ = q;
         ROS_INFO("teleop_node: mode -> SET_REFERENCE (seeded from current pose)");
       } else {
         mode_ = Mode::kDirectJog;
+        PublishReferenceMarker(visualization_msgs::Marker::DELETE);
         ROS_INFO("teleop_node: mode -> DIRECT_JOG");
       }
     }
@@ -213,7 +283,14 @@ class TeleopNode {
     }
 
     if (!cmd.deadman_held) {
-      return;  // no arm motion (real or reference) without the deadman, in either mode
+      // No motion without the deadman, in either mode -- but the ghost/
+      // reference preview stays visible, unchanged, rather than freezing
+      // mid-update or vanishing.
+      PublishGhost();
+      if (mode_ == Mode::kSetReference) {
+        PublishReferenceMarker(visualization_msgs::Marker::ADD);
+      }
+      return;
     }
 
     const double dt = 1.0 / rate_hz_;
@@ -237,6 +314,8 @@ class TeleopNode {
             std::min(joint_limits_[i].second, std::max(joint_limits_[i].first, q_next));
       }
       joint_out_pub_.publish(arm_cmd);
+      ghost_joint_positions_ = arm_cmd.position;  // ghost mirrors the real arm: invisible overlap
+      PublishGhost();
     } else {
       reference_pose_.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
       if (cmd.pitch_rate != 0.0) {
@@ -244,6 +323,9 @@ class TeleopNode {
         Eigen::AngleAxisd delta(cmd.pitch_rate * dt, pitch_axis);
         reference_pose_.linear() = (delta.toRotationMatrix() * reference_pose_.rotation()).eval();
       }
+      UpdateGhostFromReference();
+      PublishGhost();
+      PublishReferenceMarker(visualization_msgs::Marker::ADD);
       if (cmd.commit_pressed) {
         CommitReference();
       }
@@ -254,11 +336,14 @@ class TeleopNode {
   ros::Subscriber joy_sub_;
   ros::Subscriber joint_sub_;
   ros::Publisher joint_out_pub_;
+  ros::Publisher ghost_pub_;
+  ros::Publisher marker_pub_;
   ros::ServiceClient generate_client_;
   ActionClient action_client_;
   ros::Timer timer_;
 
   std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> fk_solver_;
+  std::unique_ptr<arm_kinematics::InverseKinematicsSolver> ik_solver_;
   std::vector<std::string> joint_names_;
   std::vector<double> velocity_limits_;
   std::vector<std::pair<double, double>> joint_limits_;
@@ -281,6 +366,7 @@ class TeleopNode {
 
   Mode mode_ = Mode::kDirectJog;
   Eigen::Isometry3d reference_pose_ = Eigen::Isometry3d::Identity();
+  std::vector<double> ghost_joint_positions_;
   double gripper_position_ = 0.0;
   bool pending_action_goal_ = false;  // avoids a benign-but-noisy cancelGoal()-with-nothing-running log
 };

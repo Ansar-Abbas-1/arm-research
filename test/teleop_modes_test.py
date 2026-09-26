@@ -14,6 +14,9 @@ Confirms:
   3. Commit: from SET_REFERENCE, moving the reference away and pressing
      commit actually drives the real arm to (near) the reference pose.
   4. Gripper (joint_6) moves independently of both modes.
+  5. Ghost preview (/ghost_joint_states): mirrors the real arm in
+     DIRECT_JOG, diverges from it in SET_REFERENCE, and the reference
+     marker (/teleop_reference_marker) is deleted on leaving SET_REFERENCE.
 """
 import unittest
 
@@ -21,6 +24,7 @@ import rospy
 import rostest
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Joy, JointState
+from visualization_msgs.msg import Marker
 
 PKG = "arm_teleop"
 
@@ -60,6 +64,10 @@ class TeleopModesTest(unittest.TestCase):
         cls.pose_sub = rospy.Subscriber("/computed_end_effector_pose", PoseStamped, cls._pose_cb)
         cls.latest_joint_state = None
         cls.joint_sub = rospy.Subscriber("/joint_states_in", JointState, cls._joint_cb)
+        cls.latest_ghost_state = None
+        cls.ghost_sub = rospy.Subscriber("/ghost_joint_states", JointState, cls._ghost_cb)
+        cls.latest_marker = None
+        cls.marker_sub = rospy.Subscriber("/teleop_reference_marker", Marker, cls._marker_cb)
 
         deadline = rospy.Time.now() + rospy.Duration(15.0)
         while cls.latest_pose is None and rospy.Time.now() < deadline:
@@ -75,6 +83,22 @@ class TeleopModesTest(unittest.TestCase):
     @classmethod
     def _joint_cb(cls, msg):
         cls.latest_joint_state = msg
+
+    @classmethod
+    def _ghost_cb(cls, msg):
+        cls.latest_ghost_state = msg
+
+    @classmethod
+    def _marker_cb(cls, msg):
+        cls.latest_marker = msg
+
+    def _ghost_position(self, joint_name):
+        idx = list(self.latest_ghost_state.name).index(joint_name)
+        return self.latest_ghost_state.position[idx]
+
+    def _actual_position(self, joint_name):
+        idx = list(self.latest_joint_state.name).index(joint_name)
+        return self.latest_joint_state.position[idx]
 
     def _hold_joy(self, joy_msg, duration, rate_hz=30.0):
         rate = rospy.Rate(rate_hz)
@@ -102,10 +126,19 @@ class TeleopModesTest(unittest.TestCase):
         whatever mode an earlier test left behind. Probe instead: a tiny
         jog either moves the real arm (already DIRECT_JOG -- done) or
         doesn't (SET_REFERENCE -- toggle once). Makes every test
-        genuinely self-contained regardless of run order."""
+        genuinely self-contained regardless of run order.
+
+        The post-probe sleep must exceed teleop_node's ~joy_timeout
+        (0.5s): _hold_joy stops publishing rather than explicitly
+        releasing the deadman, so teleop_node keeps reusing that last
+        (still-deflected) /joy message -- and the arm keeps crawling --
+        until it's stale, not the instant publishing stops. A shorter
+        sleep here caught a caller's "before" reading mid-crawl,
+        intermittently failing a later exact-stillness assertion in
+        another test (confirmed the hard way)."""
         start_x = self.latest_pose.pose.position.x
         self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=0.3)
-        rospy.sleep(0.2)
+        rospy.sleep(0.6)
         moved = (self.latest_pose.pose.position.x - start_x) > 0.005
         if not moved:
             self._tap_button(mode_toggle=True)
@@ -165,15 +198,25 @@ class TeleopModesTest(unittest.TestCase):
 
         self._tap_button(commit=True)
 
-        # Give the generated trajectory time to execute.
+        # Wait for the committed trajectory to actually FINISH (position
+        # settles), not just for the first sign of movement -- otherwise a
+        # still-executing trajectory can bleed into whichever test happens
+        # to run next (unittest runs alphabetically, not declaration
+        # order): confirmed the hard way, this caused
+        # test_ghost_diverges_and_marker_clears_in_set_reference to see
+        # the "real arm must not move" assertion fail intermittently.
         deadline = rospy.Time.now() + rospy.Duration(10.0)
-        moved = False
-        while rospy.Time.now() < deadline:
+        last_x = self.latest_pose.pose.position.x
+        moved_at_all = False
+        settled_ticks = 0
+        while rospy.Time.now() < deadline and settled_ticks < 3:
             rospy.sleep(0.2)
-            if self.latest_pose.pose.position.x - start_x > 0.02:
-                moved = True
-                break
-        self.assertTrue(moved, "commit should have driven the real arm toward the reference pose")
+            current_x = self.latest_pose.pose.position.x
+            if current_x - start_x > 0.02:
+                moved_at_all = True
+            settled_ticks = settled_ticks + 1 if abs(current_x - last_x) < 0.001 else 0
+            last_x = current_x
+        self.assertTrue(moved_at_all, "commit should have driven the real arm toward the reference pose")
 
         self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
         rospy.sleep(0.2)
@@ -197,6 +240,57 @@ class TeleopModesTest(unittest.TestCase):
             end_gripper, start_gripper + 0.05,
             f"gripper open button should have increased joint_6: "
             f"start={start_gripper:.4f} end={end_gripper:.4f}",
+        )
+
+    def test_ghost_mirrors_real_arm_in_direct_jog(self):
+        self._force_direct_jog_mode()
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=0.5)
+        rospy.sleep(0.3)
+        for name in ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5"]:
+            self.assertAlmostEqual(
+                self._ghost_position(name), self._actual_position(name), delta=0.01,
+                msg=f"ghost should mirror the real arm in DIRECT_JOG (joint {name})",
+            )
+
+    def test_ghost_diverges_and_marker_clears_in_set_reference(self):
+        self._force_direct_jog_mode()
+        joint_names = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5"]
+        start_positions = {name: self._actual_position(name) for name in joint_names}
+
+        self._tap_button(mode_toggle=True)  # -> SET_REFERENCE
+        rospy.sleep(0.2)
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=1.0)
+        rospy.sleep(0.3)
+
+        # The ghost should have moved to preview the (uncommitted)
+        # reference, while the real arm stayed exactly where it was.
+        for name in joint_names:
+            self.assertAlmostEqual(
+                self._actual_position(name), start_positions[name], delta=0.001,
+                msg=f"real arm must not move while jogging in SET_REFERENCE (joint {name})",
+            )
+        # Compare the WHOLE configuration, not one specific joint: a pure
+        # +X reach might leave any single joint (e.g. a base yaw) nearly
+        # unchanged depending on the arm's current orientation, but the
+        # ghost (previewing a real Cartesian displacement) and the
+        # unmoved real arm should differ somewhere across the 5 joints.
+        total_divergence = sum(
+            abs(self._ghost_position(name) - self._actual_position(name)) for name in joint_names
+        )
+        self.assertGreater(
+            total_divergence, 0.02,
+            "ghost should diverge from the real arm to preview the reference in SET_REFERENCE",
+        )
+        self.assertEqual(
+            self.latest_marker.action, Marker.ADD,
+            "reference marker should be actively shown while in SET_REFERENCE",
+        )
+
+        self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
+        rospy.sleep(0.2)
+        self.assertEqual(
+            self.latest_marker.action, Marker.DELETE,
+            "reference marker should be deleted on leaving SET_REFERENCE",
         )
 
 

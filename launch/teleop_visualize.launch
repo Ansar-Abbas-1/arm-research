@@ -1,0 +1,58 @@
+<launch>
+  <!-- Full teleop demo stack + rviz: simulator, fk_node,
+       trajectory_service_node + trajectory_executor_node (needed for
+       SET_REFERENCE's commit path), teleop_node, and a second
+       robot_state_publisher + RobotModel display for the SET_REFERENCE
+       "ghost" preview (/ghost_joint_states -> a link-renamed copy of the
+       same URDF, sharing base_link as its root with the real robot so
+       both render in the same TF tree, see docs/teleop.md). No real
+       joystick assumed: run scripts/manual_teleop_check.py separately to
+       drive this. -->
+
+  <arg name="use_rviz" default="true"/>
+  <!-- use_rviz:=false lets this run without a display, e.g. for automated
+       checks: rviz needs one and none is available in an automated/CI
+       context (confirmed the hard way in M0). -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+  <!-- Ghost URDF: same file, with every non-root link renamed
+       ghost_<name> so its TF frames never collide with the real robot's.
+       Piping xacro's output through sed needs a real shell: <param
+       command="..."> execs its argument list directly, with no shell, so
+       "|" would otherwise be passed to xacro as a literal argument
+       (confirmed the hard way while building this). -->
+  <param name="ghost_robot_description"
+         command="bash -c &quot;$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf' | sed
+           -e 's/link_intermediate/ghost_link_intermediate/g'
+           -e 's/link_1/ghost_link_1/g' -e 's/link_2/ghost_link_2/g'
+           -e 's/link_3/ghost_link_3/g' -e 's/link_4/ghost_link_4/g'
+           -e 's/link_5/ghost_link_5/g' -e 's/end_effector/ghost_end_effector/g'&quot;" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+  <node name="ghost_robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="robot_description" to="ghost_robot_description" />
+    <remap from="joint_states" to="/ghost_joint_states" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+  <node name="teleop_node" pkg="arm_teleop" type="teleop_node" output="screen" />
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_teleop)/rviz/teleop_visualize.rviz" />
+  </group>
+</launch>
