@@ -1,0 +1,59 @@
+cmake_minimum_required(VERSION 3.0.2)
+project(arm_teleop)
+
+find_package(catkin REQUIRED COMPONENTS
+  roscpp
+  arm_kinematics
+  arm_trajectory
+  urdf
+  geometry_msgs
+  sensor_msgs
+  control_msgs
+  actionlib
+  actionlib_msgs
+)
+
+catkin_package(
+  INCLUDE_DIRS include
+  LIBRARIES arm_teleop
+  CATKIN_DEPENDS roscpp arm_kinematics arm_trajectory urdf geometry_msgs sensor_msgs control_msgs actionlib actionlib_msgs
+)
+
+include_directories(
+  include
+  ${catkin_INCLUDE_DIRS}
+)
+
+add_library(arm_teleop
+  src/joy_target_mapper.cpp
+)
+add_dependencies(arm_teleop ${catkin_EXPORTED_TARGETS})
+target_link_libraries(arm_teleop
+  ${catkin_LIBRARIES}
+)
+
+add_executable(teleop_node src/teleop_node.cpp)
+add_dependencies(teleop_node ${catkin_EXPORTED_TARGETS})
+target_link_libraries(teleop_node
+  arm_teleop
+  ${catkin_LIBRARIES}
+)
+
+catkin_install_python(PROGRAMS
+  scripts/manual_teleop_check.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)
+
+#############
+## Testing ##
+#############
+
+if(CATKIN_ENABLE_TESTING)
+  catkin_add_gtest(${PROJECT_NAME}-test-joy-target-mapper test/test_joy_target_mapper.cpp)
+  if(TARGET ${PROJECT_NAME}-test-joy-target-mapper)
+    target_link_libraries(${PROJECT_NAME}-test-joy-target-mapper arm_teleop ${catkin_LIBRARIES})
+  endif()
+
+  find_package(rostest REQUIRED)
+  add_rostest(test/teleop_preemption.test)
+endif()

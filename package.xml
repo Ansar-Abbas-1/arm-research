@@ -1,0 +1,32 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>arm_teleop</name>
+  <version>0.0.0</version>
+  <description>Joystick teleoperation for the 5-DOF arm: incremental Cartesian jogging via arm_trajectory's generation/execution interfaces, plus independent gripper (joint_6) control.</description>
+
+  <maintainer email="riccardo.aliotta.ra@gmail.com">Riccardo Aliotta</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>arm_kinematics</depend>
+  <depend>arm_trajectory</depend>
+  <depend>urdf</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>actionlib</depend>
+  <depend>actionlib_msgs</depend>
+
+  <!-- test-time: real arm_interface stack + fk_node (for the test's own
+       independent position readout), headless rostest -->
+  <exec_depend>arm_interface</exec_depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>joy</exec_depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>rospy</test_depend>
+  <test_depend>roslib</test_depend>
+</package>
