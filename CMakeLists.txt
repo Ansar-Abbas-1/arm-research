@@ -8,6 +8,7 @@ find_package(catkin REQUIRED COMPONENTS
   urdf
   geometry_msgs
   sensor_msgs
+  std_msgs
   control_msgs
   actionlib
   actionlib_msgs
@@ -18,7 +19,7 @@ find_package(Eigen3 REQUIRED)
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES arm_teleop
-  CATKIN_DEPENDS roscpp arm_kinematics arm_trajectory urdf geometry_msgs sensor_msgs control_msgs actionlib actionlib_msgs visualization_msgs
+  CATKIN_DEPENDS roscpp arm_kinematics arm_trajectory urdf geometry_msgs sensor_msgs std_msgs control_msgs actionlib actionlib_msgs visualization_msgs
   DEPENDS EIGEN3
 )
 

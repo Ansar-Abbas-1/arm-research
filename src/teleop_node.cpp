@@ -10,6 +10,7 @@
 #include <ros/ros.h>
 #include <sensor_msgs/Joy.h>
 #include <sensor_msgs/JointState.h>
+#include <std_msgs/String.h>
 #include <tf2_eigen/tf2_eigen.h>
 #include <urdf/model.h>
 #include <visualization_msgs/Marker.h>
@@ -136,6 +137,15 @@ class TeleopNode {
     joint_out_pub_ = nh_.advertise<sensor_msgs::JointState>("/joint_states_out", 10);
     ghost_pub_ = nh_.advertise<sensor_msgs::JointState>("/ghost_joint_states", 10);
     marker_pub_ = nh_.advertise<visualization_msgs::Marker>("/teleop_reference_marker", 1);
+    // Latched: a fresh subscriber (rqt, rostopic echo, a person debugging)
+    // sees the current mode immediately, without needing to wait for the
+    // next toggle -- there was previously no direct way to observe this
+    // from outside the node at all, which made a lengthy live-hardware
+    // debugging session (see git history / hand-off notes) far more
+    // confusing than it needed to be: the mode-toggle logic was correct
+    // the whole time, but repeated toggles across many manual test rounds
+    // were easy to lose count of without this.
+    mode_pub_ = nh_.advertise<std_msgs::String>("/teleop_mode", 1, /*latch=*/true);
     generate_client_ = nh_.serviceClient<arm_trajectory::GenerateTrajectory>("/generate_trajectory");
 
     ROS_INFO("teleop_node: waiting for /generate_trajectory and follow_joint_trajectory ...");
@@ -143,6 +153,7 @@ class TeleopNode {
     action_client_.waitForServer();
     ROS_INFO("teleop_node: ready at %.1f Hz, mode=DIRECT_JOG (deadman=button %d, mode toggle=button %d)",
               rate_hz_, params_.deadman_button, params_.mode_toggle_button);
+    PublishMode();
 
     timer_ = nh_.createTimer(ros::Duration(1.0 / rate_hz_), &TeleopNode::TimerCb, this);
   }
@@ -175,6 +186,12 @@ class TeleopNode {
   std::vector<double> ActualJointPositions() {
     std::lock_guard<std::mutex> lock(joint_state_mutex_);
     return actual_joint_positions_;
+  }
+
+  void PublishMode() {
+    std_msgs::String msg;
+    msg.data = (mode_ == Mode::kDirectJog) ? "DIRECT_JOG" : "SET_REFERENCE";
+    mode_pub_.publish(msg);
   }
 
   void PublishGripper() {
@@ -289,6 +306,7 @@ class TeleopNode {
         PublishReferenceMarker(visualization_msgs::Marker::DELETE);
         ROS_INFO("teleop_node: mode -> DIRECT_JOG");
       }
+      PublishMode();
     }
 
     if (cmd.gripper_active) {
@@ -355,6 +373,7 @@ class TeleopNode {
   ros::Publisher joint_out_pub_;
   ros::Publisher ghost_pub_;
   ros::Publisher marker_pub_;
+  ros::Publisher mode_pub_;
   ros::ServiceClient generate_client_;
   ActionClient action_client_;
   ros::Timer timer_;
