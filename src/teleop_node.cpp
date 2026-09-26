@@ -235,7 +235,15 @@ class TeleopNode {
   }
 
   void PublishReferenceMarker(int action) {
-    PublishArrowMarker("teleop_reference", reference_pose_, action, 1.0f, 0.5f, 0.0f);  // orange
+    // Orange while the current reference is reachable (matches the ghost
+    // preview / what commit would do right now), red when it isn't --
+    // purely informational, never blocks the target from continuing to
+    // move (see UpdateGhostPreview).
+    if (reference_reachable_) {
+      PublishArrowMarker("teleop_reference", reference_pose_, action, 1.0f, 0.5f, 0.0f);
+    } else {
+      PublishArrowMarker("teleop_reference", reference_pose_, action, 1.0f, 0.0f, 0.0f);
+    }
   }
 
   void PublishJogTargetMarker(int action) {
@@ -251,30 +259,36 @@ class TeleopNode {
     pose.linear() = (delta.toRotationMatrix() * pose.rotation()).eval();
   }
 
-  // Tries to converge on `candidate`; only commits reference_pose_/
-  // ghost_joint_positions_ if it does -- mirrors DIRECT_JOG's own
-  // commit-only-on-convergence pattern (see TimerCb), and for the same
-  // reason: without it, the reference can drift into unreachable space one
-  // small jog increment at a time (each increment individually looks
-  // fine), at which point the ghost preview silently freezes AND
-  // CommitReference()'s own IK call -- same solver, same options -- also
-  // silently fails, with no feedback loop back to the controller either
-  // way. Confirmed the hard way in live testing: both symptoms had this
-  // one root cause. Warm-started from the last valid ghost solution, restarts
-  // enabled (default IkOptions) -- see the class comment for why that's
-  // fine for this cosmetic-preview, one-shot-commit use case.
-  bool TryUpdateReference(const Eigen::Isometry3d& candidate) {
-    arm_kinematics::IkResult ik = ik_solver_->Solve(candidate, ghost_joint_positions_);
+  // The reference pose is a free-flying virtual target, not real arm
+  // motion, so nothing here ever stops it from moving -- reported and
+  // confirmed as an over-correction in an earlier version, which rejected
+  // (froze) the ENTIRE jog increment the instant a single tick's IK didn't
+  // converge, with no way for the user to recover except reversing
+  // direction and hoping. Only two things actually need reachability:
+  // this best-effort ghost preview (M3 Finding 2's "best-effort interior
+  // samples, only the goal needs to be exactly reachable" pattern, applied
+  // here to "only the eventual commit target needs to be exactly
+  // reachable, not every point the reference passes through") and, for
+  // real, CommitReference() itself -- which already has its own check and
+  // already warns+no-ops on failure, unaffected by any of this.
+  //
+  // On a non-converged tick, ghost_joint_positions_ simply keeps its last
+  // valid configuration (never shows a wrong one) and reference_reachable_
+  // flips false so the marker can say so -- both purely informational.
+  // Warm-started from the last valid ghost solution, restarts enabled
+  // (default IkOptions) -- see the class comment for why that's fine for
+  // this cosmetic-preview, one-shot-commit use case.
+  void UpdateGhostPreview() {
+    arm_kinematics::IkResult ik = ik_solver_->Solve(reference_pose_, ghost_joint_positions_);
+    reference_reachable_ = ik.converged;
     if (ik.converged) {
-      reference_pose_ = candidate;
       ghost_joint_positions_ = ik.joint_positions;
-      return true;
+    } else {
+      ROS_WARN_THROTTLE(1.0,
+                         "teleop_node: reference pose currently unreachable (residual %.4f m / "
+                         "%.4f rad) -- ghost preview frozen, still tracking your jog input though",
+                         ik.residual.head<3>().norm(), ik.residual.tail<3>().norm());
     }
-    ROS_WARN_THROTTLE(1.0,
-                       "teleop_node: reference target unreachable, ignoring jog increment "
-                       "(residual %.4f m / %.4f rad)",
-                       ik.residual.head<3>().norm(), ik.residual.tail<3>().norm());
-    return false;
   }
 
   void CommitReference() {
@@ -332,6 +346,7 @@ class TeleopNode {
         mode_ = Mode::kSetReference;
         reference_pose_ = fk_solver_->ComputePose(q);
         ghost_joint_positions_ = q;
+        reference_reachable_ = true;
         ROS_INFO("teleop_node: mode -> SET_REFERENCE (seeded from current pose)");
       } else {
         mode_ = Mode::kDirectJog;
@@ -409,10 +424,9 @@ class TeleopNode {
       PublishJogTargetMarker(visualization_msgs::Marker::ADD);
     } else {
       if (cmd.vx != 0.0 || cmd.vy != 0.0 || cmd.vz != 0.0 || cmd.pitch_rate != 0.0) {
-        Eigen::Isometry3d candidate = reference_pose_;
-        candidate.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
-        ApplyPitchRotation(candidate, cmd.pitch_rate, dt);
-        TryUpdateReference(candidate);  // no-op (reference/ghost unchanged) if unreachable
+        reference_pose_.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
+        ApplyPitchRotation(reference_pose_, cmd.pitch_rate, dt);
+        UpdateGhostPreview();  // best-effort; never blocks the reference itself from moving
       }
       PublishGhost();
       PublishReferenceMarker(visualization_msgs::Marker::ADD);
@@ -459,6 +473,7 @@ class TeleopNode {
 
   Mode mode_ = Mode::kDirectJog;
   Eigen::Isometry3d reference_pose_ = Eigen::Isometry3d::Identity();
+  bool reference_reachable_ = true;  // informational only -- see UpdateGhostPreview
   std::vector<double> ghost_joint_positions_;
   Eigen::Isometry3d jog_target_pose_ = Eigen::Isometry3d::Identity();
   bool have_jog_target_ = false;

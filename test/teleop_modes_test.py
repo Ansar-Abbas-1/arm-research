@@ -187,6 +187,11 @@ class TeleopModesTest(unittest.TestCase):
         self._tap_button(mode_toggle=True)
         rospy.sleep(0.2)
 
+    def _reference_marker_is_reachable(self):
+        # Orange (g~0.5) when reachable, red (g~0.0) when not -- see
+        # PublishReferenceMarker in teleop_node.cpp.
+        return self.latest_markers["teleop_reference"].color.g > 0.2
+
     def test_commit_from_set_reference_moves_real_arm(self):
         self._force_direct_jog_mode()
         self._tap_button(mode_toggle=True)  # -> SET_REFERENCE
@@ -223,57 +228,57 @@ class TeleopModesTest(unittest.TestCase):
         self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
         rospy.sleep(0.2)
 
-    def test_commit_still_works_after_extended_jogging(self):
-        # Regression test: the reference pose used to accumulate jog input
-        # unconditionally, with no reachability check, so pushing it hard
-        # enough could silently drift outside the workspace -- at which
-        # point the ghost preview would freeze AND commit's own IK (same
-        # solver, same options) would also silently fail, with no feedback
-        # to the controller either way. The fix (TryUpdateReference in
-        # teleop_node.cpp) rejects any candidate that doesn't converge
-        # before ever committing to it, so the reference can never actually
-        # become unreachable -- confirmed here by jogging hard for several
-        # seconds (much longer than the other tests) and checking commit
-        # still drives the real arm afterward.
+    def test_reference_target_recovers_after_overshooting_reachable_space(self):
+        # Regression test: an earlier version rejected (froze) the entire
+        # jog increment the instant a single tick's IK failed to converge,
+        # so once the reference drifted unreachable it was permanently
+        # stuck there -- the user could not move it AT ALL, in any
+        # direction, without restarting. The target is a free-flying
+        # virtual pose, not real arm motion, so there's no safety reason to
+        # block it that way: it now always tracks jog input exactly,
+        # reachability is purely informational (the marker's color), and
+        # only the actual commit needs the real check (already covered by
+        # test_commit_from_set_reference_moves_real_arm). Confirmed here:
+        # jog far enough that it likely leaves reachable space (checking
+        # tracking continues throughout, which must hold whether or not
+        # this particular jog actually crosses the boundary -- so it
+        # doesn't depend on knowing exactly where that boundary is), then
+        # jog back and check the target is never stuck -- it's reachable
+        # again rather than needing anything special to recover.
+        #
+        # Sleeps after each _hold_joy are >= ~joy_timeout (0.5s): a jog
+        # burst ends by simply no longer publishing /joy rather than
+        # explicitly releasing the deadman, so teleop_node keeps reusing
+        # that last (still-deflected) message -- and the target keeps
+        # moving -- until it goes stale, not the instant publishing stops
+        # (confirmed the hard way, see _force_direct_jog_mode).
         self._force_direct_jog_mode()
         self._tap_button(mode_toggle=True)  # -> SET_REFERENCE
         rospy.sleep(0.2)
 
-        start_x = self.latest_pose.pose.position.x
-        # 2s: deliberately more than the other tests' 1s jogs (that's the
-        # "extended" this test is about), but not so much that it risks
-        # pinning the arm against a real workspace boundary and breaking
-        # later tests' own "+X should move it" assumptions -- confirmed
-        # the hard way that 4s did exactly that.
-        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=2.0)
-        rospy.sleep(0.3)
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=3.0)
+        rospy.sleep(0.6)
+        mid_x = self.latest_markers["teleop_reference"].pose.position.x
 
-        self._tap_button(commit=True)
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=1.0)
+        rospy.sleep(0.6)
+        far_x = self.latest_markers["teleop_reference"].pose.position.x
+        self.assertGreater(
+            far_x, mid_x + 0.02,
+            "the reference target must keep tracking jog input regardless of reachability -- it "
+            "should never halt, even once the marker has turned red (unreachable)",
+        )
 
-        deadline = rospy.Time.now() + rospy.Duration(10.0)
-        last_x = self.latest_pose.pose.position.x
-        moved_at_all = False
-        settled_ticks = 0
-        while rospy.Time.now() < deadline and settled_ticks < 3:
-            rospy.sleep(0.2)
-            current_x = self.latest_pose.pose.position.x
-            if abs(current_x - start_x) > 0.01:
-                moved_at_all = True
-            settled_ticks = settled_ticks + 1 if abs(current_x - last_x) < 0.001 else 0
-            last_x = current_x
+        self._hold_joy(make_joy(axis_x=-1.0, deadman=True), duration=4.0)
+        rospy.sleep(0.6)
         self.assertTrue(
-            moved_at_all,
-            "commit should still work after extended jogging, even if some of it overshot "
-            "the reachable workspace and got rejected along the way",
+            self._reference_marker_is_reachable(),
+            "jogging back should restore reachability -- the target must never get permanently "
+            "stuck the way it used to",
         )
 
         self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
         rospy.sleep(0.2)
-        # Undo the net displacement this test adds, so it doesn't leave the
-        # arm nearer a workspace boundary for whichever test happens to run
-        # next (unittest runs alphabetically, not declaration order).
-        self._hold_joy(make_joy(axis_x=-1.0, deadman=True), duration=2.0)
-        rospy.sleep(0.3)
 
     def test_gripper_moves_independently_of_pose(self):
         self._force_direct_jog_mode()
