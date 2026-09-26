@@ -70,6 +70,25 @@ class ResolvedRateTest : public ::testing::Test {
   std::vector<double> q_;
 };
 
+class ResolvedRateNullspaceTest : public ResolvedRateTest {
+ protected:
+  void SetUp() override {
+    ResolvedRateTest::SetUp();
+    link4_solver_ =
+        std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model_, "base_link", "link_4");
+    // Deliberately not vertical (joint_4=0.4 rad away from whatever
+    // configuration would make it so), so there's real bias for the
+    // secondary task to act on.
+    link_axis_before_ = link4_solver_->ComputePose({q_[0], q_[1], q_[2], q_[3]}).rotation() *
+                         Eigen::Vector3d::UnitZ();
+    ASSERT_LT(std::abs(link_axis_before_.dot(Eigen::Vector3d::UnitZ())), 0.999)
+        << "test setup should start visibly non-vertical";
+  }
+
+  std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> link4_solver_;
+  Eigen::Vector3d link_axis_before_;
+};
+
 TEST_F(ResolvedRateTest, ZeroCommandGivesZeroVelocityAndFullRatio) {
   auto result = ComputeResolvedRateVelocity(*solver_, q_, 0.0, 0.0, 0.0, 0.0, velocity_limits_,
                                              kDamping);
@@ -130,6 +149,50 @@ TEST_F(ResolvedRateTest, VelocityLimitsAreRespected) {
   }
   EXPECT_LT(result.achieved_to_commanded_ratio, 1.0)
       << "an artificially tight velocity limit should measurably reduce the achieved ratio";
+}
+
+TEST_F(ResolvedRateNullspaceTest, ZeroGainMatchesNoSecondaryTaskAtAll) {
+  auto with_solver_zero_gain = ComputeResolvedRateVelocity(
+      *solver_, q_, 0.1, 0.0, 0.0, 0.0, velocity_limits_, kDamping, link4_solver_.get(), 0.0);
+  auto without_solver = ComputeResolvedRateVelocity(*solver_, q_, 0.1, 0.0, 0.0, 0.0, velocity_limits_,
+                                                     kDamping, nullptr, 0.0);
+  for (size_t i = 0; i < q_.size(); ++i) {
+    EXPECT_NEAR(with_solver_zero_gain.joint_velocities[i], without_solver.joint_velocities[i], 1e-12)
+        << "gain=0 must disable the secondary task exactly, regardless of a solver being passed";
+  }
+}
+
+TEST_F(ResolvedRateNullspaceTest, BiasesTowardVerticalWithZeroPrimaryCommand) {
+  const double gain = 0.4;
+  auto result = ComputeResolvedRateVelocity(*solver_, q_, 0.0, 0.0, 0.0, 0.0, velocity_limits_,
+                                             kNegligibleDamping, link4_solver_.get(), gain);
+
+  bool any_nonzero = false;
+  for (double v : result.joint_velocities) {
+    if (std::abs(v) > 1e-6) any_nonzero = true;
+  }
+  EXPECT_TRUE(any_nonzero) << "the null-space bias should move joints even with zero primary command";
+
+  std::vector<double> q_next(q_.size());
+  for (size_t i = 0; i < q_.size(); ++i) {
+    q_next[i] = q_[i] + result.joint_velocities[i] * kDt;
+  }
+  Eigen::Vector3d link_axis_after =
+      link4_solver_->ComputePose({q_next[0], q_next[1], q_next[2], q_next[3]}).rotation() *
+      Eigen::Vector3d::UnitZ();
+
+  double alignment_before = link_axis_before_.dot(Eigen::Vector3d::UnitZ());
+  double alignment_after = link_axis_after.dot(Eigen::Vector3d::UnitZ());
+  EXPECT_GT(alignment_after, alignment_before)
+      << "link_4 should move toward vertical (better world-Z alignment), not away from it";
+}
+
+TEST_F(ResolvedRateNullspaceTest, DoesNotDisturbThePrimaryTask) {
+  const double vx = 0.05, vy = -0.03, vz = 0.02;
+  auto result = ComputeResolvedRateVelocity(*solver_, q_, vx, vy, vz, 0.0, velocity_limits_,
+                                             kNegligibleDamping, link4_solver_.get(), 0.4);
+  EXPECT_GT(result.achieved_to_commanded_ratio, 0.95)
+      << "a null-space-only bias must not measurably eat into the commanded task velocity";
 }
 
 int main(int argc, char** argv) {

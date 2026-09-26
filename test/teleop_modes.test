@@ -38,6 +38,12 @@
     <param name="linear_gain" type="double" value="0.1"/>
     <param name="pitch_gain" type="double" value="0.5"/>
     <param name="gripper_rate" type="double" value="0.5"/>
+    <!-- Disabled here: these tests assume deadman-held-but-idle means no
+         motion at all, which the null-space secondary task deliberately
+         violates by design (it biases DIRECT_JOG toward vertical whenever
+         there's spare capacity, even with a centered stick). Covered on
+         its own in teleop_nullspace.test instead. -->
+    <param name="nullspace_gain" type="double" value="0.0"/>
   </node>
 
   <test test-name="teleop_modes_test" pkg="arm_teleop" type="teleop_modes_test.py"

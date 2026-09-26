@@ -35,7 +35,13 @@ namespace arm_teleop {
 //    this replaced: a saturated/near-singular direction just contributes
 //    less achieved velocity (see ~saturation_warn_ratio below), never
 //    freezes. See docs/teleop.md for why the original per-tick-IK design
-//    (still in this file's git history) got stuck.
+//    (still in this file's git history) got stuck. This chain is
+//    redundant for the 4D task (5 joints, 4 rows), so an optional
+//    null-space secondary task (~nullspace_gain, ~nullspace_tip_link)
+//    biases that leftover freedom toward keeping ~nullspace_tip_link's
+//    own local Z axis vertical, without disturbing the commanded task
+//    velocity -- see resolved_rate.h and docs/teleop.md for the
+//    derivation. ~nullspace_gain=0 disables it entirely.
 //  - SET_REFERENCE: the same stick moves an internal reference pose only
 //    (position free-running, orientation evolves by pitch alone -- roll/
 //    yaw stay exactly as they were when this mode was entered, since every
@@ -105,12 +111,22 @@ class TeleopNode {
     pnh.param("mode_toggle_button", params_.mode_toggle_button, params_.mode_toggle_button);
     pnh.param("commit_button", params_.commit_button, params_.commit_button);
 
+    std::string nullspace_tip_link;
+    pnh.param<std::string>("nullspace_tip_link", nullspace_tip_link, "link_4");
+    pnh.param("nullspace_gain", nullspace_gain_, 0.4);
+    // 0.4 rad/s (per unit misalignment) is heuristic, not derived -- a
+    // gentle bias, not strong enough to noticeably fight a deliberate jog
+    // command. Set ~nullspace_gain:=0.0 to disable the secondary task
+    // entirely (ComputeResolvedRateVelocity treats that as "off").
+
     urdf::Model model;
     if (!model.initParam("robot_description")) {
       throw std::runtime_error("teleop_node: failed to load URDF from 'robot_description' param");
     }
     fk_solver_ = std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model, root_link, tip_link);
     ik_solver_ = std::make_unique<arm_kinematics::InverseKinematicsSolver>(*fk_solver_);
+    nullspace_solver_ =
+        std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model, root_link, nullspace_tip_link);
     joint_names_ = fk_solver_->GetActuatedJointNames();
     velocity_limits_ = fk_solver_->GetActuatedJointVelocityLimits();
     joint_limits_ = fk_solver_->GetActuatedJointLimits();
@@ -297,7 +313,8 @@ class TeleopNode {
 
     if (mode_ == Mode::kDirectJog) {
       ResolvedRateResult result = ComputeResolvedRateVelocity(
-          *fk_solver_, q, cmd.vx, cmd.vy, cmd.vz, cmd.pitch_rate, velocity_limits_, velocity_damping_);
+          *fk_solver_, q, cmd.vx, cmd.vy, cmd.vz, cmd.pitch_rate, velocity_limits_, velocity_damping_,
+          nullspace_solver_.get(), nullspace_gain_);
       if (result.achieved_to_commanded_ratio < saturation_warn_ratio_) {
         ROS_WARN_THROTTLE(1.0,
                            "teleop_node: commanded velocity saturated to %.0f%% (near a joint limit "
@@ -344,6 +361,7 @@ class TeleopNode {
 
   std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> fk_solver_;
   std::unique_ptr<arm_kinematics::InverseKinematicsSolver> ik_solver_;
+  std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> nullspace_solver_;
   std::vector<std::string> joint_names_;
   std::vector<double> velocity_limits_;
   std::vector<std::pair<double, double>> joint_limits_;
@@ -354,6 +372,7 @@ class TeleopNode {
   double sample_rate_;
   double velocity_damping_;
   double saturation_warn_ratio_;
+  double nullspace_gain_;
 
   sensor_msgs::Joy last_joy_;
   sensor_msgs::Joy prev_tick_joy_;  // empty until the first tick: Button() treats that as "unpressed"

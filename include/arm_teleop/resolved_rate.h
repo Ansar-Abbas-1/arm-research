@@ -42,9 +42,29 @@ struct ResolvedRateResult {
 // The result is then clamped componentwise to `velocity_limits` (rad/s,
 // GetActuatedJointVelocityLimits()) -- a defensive hardware-safety clamp
 // independent of the damping above.
+//
+// Optional null-space secondary task: this chain is redundant for the 4D
+// task above (5 joints, 4 rows), so infinitely many qdot achieve the same
+// task velocity -- the formula above picks the minimum-norm one, with no
+// preference among the others. If `secondary_link_solver` is non-null and
+// `nullspace_gain` is nonzero, a secondary objective is projected into the
+// task's null space (Liegeois gradient projection: qdot = qdot_primary +
+// (I - J_task+ J_task) qdot_0), biasing `secondary_link_solver`'s tip link
+// toward vertical (its own local +Z axis aligned with world +Z) WITHOUT
+// changing the achieved task velocity at all -- N qdot_0 is, by
+// construction, exactly in J_task's null space. `secondary_link_solver`
+// must share `fk_solver`'s root_link and actuated-joint ordering, and its
+// actuated-joint count must be <= `joint_positions.size()` (only the
+// joints upstream of its own tip link can affect that link's orientation,
+// e.g. link_4's own joint and everything downstream of it don't). See
+// docs/teleop.md for the derivation. nullspace_gain = 0 (or a null
+// secondary_link_solver) disables this entirely, reducing to the
+// primary-task-only law above.
 ResolvedRateResult ComputeResolvedRateVelocity(
     const arm_kinematics::ForwardKinematicsSolver& fk_solver,
     const std::vector<double>& joint_positions, double vx, double vy, double vz,
-    double pitch_rate, const std::vector<double>& velocity_limits, double damping);
+    double pitch_rate, const std::vector<double>& velocity_limits, double damping,
+    const arm_kinematics::ForwardKinematicsSolver* secondary_link_solver = nullptr,
+    double nullspace_gain = 0.0);
 
 }  // namespace arm_teleop

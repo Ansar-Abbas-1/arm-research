@@ -69,4 +69,5 @@ if(CATKIN_ENABLE_TESTING)
 
   find_package(rostest REQUIRED)
   add_rostest(test/teleop_modes.test)
+  add_rostest(test/teleop_nullspace.test)
 endif()
