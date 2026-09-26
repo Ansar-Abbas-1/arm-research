@@ -162,29 +162,48 @@ TEST_F(ResolvedRateNullspaceTest, ZeroGainMatchesNoSecondaryTaskAtAll) {
   }
 }
 
-TEST_F(ResolvedRateNullspaceTest, BiasesTowardVerticalWithZeroPrimaryCommand) {
+TEST_F(ResolvedRateNullspaceTest, NoBiasWithZeroPrimaryCommand) {
+  // Gated off deliberately: with nothing commanded, there's no target for
+  // the bias to settle into, only a gradient to keep following forever --
+  // confirmed the hard way in live testing that leaving this active while
+  // idling (deadman held, stick centered) makes the arm visibly drift with
+  // no input at all, which looks exactly like a runaway bug.
   const double gain = 0.4;
   auto result = ComputeResolvedRateVelocity(*solver_, q_, 0.0, 0.0, 0.0, 0.0, velocity_limits_,
                                              kNegligibleDamping, link4_solver_.get(), gain);
-
-  bool any_nonzero = false;
   for (double v : result.joint_velocities) {
-    if (std::abs(v) > 1e-6) any_nonzero = true;
+    EXPECT_NEAR(v, 0.0, 1e-9) << "no primary command should mean no motion at all, bias included";
   }
-  EXPECT_TRUE(any_nonzero) << "the null-space bias should move joints even with zero primary command";
+}
 
-  std::vector<double> q_next(q_.size());
-  for (size_t i = 0; i < q_.size(); ++i) {
-    q_next[i] = q_[i] + result.joint_velocities[i] * kDt;
-  }
-  Eigen::Vector3d link_axis_after =
-      link4_solver_->ComputePose({q_next[0], q_next[1], q_next[2], q_next[3]}).rotation() *
-      Eigen::Vector3d::UnitZ();
+TEST_F(ResolvedRateNullspaceTest, BiasesTowardVerticalAlongsideANonzeroPrimaryCommand) {
+  // N (the null-space projector) doesn't depend on the primary command,
+  // but the primary term itself can incidentally nudge link_4's alignment
+  // too -- in either direction, depending on the specific command and
+  // configuration -- so comparing raw before/after alignment with the
+  // bias on conflates two effects. Isolate the bias's own marginal
+  // contribution instead: same primary command, with vs. without the
+  // bias, and check alignment specifically improves with it.
+  const double vx = 0.02;
+  auto without_bias = ComputeResolvedRateVelocity(*solver_, q_, vx, 0.0, 0.0, 0.0, velocity_limits_,
+                                                    kNegligibleDamping, link4_solver_.get(), 0.0);
+  auto with_bias = ComputeResolvedRateVelocity(*solver_, q_, vx, 0.0, 0.0, 0.0, velocity_limits_,
+                                                kNegligibleDamping, link4_solver_.get(), 0.4);
 
-  double alignment_before = link_axis_before_.dot(Eigen::Vector3d::UnitZ());
-  double alignment_after = link_axis_after.dot(Eigen::Vector3d::UnitZ());
-  EXPECT_GT(alignment_after, alignment_before)
-      << "link_4 should move toward vertical (better world-Z alignment), not away from it";
+  auto AlignmentAfter = [&](const std::vector<double>& qdot) {
+    std::vector<double> q_next(q_.size());
+    for (size_t i = 0; i < q_.size(); ++i) {
+      q_next[i] = q_[i] + qdot[i] * kDt;
+    }
+    Eigen::Vector3d axis = link4_solver_->ComputePose({q_next[0], q_next[1], q_next[2], q_next[3]})
+                               .rotation() *
+                           Eigen::Vector3d::UnitZ();
+    return axis.dot(Eigen::Vector3d::UnitZ());
+  };
+
+  EXPECT_GT(AlignmentAfter(with_bias.joint_velocities), AlignmentAfter(without_bias.joint_velocities))
+      << "adding the null-space bias should improve vertical alignment relative to the same "
+         "primary command without it";
 }
 
 TEST_F(ResolvedRateNullspaceTest, DoesNotDisturbThePrimaryTask) {

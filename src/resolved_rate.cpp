@@ -34,7 +34,15 @@ ResolvedRateResult ComputeResolvedRateVelocity(
   Eigen::Vector4d y = gram_ldlt.solve(xdot_cmd);
   Eigen::VectorXd qdot = J_task.transpose() * y;
 
-  if (secondary_link_solver != nullptr && nullspace_gain != 0.0) {
+  // Gated on an actual commanded task velocity, not just deadman held:
+  // found the hard way in live testing that an always-on secondary task
+  // makes the arm visibly drift/crawl while the operator is just holding
+  // the deadman with the stick centered, which looks like a runaway bug
+  // (there is nothing to "reach" -- the bias has no target, just a
+  // gradient, so it never settles to exactly zero on its own). Real input
+  // (xdot_cmd) is exactly zero here whenever the caller's deadzone
+  // suppressed the stick, so this check is exact, not a heuristic.
+  if (secondary_link_solver != nullptr && nullspace_gain != 0.0 && xdot_cmd.squaredNorm() > 1e-12) {
     const size_t m = secondary_link_solver->GetActuatedJointNames().size();
     if (m > n) {
       throw std::invalid_argument(

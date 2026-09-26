@@ -59,7 +59,14 @@ struct ResolvedRateResult {
 // e.g. link_4's own joint and everything downstream of it don't). See
 // docs/teleop.md for the derivation. nullspace_gain = 0 (or a null
 // secondary_link_solver) disables this entirely, reducing to the
-// primary-task-only law above.
+// primary-task-only law above -- as does a zero commanded task velocity
+// (vx=vy=vz=pitch_rate=0), even with nullspace_gain nonzero: the bias has
+// no target pose to settle into, only a gradient to follow, so leaving it
+// active while the operator holds the deadman with a centered stick makes
+// the arm visibly drift with nothing commanding it (confirmed the hard
+// way in live testing) -- gating it on real input fixes that, and is
+// exact rather than a heuristic, since the caller's deadzone already
+// makes xdot_cmd exactly zero whenever the stick is centered.
 ResolvedRateResult ComputeResolvedRateVelocity(
     const arm_kinematics::ForwardKinematicsSolver& fk_solver,
     const std::vector<double>& joint_positions, double vx, double vy, double vz,

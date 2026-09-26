@@ -24,6 +24,7 @@ import rospy
 import rostest
 from geometry_msgs.msg import PoseStamped
 from sensor_msgs.msg import Joy, JointState
+from std_msgs.msg import String
 from visualization_msgs.msg import Marker
 
 PKG = "arm_teleop"
@@ -66,8 +67,10 @@ class TeleopModesTest(unittest.TestCase):
         cls.joint_sub = rospy.Subscriber("/joint_states_in", JointState, cls._joint_cb)
         cls.latest_ghost_state = None
         cls.ghost_sub = rospy.Subscriber("/ghost_joint_states", JointState, cls._ghost_cb)
-        cls.latest_marker = None
-        cls.marker_sub = rospy.Subscriber("/teleop_reference_marker", Marker, cls._marker_cb)
+        cls.latest_markers = {}  # keyed by namespace: both the reference and jog-target
+        cls.marker_sub = rospy.Subscriber("/teleop_reference_marker", Marker, cls._marker_cb)  # markers share this topic, distinguished by ns
+        cls.latest_mode = None
+        cls.mode_sub = rospy.Subscriber("/teleop_mode", String, cls._mode_cb)
 
         deadline = rospy.Time.now() + rospy.Duration(15.0)
         while cls.latest_pose is None and rospy.Time.now() < deadline:
@@ -90,7 +93,11 @@ class TeleopModesTest(unittest.TestCase):
 
     @classmethod
     def _marker_cb(cls, msg):
-        cls.latest_marker = msg
+        cls.latest_markers[msg.ns] = msg
+
+    @classmethod
+    def _mode_cb(cls, msg):
+        cls.latest_mode = msg.data
 
     def _ghost_position(self, joint_name):
         idx = list(self.latest_ghost_state.name).index(joint_name)
@@ -121,26 +128,21 @@ class TeleopModesTest(unittest.TestCase):
         return self.latest_joint_state.position[idx]
 
     def _force_direct_jog_mode(self):
-        """Mode isn't directly observable, and unittest runs test methods
-        alphabetically (not declaration order), so a test can't assume
-        whatever mode an earlier test left behind. Probe instead: a tiny
-        jog either moves the real arm (already DIRECT_JOG -- done) or
-        doesn't (SET_REFERENCE -- toggle once). Makes every test
-        genuinely self-contained regardless of run order.
-
-        The post-probe sleep must exceed teleop_node's ~joy_timeout
-        (0.5s): _hold_joy stops publishing rather than explicitly
-        releasing the deadman, so teleop_node keeps reusing that last
-        (still-deflected) /joy message -- and the arm keeps crawling --
-        until it's stale, not the instant publishing stops. A shorter
-        sleep here caught a caller's "before" reading mid-crawl,
-        intermittently failing a later exact-stillness assertion in
-        another test (confirmed the hard way)."""
-        start_x = self.latest_pose.pose.position.x
-        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=0.3)
-        rospy.sleep(0.6)
-        moved = (self.latest_pose.pose.position.x - start_x) > 0.005
-        if not moved:
+        """Mode isn't directly observable via arm motion alone -- an
+        earlier test can leave the arm pinned against a workspace boundary
+        in either direction, which used to fool a jog-and-see-if-it-moved
+        probe into concluding "must be SET_REFERENCE" when it was actually
+        just saturated (confirmed the hard way). /teleop_mode (latched)
+        exists precisely to sidestep this: read it directly instead of
+        inferring anything from arm motion. Toggling is still needed since
+        unittest runs test methods alphabetically, not declaration order,
+        so a test can't assume whatever mode an earlier one left behind."""
+        deadline = rospy.Time.now() + rospy.Duration(3.0)
+        while self.latest_mode is None and rospy.Time.now() < deadline:
+            rospy.sleep(0.05)
+        if self.latest_mode is None:
+            raise AssertionError("never received /teleop_mode")
+        if self.latest_mode != "DIRECT_JOG":
             self._tap_button(mode_toggle=True)
             rospy.sleep(0.2)
 
@@ -221,6 +223,58 @@ class TeleopModesTest(unittest.TestCase):
         self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
         rospy.sleep(0.2)
 
+    def test_commit_still_works_after_extended_jogging(self):
+        # Regression test: the reference pose used to accumulate jog input
+        # unconditionally, with no reachability check, so pushing it hard
+        # enough could silently drift outside the workspace -- at which
+        # point the ghost preview would freeze AND commit's own IK (same
+        # solver, same options) would also silently fail, with no feedback
+        # to the controller either way. The fix (TryUpdateReference in
+        # teleop_node.cpp) rejects any candidate that doesn't converge
+        # before ever committing to it, so the reference can never actually
+        # become unreachable -- confirmed here by jogging hard for several
+        # seconds (much longer than the other tests) and checking commit
+        # still drives the real arm afterward.
+        self._force_direct_jog_mode()
+        self._tap_button(mode_toggle=True)  # -> SET_REFERENCE
+        rospy.sleep(0.2)
+
+        start_x = self.latest_pose.pose.position.x
+        # 2s: deliberately more than the other tests' 1s jogs (that's the
+        # "extended" this test is about), but not so much that it risks
+        # pinning the arm against a real workspace boundary and breaking
+        # later tests' own "+X should move it" assumptions -- confirmed
+        # the hard way that 4s did exactly that.
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=2.0)
+        rospy.sleep(0.3)
+
+        self._tap_button(commit=True)
+
+        deadline = rospy.Time.now() + rospy.Duration(10.0)
+        last_x = self.latest_pose.pose.position.x
+        moved_at_all = False
+        settled_ticks = 0
+        while rospy.Time.now() < deadline and settled_ticks < 3:
+            rospy.sleep(0.2)
+            current_x = self.latest_pose.pose.position.x
+            if abs(current_x - start_x) > 0.01:
+                moved_at_all = True
+            settled_ticks = settled_ticks + 1 if abs(current_x - last_x) < 0.001 else 0
+            last_x = current_x
+        self.assertTrue(
+            moved_at_all,
+            "commit should still work after extended jogging, even if some of it overshot "
+            "the reachable workspace and got rejected along the way",
+        )
+
+        self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
+        rospy.sleep(0.2)
+        # Undo the net displacement this test adds, so it doesn't leave the
+        # arm nearer a workspace boundary for whichever test happens to run
+        # next (unittest runs alphabetically, not declaration order).
+        self._hold_joy(make_joy(axis_x=-1.0, deadman=True), duration=2.0)
+        rospy.sleep(0.3)
+
     def test_gripper_moves_independently_of_pose(self):
         self._force_direct_jog_mode()
         start_x = self.latest_pose.pose.position.x
@@ -282,15 +336,31 @@ class TeleopModesTest(unittest.TestCase):
             "ghost should diverge from the real arm to preview the reference in SET_REFERENCE",
         )
         self.assertEqual(
-            self.latest_marker.action, Marker.ADD,
+            self.latest_markers["teleop_reference"].action, Marker.ADD,
             "reference marker should be actively shown while in SET_REFERENCE",
         )
 
         self._tap_button(mode_toggle=True)  # back to DIRECT_JOG
         rospy.sleep(0.2)
         self.assertEqual(
-            self.latest_marker.action, Marker.DELETE,
+            self.latest_markers["teleop_reference"].action, Marker.DELETE,
             "reference marker should be deleted on leaving SET_REFERENCE",
+        )
+
+    def test_jog_target_marker_shown_while_jogging_and_hidden_on_release(self):
+        self._force_direct_jog_mode()
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=0.5)
+        rospy.sleep(0.2)
+        self.assertEqual(
+            self.latest_markers["teleop_jog_target"].action, Marker.ADD,
+            "jog target marker should be shown while actively jogging in DIRECT_JOG",
+        )
+
+        self._hold_joy(make_joy(axis_x=0.0, deadman=False), duration=0.3)
+        rospy.sleep(0.2)
+        self.assertEqual(
+            self.latest_markers["teleop_jog_target"].action, Marker.DELETE,
+            "jog target marker should be hidden once the deadman is released",
         )
 
 

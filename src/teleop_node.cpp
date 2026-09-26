@@ -212,41 +212,69 @@ class TeleopNode {
     ghost_pub_.publish(ghost);
   }
 
-  void PublishReferenceMarker(int action) {
+  void PublishArrowMarker(const std::string& ns, const Eigen::Isometry3d& pose, int action,
+                          float r, float g, float b) {
     visualization_msgs::Marker marker;
     marker.header.frame_id = fk_solver_->root_link();
     marker.header.stamp = ros::Time::now();
-    marker.ns = "teleop_reference";
+    marker.ns = ns;
     marker.id = 0;
     marker.type = visualization_msgs::Marker::ARROW;
     marker.action = action;
     if (action == visualization_msgs::Marker::ADD) {
-      marker.pose = tf2::toMsg(reference_pose_);
+      marker.pose = tf2::toMsg(pose);
       marker.scale.x = 0.10;   // arrow length
       marker.scale.y = 0.015;  // head diameter
       marker.scale.z = 0.015;  // head length
-      marker.color.r = 1.0;
-      marker.color.g = 0.5;
-      marker.color.b = 0.0;
+      marker.color.r = r;
+      marker.color.g = g;
+      marker.color.b = b;
       marker.color.a = 0.9;
     }
     marker_pub_.publish(marker);
   }
 
-  // Best-effort full IK preview for the ghost arm: warm-started tick to
-  // tick like DIRECT_JOG's resolved-rate control needs to be, but via
-  // plain Solve() (restarts enabled) rather than a bespoke recovery
-  // scheme -- this is a cosmetic preview, not a safety-relevant control
-  // loop, so an occasional restart-induced jump or a slower tick doesn't
-  // carry the same weight it did for the design this replaced. On a
-  // non-converged tick, ghost_joint_positions_ is left unchanged (the
-  // preview freezes at its last valid configuration rather than showing
-  // something wrong).
-  void UpdateGhostFromReference() {
-    arm_kinematics::IkResult ik = ik_solver_->Solve(reference_pose_, ghost_joint_positions_);
-    if (ik.converged) {
-      ghost_joint_positions_ = ik.joint_positions;
+  void PublishReferenceMarker(int action) {
+    PublishArrowMarker("teleop_reference", reference_pose_, action, 1.0f, 0.5f, 0.0f);  // orange
+  }
+
+  void PublishJogTargetMarker(int action) {
+    PublishArrowMarker("teleop_jog_target", jog_target_pose_, action, 0.0f, 1.0f, 0.3f);  // green
+  }
+
+  static void ApplyPitchRotation(Eigen::Isometry3d& pose, double pitch_rate, double dt) {
+    if (pitch_rate == 0.0) {
+      return;
     }
+    Eigen::Vector3d pitch_axis = pose.rotation() * Eigen::Vector3d::UnitY();
+    Eigen::AngleAxisd delta(pitch_rate * dt, pitch_axis);
+    pose.linear() = (delta.toRotationMatrix() * pose.rotation()).eval();
+  }
+
+  // Tries to converge on `candidate`; only commits reference_pose_/
+  // ghost_joint_positions_ if it does -- mirrors DIRECT_JOG's own
+  // commit-only-on-convergence pattern (see TimerCb), and for the same
+  // reason: without it, the reference can drift into unreachable space one
+  // small jog increment at a time (each increment individually looks
+  // fine), at which point the ghost preview silently freezes AND
+  // CommitReference()'s own IK call -- same solver, same options -- also
+  // silently fails, with no feedback loop back to the controller either
+  // way. Confirmed the hard way in live testing: both symptoms had this
+  // one root cause. Warm-started from the last valid ghost solution, restarts
+  // enabled (default IkOptions) -- see the class comment for why that's
+  // fine for this cosmetic-preview, one-shot-commit use case.
+  bool TryUpdateReference(const Eigen::Isometry3d& candidate) {
+    arm_kinematics::IkResult ik = ik_solver_->Solve(candidate, ghost_joint_positions_);
+    if (ik.converged) {
+      reference_pose_ = candidate;
+      ghost_joint_positions_ = ik.joint_positions;
+      return true;
+    }
+    ROS_WARN_THROTTLE(1.0,
+                       "teleop_node: reference target unreachable, ignoring jog increment "
+                       "(residual %.4f m / %.4f rad)",
+                       ik.residual.head<3>().norm(), ik.residual.tail<3>().norm());
+    return false;
   }
 
   void CommitReference() {
@@ -283,6 +311,10 @@ class TeleopNode {
     if (ghost_joint_positions_.empty()) {
       ghost_joint_positions_ = q;  // seed before the first-ever PublishGhost() call
     }
+    if (!have_jog_target_) {
+      jog_target_pose_ = fk_solver_->ComputePose(q);
+      have_jog_target_ = true;
+    }
 
     if (!have_joy_ || (ros::Time::now() - last_joy_stamp_).toSec() > joy_timeout_) {
       return;  // no joystick input, or it went stale (disconnected/topic died): stay put
@@ -303,6 +335,7 @@ class TeleopNode {
         ROS_INFO("teleop_node: mode -> SET_REFERENCE (seeded from current pose)");
       } else {
         mode_ = Mode::kDirectJog;
+        jog_target_pose_ = fk_solver_->ComputePose(q);
         PublishReferenceMarker(visualization_msgs::Marker::DELETE);
         ROS_INFO("teleop_node: mode -> DIRECT_JOG");
       }
@@ -317,13 +350,22 @@ class TeleopNode {
     }
 
     if (!cmd.deadman_held) {
-      // No motion without the deadman, in either mode -- but the ghost/
-      // reference preview stays visible, unchanged, rather than freezing
-      // mid-update or vanishing.
-      PublishGhost();
-      if (mode_ == Mode::kSetReference) {
+      // No motion without the deadman, in either mode. In DIRECT_JOG, also
+      // reset the jog target back to wherever the arm actually is right
+      // now and hide its marker: otherwise a target that had drifted
+      // while the deadman was held would still be sitting out there,
+      // ready to resume being chased the instant the deadman is pressed
+      // again with the stick still centered -- exactly the "moves with no
+      // input" symptom this reset exists to prevent. The SET_REFERENCE
+      // preview, in contrast, stays visible and unchanged: it's meant to
+      // persist across a released deadman (see docs/teleop.md).
+      if (mode_ == Mode::kDirectJog) {
+        jog_target_pose_ = fk_solver_->ComputePose(q);
+        PublishJogTargetMarker(visualization_msgs::Marker::DELETE);
+      } else {
         PublishReferenceMarker(visualization_msgs::Marker::ADD);
       }
+      PublishGhost();
       return;
     }
 
@@ -351,14 +393,27 @@ class TeleopNode {
       joint_out_pub_.publish(arm_cmd);
       ghost_joint_positions_ = arm_cmd.position;  // ghost mirrors the real arm: invisible overlap
       PublishGhost();
-    } else {
-      reference_pose_.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
-      if (cmd.pitch_rate != 0.0) {
-        Eigen::Vector3d pitch_axis = reference_pose_.rotation() * Eigen::Vector3d::UnitY();
-        Eigen::AngleAxisd delta(cmd.pitch_rate * dt, pitch_axis);
-        reference_pose_.linear() = (delta.toRotationMatrix() * reference_pose_.rotation()).eval();
+
+      // Jog target marker: tracks the same commanded rate the arm is
+      // actually being driven by, purely for visibility -- it does NOT
+      // feed back into the control law above. Idle (no commanded rate):
+      // snap it to the current actual pose rather than letting it sit
+      // wherever it last was, so it never quietly represents "somewhere
+      // else" while nothing is happening.
+      if (cmd.vx != 0.0 || cmd.vy != 0.0 || cmd.vz != 0.0 || cmd.pitch_rate != 0.0) {
+        jog_target_pose_.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
+        ApplyPitchRotation(jog_target_pose_, cmd.pitch_rate, dt);
+      } else {
+        jog_target_pose_ = fk_solver_->ComputePose(q);
       }
-      UpdateGhostFromReference();
+      PublishJogTargetMarker(visualization_msgs::Marker::ADD);
+    } else {
+      if (cmd.vx != 0.0 || cmd.vy != 0.0 || cmd.vz != 0.0 || cmd.pitch_rate != 0.0) {
+        Eigen::Isometry3d candidate = reference_pose_;
+        candidate.translation() += Eigen::Vector3d(cmd.vx, cmd.vy, cmd.vz) * dt;
+        ApplyPitchRotation(candidate, cmd.pitch_rate, dt);
+        TryUpdateReference(candidate);  // no-op (reference/ghost unchanged) if unreachable
+      }
       PublishGhost();
       PublishReferenceMarker(visualization_msgs::Marker::ADD);
       if (cmd.commit_pressed) {
@@ -405,6 +460,8 @@ class TeleopNode {
   Mode mode_ = Mode::kDirectJog;
   Eigen::Isometry3d reference_pose_ = Eigen::Isometry3d::Identity();
   std::vector<double> ghost_joint_positions_;
+  Eigen::Isometry3d jog_target_pose_ = Eigen::Isometry3d::Identity();
+  bool have_jog_target_ = false;
   double gripper_position_ = 0.0;
   bool pending_action_goal_ = false;  // avoids a benign-but-noisy cancelGoal()-with-nothing-running log
 };

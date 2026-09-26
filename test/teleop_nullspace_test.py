@@ -1,10 +1,22 @@
 #!/usr/bin/env python3
-"""Integration test: with the null-space secondary task enabled
-(~nullspace_gain > 0), holding the deadman with a centered stick (zero
-commanded task velocity) should still drive the real arm's link_4 toward
-vertical -- confirmed against the real TF tree (robot_state_publisher's
-own FK, an independent code path from arm_teleop's), not just the
-pure-function gtest cross-check in test_resolved_rate.cpp.
+"""Integration test for the null-space secondary task (~nullspace_gain > 0).
+
+The gtest suite (test_resolved_rate.cpp) already rigorously isolates and
+proves the bias's own contribution improves link_4's vertical alignment,
+comparing with-bias vs. without-bias for the same primary command. Trying
+to reproduce that same comparison live, over a real multi-second jog,
+turned out fragile: the primary motion's own incidental effect on
+alignment can be much larger than the bias's small per-tick nudge and can
+dominate it in either direction depending on the specific motion,
+confirmed the hard way when a 3s sustained +X jog made alignment measurably
+*worse* despite the bias being active throughout. This suite instead
+covers what's specific to the live, real-hardware-relevant integration:
+
+  1. Holding the deadman with a CENTERED stick causes no drift at all --
+     the bias must not run on its own with nothing commanding it (this
+     was a real, reported bug: it used to run unconditionally whenever
+     the deadman was held, making the arm visibly crawl with no input).
+  2. The bias doesn't prevent normal jogging from working.
 """
 import unittest
 
@@ -48,41 +60,40 @@ class TeleopNullspaceTest(unittest.TestCase):
             self.joy_pub.publish(joy_msg)
             rate.sleep()
 
-    def _link4_vertical_alignment(self):
-        """Dot of link_4's own local +Z axis with base_link's (world) +Z,
-        read directly from the real TF tree. For a unit quaternion
-        (x,y,z,w), the Z-component of the rotation matrix's third column
-        -- i.e. exactly this dot product -- is 1 - 2(x^2+y^2)."""
-        t = self.tf_buffer.lookup_transform("base_link", "link_4", rospy.Time(0), rospy.Duration(2.0))
-        q = t.transform.rotation
-        return 1.0 - 2.0 * (q.x * q.x + q.y * q.y)
+    def _current_x(self):
+        t = self.tf_buffer.lookup_transform("base_link", "end_effector", rospy.Time(0),
+                                             rospy.Duration(2.0))
+        return t.transform.translation.x
 
-    def test_nullspace_bias_improves_link4_verticality_when_idle(self):
+    def test_idle_deadman_causes_no_drift(self):
         # Move away from the startup singularity first (arm_trajectory
         # Finding 1: {0,0,0,0,0} is a genuine kinematic singularity, and
-        # not necessarily a representative "before" configuration anyway).
-        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=1.5)
+        # not necessarily a representative configuration to idle at).
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=1.0)
         rospy.sleep(0.6)
-        before = self._link4_vertical_alignment()
+        start_x = self._current_x()
 
-        # Hold the deadman with the stick centered: zero commanded task
-        # velocity, so any motion at all has to come from the null-space
-        # bias, not the primary task.
+        # Deadman held, stick centered: this must be a true no-op --
+        # confirmed the hard way that it wasn't, before this fix.
         self._hold_joy(make_joy(axis_x=0.0, deadman=True), duration=3.0)
         rospy.sleep(0.3)
-        after = self._link4_vertical_alignment()
+        end_x = self._current_x()
 
-        self.assertGreater(
-            after, before - 1e-3,
-            f"null-space bias should never make link_4 LESS vertical: "
-            f"before={before:.4f} after={after:.4f}",
+        self.assertAlmostEqual(
+            end_x, start_x, delta=0.002,
+            msg=f"deadman held with a centered stick must not move the arm at all: "
+            f"start={start_x:.5f} end={end_x:.5f}",
         )
-        if before < 0.95:
-            self.assertGreater(
-                after, before + 0.01,
-                f"expected a measurable improvement toward vertical given a non-trivial starting "
-                f"misalignment: before={before:.4f} after={after:.4f}",
-            )
+
+    def test_jogging_still_works_with_bias_enabled(self):
+        start_x = self._current_x()
+        self._hold_joy(make_joy(axis_x=1.0, deadman=True), duration=1.0)
+        rospy.sleep(0.3)
+        end_x = self._current_x()
+        self.assertGreater(
+            end_x - start_x, 0.02,
+            f"the null-space bias must not prevent normal jogging: start={start_x:.4f} end={end_x:.4f}",
+        )
 
 
 if __name__ == "__main__":
