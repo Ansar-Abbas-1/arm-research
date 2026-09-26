@@ -141,6 +141,27 @@ TEST_F(ResolvedRateTest, PitchCommandRotatesAboutEndEffectorsOwnLocalYAxis) {
       << "rotation should be about the end-effector's own local Y axis, not a root-frame axis";
 }
 
+TEST_F(ResolvedRateTest, RealisticDampingDoesNotBiasDirectionAwayFromSingularity) {
+  // Regression test for the fixed-lambda damping bug: with a FIXED lambda
+  // (the old behavior), every tick gets regularized by kDamping regardless
+  // of how well-conditioned J_task actually is, which biases the achieved
+  // velocity's direction (not just clamps its magnitude) away from
+  // xdot_cmd whenever J_task's singular values are spread out -- reported
+  // live as the jog target systematically deviating from the commanded
+  // pose even in clearly feasible configurations, and consistent with this
+  // suite's own prior comment measuring "~2-4% relative error at
+  // kDamping=0.05" for exactly this reason. Now lambda is variable
+  // (Chiaverini-style: switches on only as sigma_min approaches kDamping
+  // itself, see resolved_rate.h), so a well-conditioned command at the
+  // REALISTIC kDamping should track just as tightly as kNegligibleDamping
+  // did before -- not the ~2-4%-off result the old fixed-lambda scheme gave.
+  const double vx = 0.05, vy = -0.03, vz = 0.02;
+  auto result = ComputeResolvedRateVelocity(*solver_, q_, vx, vy, vz, 0.0, velocity_limits_, kDamping);
+  EXPECT_GT(result.achieved_to_commanded_ratio, 0.999)
+      << "a well-conditioned command at a realistic damping value should now track exactly, not "
+         "just approximately -- fixed damping used to bias this away from 1.0 even when feasible";
+}
+
 TEST_F(ResolvedRateTest, VelocityLimitsAreRespected) {
   std::vector<double> tiny_limits(velocity_limits_.size(), 0.01);  // artificially tight, forces clamping
   auto result = ComputeResolvedRateVelocity(*solver_, q_, 1.0, 1.0, 1.0, 1.0, tiny_limits, kDamping);

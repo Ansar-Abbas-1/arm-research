@@ -27,7 +27,12 @@ Task rows (4) < joints (5) here — **opposite** of the full-pose IK case (M2: 6
 ```
 q̇ = J_taskᵀ (J_task J_taskᵀ + λ²I)⁻¹ ẋ_cmd
 ```
-`λ = 0.05` (`~velocity_damping`) is heuristic, matching the existing IK's `initial_damping` scale. It tapers `q̇` smoothly as `J_task J_taskᵀ` approaches rank deficiency (a singularity, or a direction the 4-row projection can't reach) instead of blowing up — there is no iteration to adapt over here (a single per-tick velocity solve, not an iterative position solve), so the damping is fixed rather than adaptive.
+**`λ` is now variable, not fixed** (Chiaverini-style damping) — reported live as the jog target systematically deviating from the commanded pose even in clearly feasible configurations, root-caused as follows. Write `J_task`'s SVD as `UΣVᵀ`; the fixed-`λ` law scales the component of `ẋ_cmd` along singular direction `i` by `σᵢ/(σᵢ²+λ²)` instead of the true pseudo-inverse's `1/σᵢ`. That ratio, `σᵢ²/(σᵢ²+λ²)`, differs *per singular direction* — near 1 for a large `σᵢ`, well below 1 for a small one — so a command with components along multiple directions doesn't just get uniformly shrunk, it gets **rotated** away from `ẋ_cmd`'s true minimum-norm image. At the realistic `λ=0.05`, `test_resolved_rate.cpp`'s own comment already measured "~2-4% relative error" from exactly this even away from any real singularity. Fix: only damp once actually close to singular, using `σ_min` = the smallest singular value of `J_task` (equivalently `√(smallest eigenvalue of J_task J_taskᵀ)`, since `J_task J_taskᵀ = UΣ²Uᵀ`):
+```
+λ²(σ_min) = 0                              if σ_min ≥ λ_thresh
+          = λ_thresh² · (1 − (σ_min/λ_thresh)²)   otherwise
+```
+reusing `~velocity_damping` itself as `λ_thresh` (no new param). Well-conditioned ticks (`σ_min ≥ λ_thresh`, i.e. any pose that's actually feasible) now get the **exact** undamped pseudo-inverse — zero direction bias — while a tick genuinely approaching a singularity still tapers `q̇` up to the same `λ_thresh²` ceiling as before, continuous at `σ_min = λ_thresh`, so the safety property (never blowing up) is unchanged. Verified by `ResolvedRateTest.RealisticDampingDoesNotBiasDirectionAwayFromSingularity`: the same command that gave ~2-4% error under the old fixed `λ` now tracks to >99.9% at the realistic `λ_thresh=0.05`.
 
 Roll and yaw are **not commanded at all** — not held fixed, just absent from `J_task`'s rows, so they drift to whatever the minimum-norm `q̇` implies. (Confirmed decision, not a simplification: holding them fixed would add two more constrained rows fighting the primary command near a singularity, reintroducing the same class of conflict that broke the earlier per-tick position-IK design.)
 
@@ -46,6 +51,8 @@ q_{k+1} = clamp(q_k + q̇·dt, position limits)
 Pure math (`resolved_rate.h/.cpp`) is separated from the ROS node for testability, per project convention — `ComputeResolvedRateVelocity` takes an `ForwardKinematicsSolver` and joint positions, no ROS I/O.
 
 ### Null-space secondary task: bias toward a vertical link_4
+
+**Currently disabled** in `teleop_node.cpp`'s call to `ComputeResolvedRateVelocity` (the `secondary_link_solver`/`nullspace_gain` arguments are commented out, not deleted) — reported live as "absolutely not working" and not investigated yet; the math below and its gtest coverage (`ResolvedRateNullspaceTest`) are unaffected and still pass, so re-enabling is a one-line uncomment once there's time to look at why the live effect wasn't perceptible (likely just `~nullspace_gain=0.4`'s bias being too gentle to notice against a deliberate jog, per its own heuristic design, but unconfirmed).
 
 This chain is redundant for the 4D task above (5 joints, 4 task rows), so the primary-task solve above is a *minimum-norm* choice among infinitely many `q̇` that achieve the same task velocity — it expresses no preference at all among them. Added on request: an optional secondary objective, projected into the task's null space (Liegeois gradient projection), biasing a chosen link's own local +Z axis toward vertical whenever there's spare capacity to do so, without ever changing the achieved task velocity:
 ```

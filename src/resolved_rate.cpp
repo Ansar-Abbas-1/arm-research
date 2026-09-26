@@ -29,7 +29,35 @@ ResolvedRateResult ComputeResolvedRateVelocity(
 
   Eigen::Vector4d xdot_cmd(vx, vy, vz, pitch_rate);
 
-  Eigen::Matrix4d gram = J_task * J_task.transpose() + (damping * damping) * Eigen::Matrix4d::Identity();
+  // Variable (Chiaverini-style) damping instead of a fixed lambda: a fixed
+  // lambda regularizes every configuration by the same amount regardless of
+  // how well-conditioned J_task actually is, which biases the DIRECTION of
+  // the achieved velocity away from xdot_cmd whenever J_task's singular
+  // values are spread out (not just its magnitude) -- confirmed in
+  // test_resolved_rate.cpp's own kNegligibleDamping-vs-kDamping comment
+  // ("~2-4% relative error at kDamping=0.05 ... consistent with a
+  // damping-induced bias") and reported live as the jog target
+  // systematically deviating from the commanded pose even in clearly
+  // feasible configurations. J_task J_task^T = U Sigma^2 U^T (SVD), so its
+  // eigenvalues are the squared singular values of J_task; sigma_min is the
+  // smallest one. Damping now only switches on as sigma_min approaches the
+  // threshold `damping` itself:
+  //   lambda^2(sigma_min) = 0                                  if sigma_min >= damping
+  //                       = damping^2 * (1 - (sigma_min/damping)^2)  otherwise
+  // so a well-conditioned tick (sigma_min >= damping) recovers the exact,
+  // undamped minimum-norm pseudo-inverse (zero direction bias), while a
+  // tick approaching a true singularity (sigma_min -> 0) still tapers
+  // smoothly to the same lambda^2 = damping^2 ceiling as before -- same
+  // singularity-robustness, continuous at sigma_min = damping.
+  Eigen::Matrix4d gram0 = J_task * J_task.transpose();
+  Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d> eigensolver(gram0, Eigen::EigenvaluesOnly);
+  double sigma_min = std::sqrt(std::max(0.0, eigensolver.eigenvalues()(0)));
+  double lambda_sq = 0.0;
+  if (sigma_min < damping) {
+    double ratio = sigma_min / damping;
+    lambda_sq = damping * damping * (1.0 - ratio * ratio);
+  }
+  Eigen::Matrix4d gram = gram0 + lambda_sq * Eigen::Matrix4d::Identity();
   auto gram_ldlt = gram.ldlt();
   Eigen::Vector4d y = gram_ldlt.solve(xdot_cmd);
   Eigen::VectorXd qdot = J_task.transpose() * y;

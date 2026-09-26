@@ -33,11 +33,20 @@ struct ResolvedRateResult {
 // (6 > 5, left/normal-equations pseudo-inverse) -- so this is the
 // redundant-manipulator (right) damped pseudo-inverse form:
 //   qdot = J_task^T (J_task J_task^T + damping^2 I)^-1 xdot_cmd
-// `damping` tapers qdot smoothly as J_task approaches rank deficiency
-// (a singularity, or a direction the task-space projection can't reach)
-// instead of blowing up -- same role as IkOptions::initial_damping, just
-// fixed rather than adaptive (there's no iteration to adapt over: this is
-// a single per-tick velocity solve, not an iterative position solve).
+// `damping` (lambda) is now VARIABLE, not fixed: it is used as a
+// singularity threshold on sigma_min (J_task's smallest singular value),
+// only switching on smoothly as sigma_min drops below it --
+//   lambda^2(sigma_min) = 0                                        if sigma_min >= damping
+//                       = damping^2 * (1 - (sigma_min/damping)^2)  otherwise
+// away from a singularity (sigma_min >= damping) this recovers the exact,
+// undamped minimum-norm pseudo-inverse -- a FIXED lambda regularizes every
+// tick by the same amount regardless of conditioning, which biases the
+// achieved velocity's DIRECTION (not just its magnitude) away from
+// xdot_cmd whenever J_task's singular values are spread out, even in a
+// clearly feasible pose (confirmed live and in test_resolved_rate.cpp's
+// kNegligibleDamping-vs-kDamping comment). Near an actual singularity
+// (sigma_min -> 0), lambda^2 still tapers up to the same damping^2 ceiling
+// as before, so the safety property (never blowing up) is unchanged.
 //
 // The result is then clamped componentwise to `velocity_limits` (rad/s,
 // GetActuatedJointVelocityLimits()) -- a defensive hardware-safety clamp

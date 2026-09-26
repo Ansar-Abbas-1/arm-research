@@ -387,9 +387,13 @@ class TeleopNode {
     const double dt = 1.0 / rate_hz_;
 
     if (mode_ == Mode::kDirectJog) {
+      // Null-space secondary task (vertical-bias) temporarily disabled --
+      // reported as "absolutely not working" live and not worth debugging
+      // right now; commenting out the two arguments below re-enables it
+      // once there's time to look at it properly.
       ResolvedRateResult result = ComputeResolvedRateVelocity(
-          *fk_solver_, q, cmd.vx, cmd.vy, cmd.vz, cmd.pitch_rate, velocity_limits_, velocity_damping_,
-          nullspace_solver_.get(), nullspace_gain_);
+          *fk_solver_, q, cmd.vx, cmd.vy, cmd.vz, cmd.pitch_rate, velocity_limits_, velocity_damping_
+          /* , nullspace_solver_.get(), nullspace_gain_ */);
       if (result.achieved_to_commanded_ratio < saturation_warn_ratio_) {
         ROS_WARN_THROTTLE(1.0,
                            "teleop_node: commanded velocity saturated to %.0f%% (near a joint limit "
