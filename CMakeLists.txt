@@ -43,6 +43,7 @@ add_library(arm_kinematics
   src/jacobian.cpp
   src/inverse_kinematics.cpp
   src/workspace_sampler.cpp
+  src/resolved_rate.cpp
 )
 target_link_libraries(arm_kinematics
   ${catkin_LIBRARIES}
@@ -93,6 +94,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test-workspace-sampler test/test_workspace_sampler.cpp)
   if(TARGET ${PROJECT_NAME}-test-workspace-sampler)
     target_link_libraries(${PROJECT_NAME}-test-workspace-sampler arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(${PROJECT_NAME}-test-resolved-rate test/test_resolved_rate.cpp)
+  if(TARGET ${PROJECT_NAME}-test-resolved-rate)
+    target_link_libraries(${PROJECT_NAME}-test-resolved-rate arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
   find_package(rostest REQUIRED)
