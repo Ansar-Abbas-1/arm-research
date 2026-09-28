@@ -1,0 +1,51 @@
+<launch>
+  <!-- Standalone demo of ComputeResolvedRateVelocity's null-space
+       secondary task (see docs/resolved_rate.md): sim + resolved_rate_demo_node
+       + rviz. Streams a fixed, continuous task-space jog (default: slow
+       +X) with the null-space bias active throughout, so
+       ~nullspace_tip_link (default link_4) visibly straightens toward
+       vertical in rviz while the arm moves: the bias is gated to zero
+       with no primary command, by design, so a real command has to be
+       running to see any effect at all.
+
+       Tune live, e.g. a pure-bias-visible slow jog:
+         roslaunch arm_kinematics resolved_rate_demo.launch vx:=0.03 nullspace_gain:=0.6 -->
+
+  <arg name="use_rviz" default="true"/>
+  <arg name="vx" default="0.05"/>
+  <arg name="vy" default="0.0"/>
+  <arg name="vz" default="0.0"/>
+  <arg name="pitch_rate" default="0.0"/>
+  <arg name="nullspace_gain" default="0.4"/>
+  <arg name="nullspace_tip_link" default="link_4"/>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="resolved_rate_demo_node" pkg="arm_kinematics" type="resolved_rate_demo_node"
+        output="screen">
+    <param name="vx" type="double" value="$(arg vx)"/>
+    <param name="vy" type="double" value="$(arg vy)"/>
+    <param name="vz" type="double" value="$(arg vz)"/>
+    <param name="pitch_rate" type="double" value="$(arg pitch_rate)"/>
+    <param name="nullspace_gain" type="double" value="$(arg nullspace_gain)"/>
+    <param name="nullspace_tip_link" type="string" value="$(arg nullspace_tip_link)"/>
+  </node>
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_kinematics)/rviz/resolved_rate_demo.rviz" />
+  </group>
+</launch>

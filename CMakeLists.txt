@@ -43,7 +43,9 @@ add_library(arm_kinematics
   src/jacobian.cpp
   src/inverse_kinematics.cpp
   src/workspace_sampler.cpp
+  src/task_space_math.cpp
   src/resolved_rate.cpp
+  src/position_pitch_ik.cpp
 )
 target_link_libraries(arm_kinematics
   ${catkin_LIBRARIES}
@@ -57,6 +59,12 @@ target_link_libraries(fk_node
 
 add_executable(workspace_mapper_node src/workspace_mapper_node.cpp)
 target_link_libraries(workspace_mapper_node
+  arm_kinematics
+  ${catkin_LIBRARIES}
+)
+
+add_executable(resolved_rate_demo_node src/resolved_rate_demo_node.cpp)
+target_link_libraries(resolved_rate_demo_node
   arm_kinematics
   ${catkin_LIBRARIES}
 )
@@ -99,6 +107,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test-resolved-rate test/test_resolved_rate.cpp)
   if(TARGET ${PROJECT_NAME}-test-resolved-rate)
     target_link_libraries(${PROJECT_NAME}-test-resolved-rate arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(${PROJECT_NAME}-test-position-pitch-ik test/test_position_pitch_ik.cpp)
+  if(TARGET ${PROJECT_NAME}-test-position-pitch-ik)
+    target_link_libraries(${PROJECT_NAME}-test-position-pitch-ik arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
   find_package(rostest REQUIRED)

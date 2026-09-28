@@ -1,0 +1,120 @@
+#pragma once
+
+#include <random>
+#include <vector>
+
+#include <Eigen/Dense>
+#include <Eigen/Geometry>
+
+#include "arm_kinematics/forward_kinematics.h"
+
+namespace arm_kinematics {
+
+struct PositionPitchIkResult {
+  bool converged;  // position + pitch within tolerance (roll/yaw are never part of convergence)
+  std::vector<double> joint_positions;  // best iterate found, always populated
+  Eigen::Matrix<double, 6, 1> residual;  // [position(m) ; orientation(rad, axis-angle)] at the
+                                          // final iterate, same layout as InverseKinematicsSolver's
+                                          // IkResult -- unlike that solver, only the position (3)
+                                          // and pitch-axis-projected component of orientation (1 of
+                                          // the 3 rotation rows) are DRIVEN toward zero; the other
+                                          // two rotation components are reported for information
+                                          // only (what roll/yaw the null-space bias, or the
+                                          // minimum-norm solution if no bias, happened to settle at)
+  int iterations;
+  int restarts_used;
+};
+
+struct PositionPitchIkOptions {
+  double position_tolerance = 1e-4;  // meters; same scale as InverseKinematicsSolver's default
+  double pitch_tolerance = 1e-3;     // radians; same scale as InverseKinematicsSolver's default
+  int max_iterations = 100;
+  // Chiaverini variable-damping threshold (see resolved_rate.h/.md) --
+  // this chain is redundant for the 4D task here (5 joints, 4 rows), the
+  // opposite situation from InverseKinematicsSolver's overdetermined 6D
+  // case, so it reuses resolved_rate's damping/null-space math (shared
+  // via task_space_math.h) rather than InverseKinematicsSolver's
+  // accept/reject Levenberg-Marquardt scheme.
+  double damping = 0.05;
+  double max_step = 0.2;  // radians; per-iteration inf-norm clamp on the joint update, safety only
+
+  // Same restart rationale as InverseKinematicsSolver (see that class's
+  // comment and docs/inverse_kinematics.md): this chain has distinct
+  // solution basins a single seed's local descent won't always find,
+  // independent of how well the per-step math behaves.
+  int max_restarts = 20;
+  unsigned rng_seed = std::random_device{}();
+
+  // Optional null-space secondary task (see resolved_rate.h/.md), applied
+  // at every Newton step so the roll/yaw left free by only targeting
+  // position+pitch settle at a consistent, configured posture instead of
+  // an arbitrary seed-dependent one. `nullspace_gain = 0` (the default,
+  // matching ComputeResolvedRateVelocity's own default) disables this
+  // entirely. Unlike ComputeResolvedRateVelocity (which takes these
+  // per-call, since a live streaming caller may want to change them
+  // tick-to-tick), they're construction-time options here: this solver
+  // is meant to be configured once with whatever secondary posture policy
+  // a caller wants applied to every Solve(), not opted into per call.
+  //
+  // WARNING, confirmed the hard way: this gain is NOT the same quantity
+  // as ComputeResolvedRateVelocity's nullspace_gain, even though it feeds
+  // the identical formula. There, it's a rad/s rate the caller later
+  // multiplies by dt (~0.02s at 50Hz) before it becomes a position
+  // change; here, with no per-iteration dt to speak of, it's added
+  // directly as a per-Newton-step radians contribution -- ~50x larger in
+  // effect for the same number. Reusing resolved-rate's own default
+  // (0.4) here made a plainly-convergeable target fail to converge at
+  // all; 0.05 converged the same target cleanly. See docs/position_pitch_ik.md.
+  const ForwardKinematicsSolver* nullspace_secondary_link_solver = nullptr;
+  double nullspace_gain = 0.0;
+};
+
+// Reduced-task IK: solves for position (3) + pitch (1, about the CURRENT
+// iterate's own local Y axis, exactly ComputeResolvedRateVelocity's own
+// convention -- see resolved_rate.h) only, leaving roll and yaw
+// unconstrained. Exists because InverseKinematicsSolver's full 6D pose
+// task is OVERDETERMINED on this 5-joint chain (6 task rows > 5 joints,
+// generically full column rank away from singularities => trivial null
+// space => nothing for a secondary objective to bias into, and no
+// orientation freedom to leave unconstrained even if a caller doesn't
+// care about roll/yaw). Dropping roll/yaw from the task -- the same
+// choice ComputeResolvedRateVelocity already made for velocity control,
+// now applied to the iterative position solve -- makes the task 4D over
+// 5 joints, genuinely redundant, with a real null space the optional
+// secondary task (below) can use.
+//
+// See docs/resolved_rate.md for the shared damping/null-space derivation
+// and docs/inverse_kinematics.md for why InverseKinematicsSolver itself
+// can't do this. Full derivation of this solver's iteration is in
+// docs/position_pitch_ik.md.
+class PositionPitchIkSolver {
+ public:
+  // `solver` must outlive this object -- stored by reference, not copied,
+  // matching InverseKinematicsSolver's own convention.
+  explicit PositionPitchIkSolver(const ForwardKinematicsSolver& solver,
+                                  PositionPitchIkOptions options = PositionPitchIkOptions());
+
+  // Iterates from `seed` (must match solver's actuated-joint count) toward
+  // matching `target_pose`'s position and pitch-about-target's-own-local-Y
+  // component only; `target_pose`'s roll/yaw are read (to report residual
+  // against, informationally) but never enforced. If `seed` doesn't
+  // converge, retries from up to Options::max_restarts random seeds
+  // within joint limits, keeping the best (lowest position+pitch
+  // residual, preferring converged) result -- same policy as
+  // InverseKinematicsSolver::Solve. Throws std::invalid_argument if
+  // `seed`'s size doesn't match the solver's actuated-joint count, or if
+  // a configured secondary_link_solver has more actuated joints than the
+  // chain (it must be an upstream sub-chain).
+  PositionPitchIkResult Solve(const Eigen::Isometry3d& target_pose,
+                               const std::vector<double>& seed) const;
+
+ private:
+  PositionPitchIkResult SolveFromSeed(const Eigen::Isometry3d& target_pose,
+                                       const std::vector<double>& seed) const;
+
+  const ForwardKinematicsSolver& solver_;
+  PositionPitchIkOptions options_;
+  mutable std::mt19937 rng_;
+};
+
+}  // namespace arm_kinematics

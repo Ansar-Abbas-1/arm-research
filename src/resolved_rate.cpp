@@ -7,6 +7,7 @@
 #include <Eigen/Dense>
 
 #include "arm_kinematics/jacobian.h"
+#include "task_space_math.h"
 
 namespace arm_kinematics {
 
@@ -29,39 +30,6 @@ ResolvedRateResult ComputeResolvedRateVelocity(
 
   Eigen::Vector4d xdot_cmd(vx, vy, vz, pitch_rate);
 
-  // Variable (Chiaverini-style) damping instead of a fixed lambda: a fixed
-  // lambda regularizes every configuration by the same amount regardless of
-  // how well-conditioned J_task actually is, which biases the DIRECTION of
-  // the achieved velocity away from xdot_cmd whenever J_task's singular
-  // values are spread out (not just its magnitude) -- confirmed in
-  // test_resolved_rate.cpp's own kNegligibleDamping-vs-kDamping comment
-  // ("~2-4% relative error at kDamping=0.05 ... consistent with a
-  // damping-induced bias") and reported live (during M4) as the jog target
-  // systematically deviating from the commanded pose even in clearly
-  // feasible configurations. J_task J_task^T = U Sigma^2 U^T (SVD), so its
-  // eigenvalues are the squared singular values of J_task; sigma_min is the
-  // smallest one. Damping now only switches on as sigma_min approaches the
-  // threshold `damping` itself:
-  //   lambda^2(sigma_min) = 0                                  if sigma_min >= damping
-  //                       = damping^2 * (1 - (sigma_min/damping)^2)  otherwise
-  // so a well-conditioned tick (sigma_min >= damping) recovers the exact,
-  // undamped minimum-norm pseudo-inverse (zero direction bias), while a
-  // tick approaching a true singularity (sigma_min -> 0) still tapers
-  // smoothly to the same lambda^2 = damping^2 ceiling as before -- same
-  // singularity-robustness, continuous at sigma_min = damping.
-  Eigen::Matrix4d gram0 = J_task * J_task.transpose();
-  Eigen::SelfAdjointEigenSolver<Eigen::Matrix4d> eigensolver(gram0, Eigen::EigenvaluesOnly);
-  double sigma_min = std::sqrt(std::max(0.0, eigensolver.eigenvalues()(0)));
-  double lambda_sq = 0.0;
-  if (sigma_min < damping) {
-    double ratio = sigma_min / damping;
-    lambda_sq = damping * damping * (1.0 - ratio * ratio);
-  }
-  Eigen::Matrix4d gram = gram0 + lambda_sq * Eigen::Matrix4d::Identity();
-  auto gram_ldlt = gram.ldlt();
-  Eigen::Vector4d y = gram_ldlt.solve(xdot_cmd);
-  Eigen::VectorXd qdot = J_task.transpose() * y;
-
   // Gated on an actual commanded task velocity, not just deadman held:
   // found the hard way in live testing that an always-on secondary task
   // makes the arm visibly drift/crawl while the operator is just holding
@@ -70,6 +38,8 @@ ResolvedRateResult ComputeResolvedRateVelocity(
   // gradient, so it never settles to exactly zero on its own). Real input
   // (xdot_cmd) is exactly zero here whenever the caller's deadzone
   // suppressed the stick, so this check is exact, not a heuristic.
+  Eigen::VectorXd qdot0;
+  bool have_nullspace_bias = false;
   if (secondary_link_solver != nullptr && nullspace_gain != 0.0 && xdot_cmd.squaredNorm() > 1e-12) {
     const size_t m = secondary_link_solver->GetActuatedJointNames().size();
     if (m > n) {
@@ -88,16 +58,27 @@ ResolvedRateResult ComputeResolvedRateVelocity(
     // directly: it depends only on the shared root->joint_i sub-chain, not
     // on which tip the solver was built for. Reusing J's columns here
     // avoids a second Jacobian evaluation entirely.
-    Eigen::VectorXd qdot0 = Eigen::VectorXd::Zero(n);
+    qdot0 = Eigen::VectorXd::Zero(n);
     for (size_t i = 0; i < m; ++i) {
       Eigen::Vector3d z_i = J.block<3, 1>(3, i);
       qdot0(i) = nullspace_gain * world_up.dot(z_i.cross(link_axis));
     }
-
-    Eigen::MatrixXd J_pinv = J_task.transpose() * gram_ldlt.solve(Eigen::Matrix4d::Identity());
-    Eigen::MatrixXd null_projector = Eigen::MatrixXd::Identity(n, n) - J_pinv * J_task;
-    qdot += null_projector * qdot0;
+    have_nullspace_bias = true;
   }
+
+  // Variable (Chiaverini-style) damping instead of a fixed lambda: a fixed
+  // lambda regularizes every configuration by the same amount regardless of
+  // how well-conditioned J_task actually is, which biases the DIRECTION of
+  // the achieved velocity away from xdot_cmd whenever J_task's singular
+  // values are spread out (not just its magnitude) -- confirmed in
+  // test_resolved_rate.cpp's own kNegligibleDamping-vs-kDamping comment
+  // ("~2-4% relative error at kDamping=0.05 ... consistent with a
+  // damping-induced bias") and reported live (during M4) as the jog target
+  // systematically deviating from the commanded pose even in clearly
+  // feasible configurations. Shared with PositionPitchIkSolver -- see
+  // task_space_math.h/.cpp and docs/resolved_rate.md's damping derivation.
+  Eigen::VectorXd qdot = detail::SolveDampedRightPseudoInverse(
+      J_task, xdot_cmd, damping, have_nullspace_bias ? &qdot0 : nullptr);
 
   ResolvedRateResult result;
   result.joint_velocities.resize(n);
