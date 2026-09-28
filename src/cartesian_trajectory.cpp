@@ -80,11 +80,9 @@ SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsS
                                          const std::vector<double>& q_start,
                                          const Eigen::Isometry3d& pose_start,
                                          const Eigen::Isometry3d& pose_goal, double duration,
-                                         double sample_rate_hz) {
+                                         int num_samples) {
   // Own solver, looser tolerances -- see PathTrackingIkOptions().
   arm_kinematics::InverseKinematicsSolver path_ik_solver(fk_solver, PathTrackingIkOptions());
-
-  int num_samples = std::max(2, static_cast<int>(std::round(duration * sample_rate_hz)) + 1);
 
   SampleAttempt attempt;
   attempt.q_samples.reserve(num_samples);
@@ -118,6 +116,10 @@ SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsS
   }
 
   return attempt;
+}
+
+int ProjectedSampleCount(double duration, double sample_rate_hz) {
+  return std::max(2, static_cast<int>(std::round(duration * sample_rate_hz)) + 1);
 }
 
 // Returns the largest (|finite-difference velocity| / limit) ratio found
@@ -189,9 +191,56 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
   // existed.
   constexpr int kMaxReasonableSamples = 5000;
 
-  SampleAttempt attempt;
+  // Coarse-to-fine duration search (M3 Finding 4 fix): the original
+  // version re-sampled the WHOLE path at full sample_rate_hz resolution
+  // on every rescaling iteration, so cost scaled with
+  // max_duration_iterations x (duration x sample_rate_hz) x per-sample IK
+  // cost -- the dominant cost for a large Cartesian move. The velocity
+  // limit check only needs approximately the right duration to converge,
+  // not a full-resolution trajectory at every guess: search cheaply first
+  // at a small, FIXED sample count (independent of duration/sample_rate_hz,
+  // so it stays cheap even for a large move), then run the real
+  // sample_rate_hz resolution only once the duration estimate has
+  // converged. A coarser search sample spacing means the finite-differenced
+  // velocity there is an average over a wider interval and can UNDERESTIMATE
+  // a true peak within it -- never overestimate in a way that would make
+  // the final check unnecessarily strict -- so a bounded number of
+  // full-resolution correction passes still follows the coarse search,
+  // and the full-resolution attempt actually returned is always the one
+  // that passed the real check. Same success/failure criteria and
+  // trajectory as before; only the search cost changes.
+  constexpr int kCoarseSearchSamples = 25;
+  // Same ceiling as the coarse search (and as the original single-phase
+  // loop before this change): in practice the coarse phase gets duration
+  // very close, so this almost always takes 0-1 passes -- but it must not
+  // be tighter than the original algorithm's own convergence guarantee,
+  // or a move that genuinely needed several rescaling steps can fail here
+  // where the original would have succeeded. Confirmed the hard way: a
+  // hardcoded cap of 2 failed a real move whose worst ratio was only
+  // 1.023 (one more pass would have converged it).
+  const int max_full_resolution_corrections = max_duration_iterations;
+
   for (int iter = 0; iter < max_duration_iterations; ++iter) {
-    int projected_samples = std::max(2, static_cast<int>(std::round(duration * sample_rate_hz)) + 1);
+    SampleAttempt coarse =
+        GenerateSamplesAtDuration(fk_solver, q_start, pose_start, pose_goal, duration, kCoarseSearchSamples);
+    double worst_ratio = WorstVelocityRatio(coarse.q_samples, coarse.t_samples, velocity_limits);
+    if (worst_ratio <= 1.0) {
+      break;
+    }
+    if (iter == max_duration_iterations - 1) {
+      result.success = false;
+      result.message = "could not satisfy velocity limits within " +
+                        std::to_string(max_duration_iterations) +
+                        " coarse duration-scaling iterations (worst ratio " +
+                        std::to_string(worst_ratio) + ")";
+      return result;
+    }
+    duration *= worst_ratio * 1.01;  // small safety margin past the exact scaling factor
+  }
+
+  SampleAttempt attempt;
+  for (int correction = 0; correction <= max_full_resolution_corrections; ++correction) {
+    int projected_samples = ProjectedSampleCount(duration, sample_rate_hz);
     if (projected_samples > kMaxReasonableSamples) {
       result.success = false;
       result.message = "projected sample count (" + std::to_string(projected_samples) +
@@ -201,21 +250,21 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
     }
 
     attempt = GenerateSamplesAtDuration(fk_solver, q_start, pose_start, pose_goal, duration,
-                                        sample_rate_hz);
+                                        projected_samples);
 
     double worst_ratio = WorstVelocityRatio(attempt.q_samples, attempt.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {
       break;
     }
-    if (iter == max_duration_iterations - 1) {
+    if (correction == max_full_resolution_corrections) {
       result.success = false;
       result.message = "could not satisfy velocity limits within " +
-                        std::to_string(max_duration_iterations) +
-                        " duration-scaling iterations (worst ratio " + std::to_string(worst_ratio) +
-                        ")";
+                        std::to_string(max_full_resolution_corrections) +
+                        " full-resolution correction passes after coarse search (worst ratio " +
+                        std::to_string(worst_ratio) + ")";
       return result;
     }
-    duration *= worst_ratio * 1.01;  // small safety margin past the exact scaling factor
+    duration *= worst_ratio * 1.01;
   }
 
   trajectory_msgs::JointTrajectory traj;

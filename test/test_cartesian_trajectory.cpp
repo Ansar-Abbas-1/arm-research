@@ -133,6 +133,36 @@ TEST_F(CartesianTrajectoryTest, UnreachableGoalFailsWithMessageNotGarbage) {
   EXPECT_TRUE(result.trajectory.points.empty());
 }
 
+TEST_F(CartesianTrajectoryTest, LargeMoveNeedsMultipleFullResolutionCorrectionPasses) {
+  // Regression test for the coarse-to-fine duration search (M3 Finding 4
+  // fix): this specific move's coarse (25-sample) search converges on its
+  // FIRST duration guess -- the true worst-velocity window is narrow
+  // enough that a coarse scan steps right over it -- so nearly all the
+  // real convergence work lands in the fine (full-resolution) correction
+  // loop, which needs 4 passes here (confirmed via temporary debug
+  // instrumentation while developing this). An earlier version hardcoded
+  // that loop's cap to 2 regardless of max_duration_iterations and failed
+  // this exact move (worst ratio only 1.023 -- one more pass would have
+  // converged it) even though the original single-phase algorithm would
+  // have succeeded well within its own default budget. The fix ties the
+  // fine-phase cap to max_duration_iterations itself, so it can never be
+  // tighter than the original algorithm's own convergence guarantee.
+  //
+  // Slower than this file's other tests (real IK solves across several
+  // full-resolution passes, ~300+ samples each) -- deliberately not
+  // reduced further: every smaller/cheaper move tried during development
+  // converged in a single fine-phase pass and didn't exercise this path
+  // at all. Still well under the "not multi-minute" bar
+  // docs/trajectory_generation.md sets for this suite.
+  std::vector<double> q_start = {-2.5, 0.2, -2.0, 0.5, -3.4};
+  std::vector<double> q_goal_config = {2.5, 3.0, -0.1, 4.3, -0.1};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+
+  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+                                             joint_names_, 50.0);
+  ASSERT_TRUE(result.success) << result.message;
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

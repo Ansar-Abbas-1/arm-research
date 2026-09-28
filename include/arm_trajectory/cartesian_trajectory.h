@@ -52,9 +52,14 @@ struct CartesianTrajectoryResult {
 //
 // Duration is seeded from the joint-space endpoint difference (a
 // heuristic -- the actual induced joint-space path isn't linear, see
-// docs/trajectory_generation.md), then increased and regenerated (up to
-// `max_duration_iterations`) if any sample's finite-differenced joint
-// velocity exceeds its limit.
+// docs/trajectory_generation.md), then searched via coarse-to-fine
+// duration-rescaling (up to `max_duration_iterations` cheap, fixed-
+// sample-count search passes, followed by a small bounded number of
+// full-sample_rate_hz-resolution correction passes) until every sample's
+// finite-differenced joint velocity is within its limit -- see the .cpp
+// for why this replaced re-sampling the whole path at full resolution on
+// every iteration (M3 Finding 4: that was the dominant cost for a large
+// Cartesian move).
 //
 // Unlike GenerateJointSpaceTrajectory, per-joint velocities in the
 // returned trajectory are finite-differenced approximations (there's no
