@@ -11,10 +11,14 @@ find_package(catkin REQUIRED COMPONENTS
   control_msgs
   actionlib
   actionlib_msgs
+  visualization_msgs
+  interactive_markers
   roslaunch
   message_generation
 )
 find_package(Eigen3 REQUIRED)
+
+roslaunch_add_file_check(launch)
 
 add_service_files(
   FILES
@@ -30,7 +34,7 @@ generate_messages(
 catkin_package(
   INCLUDE_DIRS include
   LIBRARIES arm_trajectory
-  CATKIN_DEPENDS roscpp arm_kinematics urdf geometry_msgs sensor_msgs trajectory_msgs control_msgs actionlib actionlib_msgs message_runtime
+  CATKIN_DEPENDS roscpp arm_kinematics urdf geometry_msgs sensor_msgs trajectory_msgs control_msgs actionlib actionlib_msgs visualization_msgs interactive_markers message_runtime
   DEPENDS EIGEN3
 )
 
@@ -69,8 +73,16 @@ target_link_libraries(reach_target_pose_node
   ${catkin_LIBRARIES}
 )
 
+add_executable(interactive_pose_marker_node src/interactive_pose_marker_node.cpp)
+add_dependencies(interactive_pose_marker_node ${PROJECT_NAME}_gencpp)
+target_link_libraries(interactive_pose_marker_node
+  arm_trajectory
+  ${catkin_LIBRARIES}
+)
+
 catkin_install_python(PROGRAMS
   scripts/manual_trajectory_demo.py
+  scripts/reach_pose_cli.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

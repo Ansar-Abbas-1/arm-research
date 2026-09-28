@@ -1,0 +1,41 @@
+<launch>
+  <!-- One-command entry point for interactively testing /reach_target_pose
+       (see docs/trajectory_generation.md): sim + trajectory_service_node +
+       trajectory_executor_node + reach_target_pose_node +
+       interactive_pose_marker_node + rviz. In rviz, drag the orange-arrow
+       marker to the desired end_effector pose, then right-click it and
+       choose "Send to /reach_target_pose" to commit.
+
+       For the typing alternative instead of dragging:
+         rosrun arm_trajectory reach_pose_cli.py -->
+
+  <arg name="use_rviz" default="true"/>
+  <!-- use_rviz:=false lets this run without a display, e.g. for automated
+       checks: rviz needs one and none is available in an automated/CI
+       context (confirmed the hard way in M0). -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+  <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node" />
+  <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_trajectory)/rviz/interactive_reach.rviz" />
+  </group>
+</launch>

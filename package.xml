@@ -19,6 +19,9 @@
   <depend>control_msgs</depend>
   <depend>actionlib</depend>
   <depend>actionlib_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>interactive_markers</depend>
+  <depend>rospy</depend>
 
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
@@ -28,7 +31,10 @@
   <exec_depend>xacro</exec_depend>
   <exec_depend>robot_state_publisher</exec_depend>
 
+  <!-- interactive_reach.launch's optional rviz node (use_rviz:=true, the
+       default): not needed by any headless/test path above. -->
+  <exec_depend>rviz</exec_depend>
+
   <test_depend>rostest</test_depend>
-  <test_depend>rospy</test_depend>
   <test_depend>roslib</test_depend>
 </package>
