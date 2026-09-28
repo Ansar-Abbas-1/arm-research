@@ -19,6 +19,7 @@ find_package(Eigen3 REQUIRED)
 add_service_files(
   FILES
   GenerateTrajectory.srv
+  ReachTargetPose.srv
 )
 generate_messages(
   DEPENDENCIES
@@ -61,6 +62,13 @@ target_link_libraries(trajectory_executor_node
   ${catkin_LIBRARIES}
 )
 
+add_executable(reach_target_pose_node src/reach_target_pose_node.cpp)
+add_dependencies(reach_target_pose_node ${PROJECT_NAME}_gencpp)
+target_link_libraries(reach_target_pose_node
+  arm_trajectory
+  ${catkin_LIBRARIES}
+)
+
 catkin_install_python(PROGRAMS
   scripts/manual_trajectory_demo.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
@@ -91,4 +99,5 @@ if(CATKIN_ENABLE_TESTING)
 
   find_package(rostest REQUIRED)
   add_rostest(test/trajectory_execution.test)
+  add_rostest(test/reach_target_pose.test)
 endif()
