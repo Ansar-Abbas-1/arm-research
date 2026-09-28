@@ -1,0 +1,42 @@
+<launch>
+  <!-- Visualizes the position-only reachable workspace (see
+       docs/workspace_identification.md): workspace_mapper_node samples it
+       once via Monte Carlo (workspace_sampler.h) and publishes a latched
+       PointCloud2, overlaid in rviz against the real robot's own TF/mesh
+       so its extent is directly comparable to the arm itself. No
+       simulator/joint_state_publisher here: the workspace is a static
+       property of the URDF's joint limits alone, nothing to drive or
+       track live. -->
+
+  <arg name="num_samples" default="200000"/>
+  <arg name="voxel_size_m" default="0.01"/>
+  <arg name="use_rviz" default="true"/>
+  <!-- use_rviz:=false lets this run without a display, e.g. for automated
+       checks: rviz needs one and none is available in an automated/CI
+       context (confirmed the hard way in M0). -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <param name="publish_frequency" type="double" value="50.0" />
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui"
+        type="joint_state_publisher_gui">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="workspace_mapper_node" pkg="arm_kinematics" type="workspace_mapper_node"
+        output="screen">
+    <param name="num_samples" type="int" value="$(arg num_samples)"/>
+    <param name="voxel_size_m" type="double" value="$(arg voxel_size_m)"/>
+  </node>
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_kinematics)/rviz/workspace_visualize.rviz" />
+  </group>
+</launch>

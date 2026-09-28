@@ -42,6 +42,7 @@ add_library(arm_kinematics
   src/forward_kinematics.cpp
   src/jacobian.cpp
   src/inverse_kinematics.cpp
+  src/workspace_sampler.cpp
 )
 target_link_libraries(arm_kinematics
   ${catkin_LIBRARIES}
@@ -49,6 +50,12 @@ target_link_libraries(arm_kinematics
 
 add_executable(fk_node src/fk_node.cpp)
 target_link_libraries(fk_node
+  arm_kinematics
+  ${catkin_LIBRARIES}
+)
+
+add_executable(workspace_mapper_node src/workspace_mapper_node.cpp)
+target_link_libraries(workspace_mapper_node
   arm_kinematics
   ${catkin_LIBRARIES}
 )
@@ -81,6 +88,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test-inverse-kinematics test/test_inverse_kinematics.cpp)
   if(TARGET ${PROJECT_NAME}-test-inverse-kinematics)
     target_link_libraries(${PROJECT_NAME}-test-inverse-kinematics arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(${PROJECT_NAME}-test-workspace-sampler test/test_workspace_sampler.cpp)
+  if(TARGET ${PROJECT_NAME}-test-workspace-sampler)
+    target_link_libraries(${PROJECT_NAME}-test-workspace-sampler arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
   find_package(rostest REQUIRED)
