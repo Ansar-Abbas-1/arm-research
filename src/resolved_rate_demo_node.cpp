@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -14,12 +15,22 @@
 // Minimal, standalone demo of ComputeResolvedRateVelocity and its
 // null-space secondary task -- neither has a ROS wrapper anywhere yet
 // (both are pure library code, gtest-only so far), and this is deliberately
-// NOT part of arm_teleop: a fixed, continuous task-space command (default:
-// a slow +X jog), streamed at ~rate to /joint_states_out, with the
-// null-space bias active throughout so ~nullspace_tip_link visibly
-// straightens toward vertical in rviz while the arm moves -- exactly the
-// scenario the bias is gated on (see resolved_rate.h: no primary command,
-// no bias, by design), so a real command has to be running to see it at all.
+// NOT part of arm_teleop: a continuous task-space command, streamed at
+// ~rate to /joint_states_out, with the null-space bias active throughout
+// so ~nullspace_tip_link visibly straightens toward vertical in rviz
+// while the arm moves -- exactly the scenario the bias is gated on (see
+// resolved_rate.h: no primary command, no bias, by design), so a real
+// command has to be running to see it at all.
+//
+// The commanded direction reverses every ~oscillation_period seconds
+// (default vx=0.05 m/s, flipping every 4s) rather than jogging one way
+// forever -- confirmed the hard way running this live: a one-directional
+// jog runs the arm into a joint limit within a few seconds (this arm's
+// workspace is a ~1.2m-radius envelope, see
+// arm_kinematics/docs/workspace_identification.md) and then just sits
+// there pinned once every joint clamps, with nothing left to watch.
+// Oscillating keeps the null-space bias something to act against
+// indefinitely.
 class ResolvedRateDemoNode {
  public:
   ResolvedRateDemoNode(ros::NodeHandle& nh, ros::NodeHandle& pnh) : nh_(nh) {
@@ -34,6 +45,22 @@ class ResolvedRateDemoNode {
     pnh.param("vy", vy_, 0.0);
     pnh.param("vz", vz_, 0.0);
     pnh.param("pitch_rate", pitch_rate_, 0.0);
+    pnh.param("oscillation_period", oscillation_period_, 4.0);
+    // Default: end_effector below base_link and pointing down (tool axis
+    // ~(0,-0.13,-0.99)), with ~nullspace_tip_link (link_4) essentially
+    // exactly HORIZONTAL to start (dot with world Z ~ -1e-4) -- found by
+    // scanning random in-limit configurations for the most tilted-from-
+    // vertical one satisfying "below base, pointing down", not
+    // hand-derived (this chain's per-joint URDF rpy offsets make that
+    // impractical to do reliably by hand). Maximum room for the
+    // null-space bias to visibly straighten it toward vertical.
+    std::vector<double> default_start = {-1.5747, 2.7009, -0.4995, 2.8188, -3.5092};
+    pnh.param("start_joint_positions", start_joint_positions_, default_start);
+    pnh.param("setup_move_duration", setup_move_duration_, 3.0);
+    if (start_joint_positions_.size() != default_start.size()) {
+      throw std::runtime_error("resolved_rate_demo_node: ~start_joint_positions must have " +
+                                std::to_string(default_start.size()) + " values");
+    }
 
     urdf::Model model;
     if (!model.initParam("robot_description")) {
@@ -55,14 +82,43 @@ class ResolvedRateDemoNode {
       ros::spinOnce();
       wait_rate.sleep();
     }
+
+    MoveToStartConfiguration();
+
     ROS_INFO("resolved_rate_demo_node: ready -- streaming vx=%.3f vy=%.3f vz=%.3f pitch_rate=%.3f, "
              "nullspace_gain=%.2f biasing %s toward vertical",
              vx_, vy_, vz_, pitch_rate_, nullspace_gain_, nullspace_tip_link.c_str());
 
+    start_time_ = ros::Time::now();
     timer_ = nh_.createTimer(ros::Duration(1.0 / rate_hz_), &ResolvedRateDemoNode::TimerCb, this);
   }
 
  private:
+  // Straight-line joint-space interpolation from wherever the sim actually
+  // is to start_joint_positions_, published directly (bypassing
+  // ComputeResolvedRateVelocity entirely -- this is just getting into
+  // position for the demo, not something the resolved-rate/null-space
+  // math needs to be involved in).
+  void MoveToStartConfiguration() {
+    std::vector<double> q_from = LatestJointPositions();
+    const int num_steps = std::max(1, static_cast<int>(setup_move_duration_ * rate_hz_));
+    ros::Rate move_rate(rate_hz_);
+    for (int step = 1; step <= num_steps; ++step) {
+      double frac = static_cast<double>(step) / num_steps;
+      sensor_msgs::JointState cmd;
+      cmd.header.stamp = ros::Time::now();
+      cmd.name = joint_names_;
+      cmd.position.resize(q_from.size());
+      for (size_t i = 0; i < q_from.size(); ++i) {
+        cmd.position[i] = q_from[i] + frac * (start_joint_positions_[i] - q_from[i]);
+      }
+      joint_out_pub_.publish(cmd);
+      ros::spinOnce();
+      move_rate.sleep();
+    }
+    ROS_INFO("resolved_rate_demo_node: moved to demo start configuration");
+  }
+
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
     std::vector<double> positions(joint_names_.size());
     for (size_t i = 0; i < joint_names_.size(); ++i) {
@@ -91,9 +147,12 @@ class ResolvedRateDemoNode {
     std::vector<double> q = LatestJointPositions();
     const double dt = 1.0 / rate_hz_;
 
+    double elapsed = (ros::Time::now() - start_time_).toSec();
+    double sign = std::fmod(elapsed, 2.0 * oscillation_period_) < oscillation_period_ ? 1.0 : -1.0;
+
     arm_kinematics::ResolvedRateResult result = arm_kinematics::ComputeResolvedRateVelocity(
-        *fk_solver_, q, vx_, vy_, vz_, pitch_rate_, velocity_limits_, velocity_damping_,
-        nullspace_solver_.get(), nullspace_gain_);
+        *fk_solver_, q, sign * vx_, sign * vy_, sign * vz_, sign * pitch_rate_, velocity_limits_,
+        velocity_damping_, nullspace_solver_.get(), nullspace_gain_);
 
     sensor_msgs::JointState cmd;
     cmd.header.stamp = ros::Time::now();
@@ -121,6 +180,10 @@ class ResolvedRateDemoNode {
   double velocity_damping_;
   double nullspace_gain_;
   double vx_, vy_, vz_, pitch_rate_;
+  double oscillation_period_;
+  std::vector<double> start_joint_positions_;
+  double setup_move_duration_;
+  ros::Time start_time_;
 
   std::mutex mutex_;
   std::vector<double> latest_joint_positions_;
