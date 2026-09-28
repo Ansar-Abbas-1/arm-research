@@ -19,6 +19,7 @@ roslaunch_add_file_check(launch)
 add_service_files(
   FILES
   SolveIk.srv
+  SolvePositionPitchIk.srv
 )
 generate_messages(
   DEPENDENCIES
@@ -72,6 +73,13 @@ target_link_libraries(resolved_rate_demo_node
 add_executable(ik_node src/ik_node.cpp)
 add_dependencies(ik_node ${PROJECT_NAME}_gencpp)
 target_link_libraries(ik_node
+  arm_kinematics
+  ${catkin_LIBRARIES}
+)
+
+add_executable(position_pitch_ik_node src/position_pitch_ik_node.cpp)
+add_dependencies(position_pitch_ik_node ${PROJECT_NAME}_gencpp)
+target_link_libraries(position_pitch_ik_node
   arm_kinematics
   ${catkin_LIBRARIES}
 )

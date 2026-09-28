@@ -28,7 +28,12 @@ struct PositionPitchIkResult {
 struct PositionPitchIkOptions {
   double position_tolerance = 1e-4;  // meters; same scale as InverseKinematicsSolver's default
   double pitch_tolerance = 1e-3;     // radians; same scale as InverseKinematicsSolver's default
-  int max_iterations = 100;
+  // Higher than InverseKinematicsSolver's 100: a primary-only solve here
+  // still exits in ~10-20 iterations regardless (position+pitch is an
+  // easier target than a full 6D pose, see the class comment), so this
+  // only matters when a null-space secondary task is configured, where
+  // the extra budget is needed -- see nullspace_tolerance below.
+  int max_iterations = 200;
   // Chiaverini variable-damping threshold (see resolved_rate.h/.md) --
   // this chain is redundant for the 4D task here (5 joints, 4 rows), the
   // opposite situation from InverseKinematicsSolver's overdetermined 6D
@@ -67,6 +72,36 @@ struct PositionPitchIkOptions {
   // all; 0.05 converged the same target cleanly. See docs/position_pitch_ik.md.
   const ForwardKinematicsSolver* nullspace_secondary_link_solver = nullptr;
   double nullspace_gain = 0.0;
+
+  // Real bug, confirmed empirically and fixed: the iteration loop used to
+  // stop the instant position+pitch converged, giving the null-space bias
+  // exactly as many iterations as the PRIMARY task happened to need --
+  // typically far too few for the bias's own, much slower, per-step-
+  // limited convergence to get anywhere close to its fixed point (a
+  // 100-target sweep isolating restart randomness showed the bias always
+  // improved alignment relative to no bias at all, so its direction was
+  // never wrong, but still landed worse than the seed's own starting
+  // alignment in the majority of cases simply because the loop stopped
+  // too early). Now the loop keeps running -- at no extra cost to the
+  // primary task, whose own contribution is already ~0 once converged --
+  // until the null-space bias vector's own norm drops below this
+  // tolerance too, or max_iterations runs out. `converged` still reflects
+  // only the primary task (see IkResult), regardless of whether the
+  // secondary task got there.
+  //
+  // Honest limitation, not hidden: at the safe default gain (0.05
+  // above), this is a slow, linear-rate fixed-point iteration -- a
+  // 40-target sweep (isolating restart randomness) after this fix still
+  // exhausted max_iterations without reaching this tolerance in most
+  // cases, though every one of them still measurably improved over no
+  // bias at all, often substantially (some by 0.5+ in alignment score).
+  // A stronger gain converges faster but needs more restarts (a larger
+  // per-step secondary contribution leaks more through the damped, not
+  // exact, null-space projection and can occasionally knock the primary
+  // task off its own convergence path) -- a real trade-off, not a single
+  // better number, so left as a tunable rather than "fixed" further. See
+  // docs/position_pitch_ik.md.
+  double nullspace_tolerance = 1e-3;
 };
 
 // Reduced-task IK: solves for position (3) + pitch (1, about the CURRENT

@@ -1,0 +1,35 @@
+<launch>
+  <!-- sim + position_pitch_ik_node, config loaded from
+       config/position_pitch_ik.yaml (see docs/position_pitch_ik.md) --
+       every PositionPitchIkOptions field is reconfigurable there, or
+       overridden per-launch via the args below, or via any other
+       rosparam-loading mechanism (this is a plain ROS param namespace,
+       nothing special about how it's populated).
+
+       roslaunch arm_kinematics position_pitch_ik.launch
+       roslaunch arm_kinematics position_pitch_ik.launch nullspace_gain:=0.1 -->
+
+  <arg name="config_file" default="$(find arm_kinematics)/config/position_pitch_ik.yaml"/>
+  <arg name="nullspace_gain" default="0.05"/>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="position_pitch_ik_node" pkg="arm_kinematics" type="position_pitch_ik_node"
+        output="screen">
+    <rosparam command="load" file="$(arg config_file)" />
+    <param name="nullspace_gain" value="$(arg nullspace_gain)" />
+  </node>
+</launch>

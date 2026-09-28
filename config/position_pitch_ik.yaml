@@ -1,0 +1,28 @@
+# Example config for position_pitch_ik_node -- every field here is one of
+# PositionPitchIkOptions' fields (see docs/position_pitch_ik.md for what
+# each one means and how it was calibrated). Load into the node's private
+# namespace with:
+#   <rosparam command="load" file="$(find arm_kinematics)/config/position_pitch_ik.yaml" />
+# nested inside the <node> tag, same as arm_interface/config/ArmInterface.yaml.
+
+root_link: base_link
+tip_link: end_effector
+
+position_tolerance: 0.0001   # meters
+pitch_tolerance: 0.001       # radians
+max_iterations: 200
+damping: 0.05                # Chiaverini singularity threshold, see resolved_rate.md
+max_step: 0.2                # radians, per-iteration inf-norm clamp
+max_restarts: 20
+
+# Null-space secondary task: biases nullspace_tip_link's own local Z axis
+# toward vertical. nullspace_gain: 0.0 (the library default) disables
+# this entirely. Values above ~0.1 converge faster but need more restarts
+# (a stronger per-step secondary contribution leaks more through the
+# damped, not exact, null-space projection and can occasionally knock the
+# primary task off its own convergence path) -- 0.05 is the confirmed-safe
+# starting point; see position_pitch_ik.h's own nullspace_gain comment for
+# the measured trade-off before turning this up.
+nullspace_tip_link: link_4
+nullspace_gain: 0.05
+nullspace_tolerance: 0.001

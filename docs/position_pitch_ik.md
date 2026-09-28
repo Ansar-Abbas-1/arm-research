@@ -38,6 +38,16 @@ If `nullspace_secondary_link_solver`/`nullspace_gain` are configured (constructi
 
 `nullspace_gain` here plays the role of a per-iteration **step** gain (radians added directly, every Newton step), not a rad/s **rate** the way it does in `ComputeResolvedRateVelocity` (where the caller multiplies by `dt`, ~0.02s at 50Hz, before it becomes an actual position change) — the two contexts need separately-tuned values, confirmed the hard way: `nullspace_gain=0.4` (resolved-rate's own default, the natural value to reach for) made this solver fail to converge at all on an otherwise-easy target, since applied without any `dt` scaling it's a ~50x larger per-step contribution than the same number means in the velocity context. `0.05` converges cleanly on the same target. `PositionPitchIkOptions::nullspace_gain` still defaults to `0.0` (off), same as `ComputeResolvedRateVelocity`'s default — this is a caution for whoever turns it on, not a change to the default policy.
 
+## `converged` reflects the true final state, not a mid-loop latch
+
+Letting the loop keep running past primary convergence (previous section) introduced a second bug, caught live via `rosservice call /solve_position_pitch_ik`: `converged` was set `true` the instant primary (position+pitch) convergence was *first* observed inside the loop, then left untouched while the loop kept iterating for the secondary task. The null-space projection is damped, not exact, so its small per-step leakage into the primary task can — over the many extra iterations the first fix now allows — drift position error back out of tolerance by the time `max_iterations` is exhausted, while `converged` stayed stuck at its earlier `true`. Observed live:
+```
+converged: True
+residual: [-0.00296, 0, 0.00154, 0, -0.00783, 0]   # position error ≈ 0.0033 m
+iterations: 200
+```
+against `position_tolerance: 1e-4` — a clear inconsistency. Fix: `converged` (and `residual`) are now computed exactly once, unconditionally, from a fresh FK evaluation of the loop's *final* `q` after it exits — never latched mid-loop. `converged` now means "the returned `joint_positions` actually satisfy tolerance," which is the only thing a caller should be able to assume from it.
+
 ## Testing
 
 `test_position_pitch_ik.cpp`: a target's position+pitch, reconstructed via FK from a known random reachable configuration, is matched by the converged solution (independent check — the *joint values* need not match the seed configuration, since roll/yaw and the redundant DOF mean multiple configurations can share the same position+pitch); a small random-target convergence benchmark (mirroring `inverse_kinematics.md`'s own, at a smaller N to keep the suite fast); the null-space bias measurably improves the converged configuration's vertical alignment relative to the same target solved without it (with-vs-without isolation, same methodology as `ResolvedRateNullspaceTest`); `nullspace_gain=0` matches no secondary solver at all; and a target whose orientation is deliberately *not* on this arm's reachable 5D submanifold (an arbitrary roll/yaw baked into the full pose handed to `InverseKinematicsSolver`, which fails to converge on it) still converges here, since only its position+pitch component — which *is* independently reachable — is ever asked for.
