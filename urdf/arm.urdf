@@ -219,15 +219,16 @@
         </inertial>
     </link>
 
-    <!-- Fixed, not revolute: motor 6 actuates gripper open/close, not a
-         rotation of the tool frame. Modeling it as a revolute joint about
-         its own offset axis made end_effector's ORIENTATION spin with the
+    <!-- Fixed, not revolute: this mount itself doesn't rotate. Originally
+         named "joint_6", renamed to free that name for the actual motor-6
+         joint below : modeling motor 6 as a revolute joint HERE, in the
+         main serial chain, made end_effector's ORIENTATION spin with the
          gripper, with no effect on its position (the offset is along the
          same axis it rotated about): physically wrong for what this
          link represents (the reach/kinematics tool point), and exactly
          the ambiguity that surfaced when arm_kinematics (M2) needed to
          target end_effector instead of link_5. -->
-    <joint name="joint_6" type="fixed">
+    <joint name="end_effector_joint" type="fixed">
         <parent link="link_5"/>
         <child link="end_effector"/>
         <origin xyz="0 0 0.105" rpy="0 0 0"/>
@@ -253,6 +254,117 @@
             <mass value="0.1"/>
             <origin xyz="0 0 0.0005" rpy="0 0 0"/>
             <inertia ixx="0.000001" ixy="0" ixz="0" iyy="0.000001" iyz="0" izz="0.000001"/>
+        </inertial>
+    </link>
+
+    <!-- Gripper actuation, reintroduced as a BRANCH off end_effector (not
+         inline in the chain to it) : this is what end_effector_joint
+         above was renamed to make room for. arm_kinematics/arm_trajectory
+         only ever build a ForwardKinematicsSolver with tip_link=
+         "end_effector"; that solver walks parent joints from tip_link
+         toward root_link (see forward_kinematics.cpp's constructor), so a
+         joint attached as end_effector's CHILD is structurally invisible
+         to it : verified, not assumed. Named "joint_6" deliberately:
+         robot_interface.cpp, arm_sim_validator_node.cpp, and
+         config/ArmInterface.yaml already all assume a controllable joint
+         by that exact name (hardcoded "joint_"+i naming, 6-element
+         bias/sign/encoder arrays) : no other file needed to change for
+         this to be picked up.
+
+         Two mirrored fingers, not one floating box (a single rotating
+         box didn't read as a gripper at all : flagged live). joint_6
+         is the only REAL DOF; finger_right's own joint uses URDF's
+         <mimic> (multiplier="-1") so it always mirrors joint_6 exactly
+         rather than being a second independent control : both
+         joint_state_publisher_gui and robot_state_publisher treat a
+         mimic'd joint specially: no separate slider for it, and its
+         transform is derived from joint_6's own value, so this is
+         still exactly one control ("gripper closeness"), same as
+         asked, just driving two symmetric paddles instead of one lump.
+         Sized relative to the rest of this arm (end_effector's own
+         radius is 0.02m; link_5 is a 0.105m x 0.01m-radius cylinder):
+         0.07m-long, 0.012m-thick paddles offset +-0.02m from center
+         read as an actual gripper at this scale, not a token cube.
+
+         PRISMATIC, not revolute: flagged live, after the rotating
+         version, that a parallel-jaw LINEAR slide is what's wanted,
+         not a scissor-style rotating paddle. This is a genuine change
+         from docs/architecture.md's own pre-M2-fix table (joint_6 |
+         gripper | z | -1.29 | 1.29 rad | 10 Nm | 2 rad/s), which
+         describes motor 6 as a rotary actuator, since that's what a
+         Dynamixel servo physically is : a real parallel-jaw gripper
+         commonly hides exactly this kind of rotary-to-linear
+         conversion behind an internal linkage/screw, so representing
+         the JOINT (what the two fingers visibly do) as prismatic is a
+         legitimate kinematic simplification of that linkage, not a
+         claim that the motor itself is linear. The limit range below
+         (0 to 0.025 m per finger) has NO calibrated source anywhere in
+         this repo : everything on record (architecture.md,
+         motors.yaml, ArmInterface.yaml) models joint 6 as rotary in
+         radians, which isn't convertible to a linear stroke without
+         knowing the linkage's own lever-arm/pitch, which isn't
+         documented. This is a placeholder pending that, same as the
+         finger geometry itself. -->
+    <joint name="joint_6" type="prismatic">
+        <parent link="end_effector"/>
+        <child link="finger_left"/>
+        <origin xyz="0.02 0 0.01" rpy="0 0 0"/>
+        <axis xyz="1 0 0"/>
+        <limit lower="0" upper="0.025" effort="10" velocity="0.05"/>
+    </joint>
+
+    <link name="finger_left">
+        <visual>
+            <origin xyz="0.035 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.07 0.012 0.012"/>
+            </geometry>
+            <material name="grey">
+                <color rgba="0.5 0.5 0.5 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="0.035 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.07 0.012 0.012"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.02"/>
+            <origin xyz="0.035 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.000005" ixy="0" ixz="0" iyy="0.000005" iyz="0" izz="0.000005"/>
+        </inertial>
+    </link>
+
+    <joint name="joint_6_mirror" type="prismatic">
+        <parent link="end_effector"/>
+        <child link="finger_right"/>
+        <origin xyz="-0.02 0 0.01" rpy="0 0 0"/>
+        <axis xyz="1 0 0"/>
+        <limit lower="-0.025" upper="0" effort="10" velocity="0.05"/>
+        <mimic joint="joint_6" multiplier="-1" offset="0"/>
+    </joint>
+
+    <link name="finger_right">
+        <visual>
+            <origin xyz="-0.035 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.07 0.012 0.012"/>
+            </geometry>
+            <material name="grey">
+                <color rgba="0.5 0.5 0.5 1"/>
+            </material>
+        </visual>
+        <collision>
+            <origin xyz="-0.035 0 0" rpy="0 0 0"/>
+            <geometry>
+                <box size="0.07 0.012 0.012"/>
+            </geometry>
+        </collision>
+        <inertial>
+            <mass value="0.02"/>
+            <origin xyz="-0.035 0 0" rpy="0 0 0"/>
+            <inertia ixx="0.000005" ixy="0" ixz="0" iyy="0.000005" iyz="0" izz="0.000005"/>
         </inertial>
     </link>
 
