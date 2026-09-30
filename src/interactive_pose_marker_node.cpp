@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <cmath>
 #include <memory>
 #include <mutex>
@@ -13,6 +12,7 @@
 #include <urdf/model.h>
 
 #include <arm_kinematics/forward_kinematics.h>
+#include <arm_kinematics/joint_state_utils.h>
 
 #include "arm_trajectory/ReachTargetPose.h"
 
@@ -61,13 +61,9 @@ class InteractivePoseMarkerNode {
 
  private:
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
-    std::vector<double> positions(joint_names_.size());
-    for (size_t i = 0; i < joint_names_.size(); ++i) {
-      auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
-      if (it == msg->name.end()) {
-        return;  // wait for a message that names every actuated joint
-      }
-      positions[i] = msg->position[std::distance(msg->name.begin(), it)];
+    std::vector<double> positions;
+    if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &positions)) {
+      return;  // wait for a message that names every actuated joint
     }
     std::lock_guard<std::mutex> lock(mutex_);
     latest_joint_positions_ = positions;

@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -7,6 +6,8 @@
 #include <control_msgs/FollowJointTrajectoryAction.h>
 #include <ros/ros.h>
 #include <sensor_msgs/JointState.h>
+
+#include <arm_kinematics/joint_state_utils.h>
 
 // Plays a trajectory_msgs::JointTrajectory back to /joint_states_out at
 // each point's time_from_start, via the standard
@@ -47,6 +48,11 @@ class TrajectoryExecutorNode {
     return latest_joint_state_;
   }
 
+  void Preempt() {
+    control_msgs::FollowJointTrajectoryResult result;
+    server_.setPreempted(result, "preempted mid-trajectory");
+  }
+
   void Execute(const control_msgs::FollowJointTrajectoryGoalConstPtr& goal) {
     const auto& traj = goal->trajectory;
     if (traj.points.empty()) {
@@ -67,15 +73,13 @@ class TrajectoryExecutorNode {
       ros::Rate wait_rate(50.0);
       while (ros::ok() && ros::Time::now() < point_time) {
         if (server_.isPreemptRequested() || !ros::ok()) {
-          control_msgs::FollowJointTrajectoryResult result;
-          server_.setPreempted(result, "preempted mid-trajectory");
+          Preempt();
           return;
         }
         wait_rate.sleep();
       }
       if (server_.isPreemptRequested()) {
-        control_msgs::FollowJointTrajectoryResult result;
-        server_.setPreempted(result, "preempted mid-trajectory");
+        Preempt();
         return;
       }
 
@@ -92,11 +96,7 @@ class TrajectoryExecutorNode {
       sensor_msgs::JointState actual_state = LatestJointState();
       feedback.actual.positions.resize(traj.joint_names.size(), 0.0);
       for (size_t j = 0; j < traj.joint_names.size(); ++j) {
-        auto it = std::find(actual_state.name.begin(), actual_state.name.end(), traj.joint_names[j]);
-        if (it != actual_state.name.end()) {
-          feedback.actual.positions[j] =
-              actual_state.position[std::distance(actual_state.name.begin(), it)];
-        }
+        arm_kinematics::FindJointPosition(actual_state, traj.joint_names[j], &feedback.actual.positions[j]);
       }
       server_.publishFeedback(feedback);
     }
