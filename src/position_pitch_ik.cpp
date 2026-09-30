@@ -1,6 +1,7 @@
 #include "arm_kinematics/position_pitch_ik.h"
 
 #include <algorithm>
+#include <functional>
 #include <stdexcept>
 
 #include "arm_kinematics/jacobian.h"
@@ -51,6 +52,38 @@ TaskError ComputeTaskError(const ForwardKinematicsSolver& solver, const Eigen::I
 // (measured 64x, on an uncapped run) for why 10x, not something smaller,
 // is actually needed in practice.
 constexpr double kDriftCapMultiplier = 10.0;
+
+// Shared mechanics behind SolveFromSeed's two backtracking regimes (the
+// drift cap once primary has converged, and the primary-task line search
+// before it has) -- both are "try dq, and if the resulting TaskError
+// doesn't satisfy some condition, halve dq and retry, up to
+// max_inner_retries times." Only that condition differs between the two
+// (see their own call sites), so it's the one thing left as a parameter;
+// everything else -- building/clamping q_candidate, the halving, the
+// retry budget -- was identical duplicated code before this. On success,
+// *q is updated to the accepted candidate and this returns true; on
+// failure (no candidate within max_inner_retries halvings satisfied
+// `accept`), *q is left untouched and this returns false.
+bool TryBacktrackingStep(const ForwardKinematicsSolver& solver, const Eigen::Isometry3d& target_pose,
+                          const std::vector<std::pair<double, double>>& limits, int max_inner_retries,
+                          const Eigen::VectorXd& dq, std::vector<double>* q,
+                          const std::function<bool(const TaskError&)>& accept) {
+  const size_t n = q->size();
+  Eigen::VectorXd trial_dq = dq;
+  for (int inner = 0; inner < max_inner_retries; ++inner) {
+    std::vector<double> q_candidate = *q;
+    for (size_t i = 0; i < n; ++i) {
+      q_candidate[i] = std::min(std::max((*q)[i] + trial_dq(i), limits[i].first), limits[i].second);
+    }
+    TaskError e_candidate = ComputeTaskError(solver, target_pose, q_candidate);
+    if (accept(e_candidate)) {
+      *q = q_candidate;
+      return true;
+    }
+    trial_dq *= 0.5;
+  }
+  return false;
+}
 
 }  // namespace
 
@@ -297,24 +330,12 @@ PositionPitchIkResult PositionPitchIkSolver::SolveFromSeed(const Eigen::Isometry
       // trying to recover an unbounded blowup after the fact. Halve and
       // retry within bound like the no-bias case above; if nothing within
       // bound is found, stop -- there's nothing more to safely gain.
-      Eigen::VectorXd trial_dq = dq;
-      bool step_within_bound = false;
-      for (int inner = 0; inner < options_.max_inner_retries; ++inner) {
-        std::vector<double> q_candidate = q;
-        for (size_t i = 0; i < n; ++i) {
-          q_candidate[i] =
-              std::min(std::max(q[i] + trial_dq(i), limits[i].first), limits[i].second);
-        }
-        TaskError e_candidate = ComputeTaskError(solver_, target_pose, q_candidate);
-
-        if (e_candidate.position_error.norm() < kDriftCapMultiplier * options_.position_tolerance &&
-            std::abs(e_candidate.pitch_error) < kDriftCapMultiplier * options_.pitch_tolerance) {
-          q = q_candidate;
-          step_within_bound = true;
-          break;
-        }
-        trial_dq *= 0.5;
-      }
+      bool step_within_bound = TryBacktrackingStep(
+          solver_, target_pose, limits, options_.max_inner_retries, dq, &q,
+          [this](const TaskError& e_candidate) {
+            return e_candidate.position_error.norm() < kDriftCapMultiplier * options_.position_tolerance &&
+                   std::abs(e_candidate.pitch_error) < kDriftCapMultiplier * options_.pitch_tolerance;
+          });
 
       if (!step_within_bound) {
         break;  // no further secondary-task progress possible without breaching the drift cap
@@ -328,26 +349,13 @@ PositionPitchIkResult PositionPitchIkSolver::SolveFromSeed(const Eigen::Isometry
     // retrying otherwise. e_task itself is untouched by this -- it's
     // recomputed fresh next outer iteration from whatever q ends up being.
     double cost = e_task.squaredNorm();
-    Eigen::VectorXd trial_dq = dq;
-    bool step_accepted = false;
-    for (int inner = 0; inner < options_.max_inner_retries; ++inner) {
-      std::vector<double> q_candidate = q;
-      for (size_t i = 0; i < n; ++i) {
-        q_candidate[i] =
-            std::min(std::max(q[i] + trial_dq(i), limits[i].first), limits[i].second);
-      }
-      TaskError e_candidate = ComputeTaskError(solver_, target_pose, q_candidate);
-      Eigen::Vector4d e_task_candidate(e_candidate.position_error.x(), e_candidate.position_error.y(),
-                                        e_candidate.position_error.z(), e_candidate.pitch_error);
-      double cost_candidate = e_task_candidate.squaredNorm();
-
-      if (cost_candidate < cost) {
-        q = q_candidate;
-        step_accepted = true;
-        break;
-      }
-      trial_dq *= 0.5;
-    }
+    bool step_accepted = TryBacktrackingStep(
+        solver_, target_pose, limits, options_.max_inner_retries, dq, &q,
+        [cost](const TaskError& e_candidate) {
+          Eigen::Vector4d e_task_candidate(e_candidate.position_error.x(), e_candidate.position_error.y(),
+                                            e_candidate.position_error.z(), e_candidate.pitch_error);
+          return e_task_candidate.squaredNorm() < cost;
+        });
 
     if (!step_accepted) {
       // No improving step found even after halving max_inner_retries
