@@ -46,8 +46,10 @@ def _T(xyz, rpy_tuple):
 
 
 def _axis_angle(axis, theta):
-    axis = np.array(axis, dtype=float)
-    axis = axis / np.linalg.norm(axis)
+    # axis must already be a unit vector -- every axis in _JOINTS below is
+    # written as one (e.g. (0, 0, 1)), so re-normalizing here was pure
+    # redundant work on every one of the ~1M calls fk() makes across a
+    # full sample run.
     x, y, z = axis
     c, s, C = np.cos(theta), np.sin(theta), 1 - np.cos(theta)
     R = np.array([
@@ -106,3 +108,4 @@ def sample_to_csv(n, seed, path):
 if __name__ == "__main__":
     sample_to_csv(50_000, seed=101, path="workspace_points_50k.csv")
     sample_to_csv(200_000, seed=102, path="workspace_points_200k.csv")
+    sample_to_csv(5_000, seed=103, path="workspace_points_5k.csv")

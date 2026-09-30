@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -9,6 +8,7 @@
 #include <urdf/model.h>
 
 #include "arm_kinematics/forward_kinematics.h"
+#include "arm_kinematics/joint_state_utils.h"
 
 // Thin ROS wrapper: subscribes to the joint-state topic (same convention
 // arm_interface/arm_sim_validator_node publish to, /joint_states_in) and
@@ -39,15 +39,12 @@ class ForwardKinematicsNode {
 
  private:
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
-    std::vector<double> joint_positions(joint_names_.size(), 0.0);
-    for (size_t i = 0; i < joint_names_.size(); ++i) {
-      auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
-      if (it == msg->name.end()) {
-        ROS_WARN_THROTTLE(2.0, "fk_node: /joint_states_in is missing required joint '%s'",
-                           joint_names_[i].c_str());
-        return;
-      }
-      joint_positions[i] = msg->position[std::distance(msg->name.begin(), it)];
+    std::vector<double> joint_positions;
+    std::string missing_joint;
+    if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &joint_positions, &missing_joint)) {
+      ROS_WARN_THROTTLE(2.0, "fk_node: /joint_states_in is missing required joint '%s'",
+                         missing_joint.c_str());
+      return;
     }
 
     Eigen::Isometry3d pose;

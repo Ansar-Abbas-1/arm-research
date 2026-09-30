@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -11,6 +10,7 @@
 #include "arm_kinematics/SolveIk.h"
 #include "arm_kinematics/forward_kinematics.h"
 #include "arm_kinematics/inverse_kinematics.h"
+#include "arm_kinematics/joint_state_utils.h"
 
 // ROS wrapper around InverseKinematicsSolver: advertises /solve_ik, and
 // tracks /joint_states_in as the default seed when a request's
@@ -44,13 +44,9 @@ class InverseKinematicsNode {
 
  private:
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
-    std::vector<double> positions(joint_names_.size());
-    for (size_t i = 0; i < joint_names_.size(); ++i) {
-      auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
-      if (it == msg->name.end()) {
-        return;  // incomplete message; keep the previous cached state
-      }
-      positions[i] = msg->position[std::distance(msg->name.begin(), it)];
+    std::vector<double> positions;
+    if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &positions)) {
+      return;  // incomplete message; keep the previous cached state
     }
     std::lock_guard<std::mutex> lock(joint_state_mutex_);
     latest_joint_positions_ = positions;

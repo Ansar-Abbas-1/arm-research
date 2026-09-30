@@ -5,6 +5,7 @@
 #include <stdexcept>
 
 #include "arm_kinematics/jacobian.h"
+#include "arm_kinematics/joint_limit_sampling.h"
 
 namespace arm_kinematics {
 
@@ -49,11 +50,7 @@ IkResult InverseKinematicsSolver::Solve(const Eigen::Isometry3d& target_pose,
 
   IkResult best = SolveFromSeed(target_pose, seed);
 
-  std::vector<std::uniform_real_distribution<double>> dists;
-  dists.reserve(limits.size());
-  for (const auto& lim : limits) {
-    dists.emplace_back(lim.first, lim.second);
-  }
+  std::vector<std::uniform_real_distribution<double>> dists = DistributionsFromJointLimits(limits);
 
   // restarts_used tracks how many restarts were actually *attempted*, not
   // which one happened to produce the best result -- those can differ: a

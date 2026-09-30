@@ -7,6 +7,8 @@
 #include <stdexcept>
 #include <unordered_set>
 
+#include "arm_kinematics/joint_limit_sampling.h"
+
 namespace arm_kinematics {
 
 namespace {
@@ -54,16 +56,7 @@ WorkspaceSamplingResult SampleReachableWorkspace(const ForwardKinematicsSolver& 
   const size_t n = limits.size();
 
   std::mt19937 rng(rng_seed);
-  std::vector<std::uniform_real_distribution<double>> dists;
-  dists.reserve(n);
-  for (const auto& limit : limits) {
-    if (!std::isfinite(limit.first) || !std::isfinite(limit.second)) {
-      throw std::invalid_argument(
-          "SampleReachableWorkspace: an actuated joint has an unbounded limit -- uniform "
-          "sampling needs a finite range for every joint");
-    }
-    dists.emplace_back(limit.first, limit.second);
-  }
+  std::vector<std::uniform_real_distribution<double>> dists = DistributionsFromJointLimits(limits);
 
   WorkspaceSamplingResult result;
   result.points.reserve(static_cast<size_t>(num_samples));
