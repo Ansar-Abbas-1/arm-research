@@ -12,6 +12,14 @@
          roslaunch arm_kinematics resolved_rate_demo.launch vx:=0.03 nullspace_gain:=0.6 -->
 
   <arg name="use_rviz" default="true"/>
+  <arg name="use_hardware" default="false"/>
+  <!-- use_hardware:=true launches the real robot_interface driver (opens
+       /dev/ttyUSB0, enables servo torque) instead of the kinematic
+       simulator: same /joint_states_in-publish, /joint_states_out-
+       subscribe interface either way, so nothing else in this file needs
+       to change. This demo streams a continuous jog: with use_hardware,
+       that stream goes straight to the real motors, so know what
+       vx/vy/vz/nullspace_gain you're commanding before setting this. -->
   <arg name="vx" default="0.05"/>
   <arg name="vy" default="0.0"/>
   <arg name="vz" default="0.0"/>
@@ -27,12 +35,19 @@
     <remap from="joint_states" to="/joint_states_in" />
   </node>
 
-  <node name="arm_sim_validator_node" pkg="arm_interface"
-        type="arm_sim_validator_node">
-    <param name="sim_mode" type="string" value="ideal"/>
-    <param name="publish_rate" type="double" value="50.0"/>
-    <param name="num_joints" type="int" value="6"/>
-  </node>
+  <group unless="$(arg use_hardware)">
+    <node name="arm_sim_validator_node" pkg="arm_interface"
+          type="arm_sim_validator_node">
+      <param name="sim_mode" type="string" value="ideal"/>
+      <param name="publish_rate" type="double" value="50.0"/>
+      <param name="num_joints" type="int" value="6"/>
+    </node>
+  </group>
+  <group if="$(arg use_hardware)">
+    <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+      <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+    </node>
+  </group>
 
   <node name="resolved_rate_demo_node" pkg="arm_kinematics" type="resolved_rate_demo_node"
         output="screen">

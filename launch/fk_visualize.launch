@@ -14,6 +14,12 @@
   <!-- use_rviz:=false lets this run without a display, e.g. for automated
        checks: rviz needs one and none is available in an automated/CI
        context (confirmed the hard way in M0). -->
+  <arg name="use_hardware" default="false"/>
+  <!-- use_hardware:=true launches the real robot_interface driver (opens
+       /dev/ttyUSB0, enables servo torque) instead of the kinematic
+       simulator: same /joint_states_in-publish, /joint_states_out-
+       subscribe interface either way, so nothing else in this file needs
+       to change. sim_mode/tau only apply to the simulator, ignored here. -->
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
@@ -29,13 +35,20 @@
     <remap from="joint_states" to="/joint_states_out" />
   </node>
 
-  <node name="arm_sim_validator_node" pkg="arm_interface"
-        type="arm_sim_validator_node">
-    <param name="sim_mode" type="string" value="$(arg sim_mode)"/>
-    <param name="tau" type="double" value="$(arg tau)"/>
-    <param name="publish_rate" type="double" value="50.0"/>
-    <param name="num_joints" type="int" value="6"/>
-  </node>
+  <group unless="$(arg use_hardware)">
+    <node name="arm_sim_validator_node" pkg="arm_interface"
+          type="arm_sim_validator_node">
+      <param name="sim_mode" type="string" value="$(arg sim_mode)"/>
+      <param name="tau" type="double" value="$(arg tau)"/>
+      <param name="publish_rate" type="double" value="50.0"/>
+      <param name="num_joints" type="int" value="6"/>
+    </node>
+  </group>
+  <group if="$(arg use_hardware)">
+    <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+      <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+    </node>
+  </group>
 
   <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
 
