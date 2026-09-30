@@ -26,4 +26,9 @@ string message
 # after execution completes. This is what actually answers "did it get
 # there", independent of whether trajectory generation *claimed* success.
 float64 final_position_error     # meters
+# Pitch-axis-projected rotation error only (about the achieved pose's own
+# local Y axis) -- NOT the full 3D orientation angle. /generate_trajectory's
+# IK never enforces roll/yaw (mechanically irrelevant on this arm; see
+# arm_kinematics/docs/position_pitch_ik.md), so they're free and not part
+# of this check.
 float64 final_orientation_error  # radians

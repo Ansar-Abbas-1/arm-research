@@ -92,7 +92,7 @@ Visualization Manager:
           Value: true
         link_4:
           Alpha: 1
-          Show Axes: false
+          Show Axes: true
           Show Trail: false
           Value: true
         link_5:

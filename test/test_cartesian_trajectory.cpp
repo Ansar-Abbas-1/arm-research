@@ -7,7 +7,7 @@
 #include <urdf/model.h>
 
 #include <arm_kinematics/forward_kinematics.h>
-#include <arm_kinematics/inverse_kinematics.h>
+#include <arm_kinematics/position_pitch_ik.h>
 
 #include "arm_trajectory/cartesian_trajectory.h"
 
@@ -44,14 +44,23 @@ class CartesianTrajectoryTest : public ::testing::Test {
     model_ = LoadArmModel();
     fk_ = std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model_, "base_link",
                                                                      "end_effector");
-    ik_ = std::make_unique<arm_kinematics::InverseKinematicsSolver>(*fk_);
+    nullspace_fk_ = std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model_, "base_link",
+                                                                               "link_4");
+    // Default options: no null-space bias (nullspace_gain=0.0) -- most of
+    // this suite is about path generation/duration-scaling behavior, not
+    // the secondary task (which, once active, deliberately keeps
+    // regulating even from an already-primary-converged sample -- see
+    // NullspaceOptionsThreadedThroughWholeTrajectory below, which turns it
+    // on explicitly and in isolation).
+    ik_options_ = arm_kinematics::PositionPitchIkOptions();
     joint_names_ = fk_->GetActuatedJointNames();
     velocity_limits_ = fk_->GetActuatedJointVelocityLimits();
   }
 
   urdf::Model model_;
   std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> fk_;
-  std::unique_ptr<arm_kinematics::InverseKinematicsSolver> ik_;
+  std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> nullspace_fk_;
+  arm_kinematics::PositionPitchIkOptions ik_options_;
   std::vector<std::string> joint_names_;
   std::vector<double> velocity_limits_;
 };
@@ -68,7 +77,7 @@ TEST_F(CartesianTrajectoryTest, ReachesGuaranteedReachableGoal) {
   std::vector<double> q_goal_config = {0.4, 0.7, -0.3, 0.6, -0.5};
   Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
 
-  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+  auto result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
                                              joint_names_, 50.0);
   ASSERT_TRUE(result.success) << result.message;
   ASSERT_GE(result.trajectory.points.size(), 2u);
@@ -83,7 +92,7 @@ TEST_F(CartesianTrajectoryTest, VelocityLimitsRespectedAfterScaling) {
   std::vector<double> q_goal_config = {1.0, 2.0, -1.5, 3.0, -2.5};
   Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
 
-  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+  auto result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
                                              joint_names_, 50.0);
   ASSERT_TRUE(result.success) << result.message;
 
@@ -115,7 +124,7 @@ TEST_F(CartesianTrajectoryTest, WarmStartKeepsConsecutiveSamplesClose) {
   std::vector<double> q_goal_config = {1.0, 1.7, -1.2, 2.0, -2.0};
   Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
 
-  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+  auto result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
                                              joint_names_, 50.0);
   ASSERT_TRUE(result.success) << result.message;
   EXPECT_LT(MaxConsecutiveJointStep(result.trajectory), 0.3);
@@ -126,7 +135,7 @@ TEST_F(CartesianTrajectoryTest, UnreachableGoalFailsWithMessageNotGarbage) {
   Eigen::Isometry3d goal_pose = Eigen::Isometry3d::Identity();
   goal_pose.translation() = Eigen::Vector3d(10.0, 10.0, 10.0);  // far outside max reach
 
-  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+  auto result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
                                              joint_names_, 50.0);
   EXPECT_FALSE(result.success);
   EXPECT_FALSE(result.message.empty());
@@ -158,9 +167,62 @@ TEST_F(CartesianTrajectoryTest, LargeMoveNeedsMultipleFullResolutionCorrectionPa
   std::vector<double> q_goal_config = {2.5, 3.0, -0.1, 4.3, -0.1};
   Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
 
-  auto result = GenerateCartesianTrajectory(*fk_, *ik_, q_start, goal_pose, velocity_limits_,
+  auto result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
                                              joint_names_, 50.0);
   ASSERT_TRUE(result.success) << result.message;
+}
+
+TEST_F(CartesianTrajectoryTest, NullspaceOptionsThreadedThroughWholeTrajectory) {
+  // Not a re-test of the bias math itself (arm_kinematics' own
+  // PositionPitchIkTest/ResolvedRateNullspaceTest already cover that
+  // exhaustively) -- this is a regression test for the PLUMBING added
+  // here: that PositionPitchIkOptions' nullspace_secondary_link_solver/
+  // nullspace_gain, when a caller sets them (as trajectory_service_node
+  // does by default), actually reach both the goal solve AND every
+  // interior-sample solve inside GenerateCartesianTrajectory (via
+  // PathTrackingIkOptions), not just get silently dropped somewhere in the
+  // refactor. Both configs below use fixed rng_seed=1 (deterministic
+  // restarts) to isolate the bias's own effect from restart randomness --
+  // same methodology arm_kinematics' own nullspace tests use.
+
+  // Below-base, downward-pointing start pose (same one resolved_rate_demo_node
+  // uses): link_4 sits essentially exactly horizontal there, maximal room
+  // to show straightening.
+  std::vector<double> q_start = {-1.5747, 2.7009, -0.4995, 2.8188, -3.5092};
+  std::vector<double> q_goal_config = {-1.2, 2.4, -0.3, 2.5, -3.0};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+
+  arm_kinematics::PositionPitchIkOptions no_bias_options = ik_options_;
+  no_bias_options.rng_seed = 1;
+
+  auto without_bias = GenerateCartesianTrajectory(*fk_, no_bias_options, q_start, goal_pose,
+                                                   velocity_limits_, joint_names_, 50.0);
+  ASSERT_TRUE(without_bias.success) << without_bias.message;
+
+  arm_kinematics::PositionPitchIkOptions biased_options = ik_options_;
+  biased_options.rng_seed = 1;
+  biased_options.nullspace_secondary_link_solver = nullspace_fk_.get();
+  biased_options.nullspace_gain = 0.05;  // confirmed-safe default, see position_pitch_ik.h
+
+  auto with_bias = GenerateCartesianTrajectory(*fk_, biased_options, q_start, goal_pose,
+                                                velocity_limits_, joint_names_, 50.0);
+  ASSERT_TRUE(with_bias.success) << with_bias.message;
+
+  // nullspace_fk_ (base_link -> link_4) has fewer actuated joints than the
+  // full chain -- same convention as PositionPitchIkSolver itself (see
+  // position_pitch_ik.cpp), take only the leading joints upstream of it.
+  const size_t m = nullspace_fk_->GetActuatedJointNames().size();
+  auto VerticalAlignment = [&](const std::vector<double>& q) {
+    std::vector<double> q_prefix(q.begin(), q.begin() + m);
+    Eigen::Vector3d z = nullspace_fk_->ComputePose(q_prefix).rotation() * Eigen::Vector3d::UnitZ();
+    return Eigen::Vector3d::UnitZ().dot(z);
+  };
+
+  double alignment_without = VerticalAlignment(without_bias.trajectory.points.back().positions);
+  double alignment_with = VerticalAlignment(with_bias.trajectory.points.back().positions);
+  EXPECT_GT(alignment_with, alignment_without)
+      << "nullspace_gain configured via GenerateCartesianTrajectory's ik_options should measurably "
+         "improve link_4's vertical alignment at the trajectory's end relative to no bias";
 }
 
 int main(int argc, char** argv) {

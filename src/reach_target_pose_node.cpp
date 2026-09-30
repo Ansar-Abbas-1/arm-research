@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -11,6 +10,7 @@
 #include <urdf/model.h>
 
 #include <arm_kinematics/forward_kinematics.h>
+#include <arm_kinematics/joint_state_utils.h>
 
 #include "arm_trajectory/GenerateTrajectory.h"
 #include "arm_trajectory/ReachTargetPose.h"
@@ -31,13 +31,26 @@ class ReachTargetPoseNode {
     std::string root_link, tip_link;
     pnh.param<std::string>("root_link", root_link, "base_link");
     pnh.param<std::string>("tip_link", tip_link, "end_effector");
-    // Matches InverseKinematicsSolver's own default tolerances (see
-    // arm_kinematics/inverse_kinematics.h): the goal IK solve inside
-    // /generate_trajectory was already required to hit this precision, so
-    // holding the EXECUTED result to the same bar is the natural check,
-    // not a new arbitrary number.
-    pnh.param("position_tolerance", position_tolerance_, 1e-4);
-    pnh.param("orientation_tolerance", orientation_tolerance_, 1e-3);
+    // Originally matched InverseKinematicsSolver's own default
+    // tolerances (1e-4 m / 1e-3 rad) exactly, on the theory that the goal
+    // IK solve inside /generate_trajectory was already required to hit
+    // that precision. Loosened after actually using this interactively
+    // (rviz marker drags): sitting right at IK's own convergence
+    // threshold meant plenty of genuinely-fine drags -- landing well
+    // within a millimeter -- registered as "out of tolerance" anyway,
+    // since a marker-dragged orientation is rarely exactly on the
+    // reachable manifold and IK converges to a small residual rather than
+    // exactly zero. 1mm/0.01rad is loose enough to stop flagging those as
+    // failures while still catching a genuinely wrong final pose.
+    //
+    // orientation_tolerance_ is now checked against PITCH only, not full
+    // 3D orientation angle -- /generate_trajectory's IK (PositionPitchIkSolver)
+    // never enforces roll/yaw (mechanically irrelevant on this arm; see
+    // arm_kinematics/docs/position_pitch_ik.md), so holding the executed
+    // result to a full-orientation bar it was never asked to hit would
+    // flag genuinely-successful reaches as failures.
+    pnh.param("position_tolerance", position_tolerance_, 1e-3);
+    pnh.param("orientation_tolerance", orientation_tolerance_, 1e-2);
     // Defensive cap on how long a single execution is allowed to run
     // before this call gives up waiting -- trajectory_executor_node
     // always terminates the action on its own (success/abort/preempt), so
@@ -64,13 +77,9 @@ class ReachTargetPoseNode {
 
  private:
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
-    std::vector<double> positions(joint_names_.size());
-    for (size_t i = 0; i < joint_names_.size(); ++i) {
-      auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
-      if (it == msg->name.end()) {
-        return;  // wait for a message that names every actuated joint
-      }
-      positions[i] = msg->position[std::distance(msg->name.begin(), it)];
+    std::vector<double> positions;
+    if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &positions)) {
+      return;  // wait for a message that names every actuated joint
     }
     std::lock_guard<std::mutex> lock(joint_state_mutex_);
     latest_joint_positions_ = positions;
@@ -145,8 +154,14 @@ class ReachTargetPoseNode {
     tf2::fromMsg(req.target_pose, target_pose);
 
     double position_error = (final_pose.translation() - target_pose.translation()).norm();
-    Eigen::AngleAxisd orientation_diff(final_pose.rotation().transpose() * target_pose.rotation());
-    double orientation_error = std::fabs(orientation_diff.angle());
+    // Pitch-axis-projected rotation error only, same convention as
+    // PositionPitchIkSolver's own e_pitch (see class comment above): the
+    // achieved pose's own local Y axis, dotted with the full angle-axis
+    // rotation error. Roll/yaw are free and never checked here.
+    Eigen::Vector3d pitch_axis = final_pose.rotation() * Eigen::Vector3d::UnitY();
+    Eigen::AngleAxisd rotation_diff(target_pose.rotation() * final_pose.rotation().transpose());
+    Eigen::Vector3d rotation_error = rotation_diff.angle() * rotation_diff.axis();
+    double orientation_error = std::fabs(pitch_axis.dot(rotation_error));
 
     res.final_position_error = position_error;
     res.final_orientation_error = orientation_error;

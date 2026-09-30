@@ -3,9 +3,10 @@
 
 Confirms the full generate+execute+verify path this branch's milestone
 adds: a reachable target pose is actually driven to (checked two ways --
-the service's own self-reported final_position_error/final_orientation_error,
-AND an independent read of /computed_end_effector_pose after the call
-returns, so a bug that made the service lie about its own success
+the service's own self-reported final_position_error/final_orientation_error
+(orientation is pitch-only, see ReachTargetPose.srv -- roll/yaw are never
+enforced), AND an independent read of /computed_end_effector_pose after the
+call returns, so a bug that made the service lie about its own success
 wouldn't be missed), and an unreachable target pose fails cleanly with an
 informative message rather than hanging or crashing.
 """

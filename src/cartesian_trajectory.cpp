@@ -22,20 +22,28 @@ Eigen::Isometry3d InterpolatePose(const Eigen::Isometry3d& start, const Eigen::I
   return pose;
 }
 
-// IK options for INTERIOR path samples: looser than the default IK
+// IK options for INTERIOR path samples: looser than the goal-check
 // tolerance, and (unlike the goal check) never treated as a hard failure
 // -- see the "best-effort tracking" note on GenerateCartesianTrajectory.
 // The looser tolerance just avoids grinding on a residual that isn't
-// going to shrink further: this chain has 5 DOF over a 6D task space (M2
-// finding), so linear-position+SLERP-orientation interpolation between
-// two exactly-reachable poses does NOT generally stay on the reachable 5D
-// submanifold. Confirmed empirically: every restart from every seed
-// converged to the *same* small residual for a struggling interior
-// sample, and the residual grows with distance into the interpolation --
-// the signature of a genuine best-fit minimum on a path that leaves the
-// reachable manifold, not a stuck solver (a bug would vary by
-// seed/restart and wouldn't grow smoothly with path position). See
+// going to shrink further: this chain has 5 DOF over the 4D position+pitch
+// task (still redundant), so linear-position+SLERP-orientation
+// interpolation between two exactly-reachable poses does NOT generally
+// stay on the reachable submanifold. Confirmed empirically: every restart
+// from every seed converged to the *same* small residual for a struggling
+// interior sample, and the residual grows with distance into the
+// interpolation -- the signature of a genuine best-fit minimum on a path
+// that leaves the reachable manifold, not a stuck solver (a bug would vary
+// by seed/restart and wouldn't grow smoothly with path position). See
 // docs/trajectory_generation.md.
+//
+// Copies the null-space secondary-task fields (nullspace_secondary_link_solver
+// /nullspace_gain/nullspace_tolerance/damping/max_step) from `base` unchanged
+// -- so a configured bias applies at every interior sample too, riding
+// along "for free" the same way it does within a single Solve() call (the
+// primary task's own contribution is near-zero once warm-started close to
+// each sample's target) -- while overriding the primary-task convergence
+// knobs for interior-sample use:
 //
 // max_restarts = 0 is deliberate and load-bearing, not just "skip the
 // extra work": Solve()'s restart mechanism explicitly abandons the
@@ -51,21 +59,23 @@ Eigen::Isometry3d InterpolatePose(const Eigen::Isometry3d& start, const Eigen::I
 // hence sample count) without bound. Found by hanging a test for 15+
 // minutes generating an exploding number of samples -- restarts on
 // interior points is what did it, not the loosened tolerance.
-arm_kinematics::IkOptions PathTrackingIkOptions() {
-  arm_kinematics::IkOptions options;
-  options.position_tolerance = 1e-3;     // 10x looser than the IK default (1e-4)
-  options.orientation_tolerance = 5e-3;  // 5x looser than the IK default (1e-3)
-  options.max_restarts = 0;              // see above -- load-bearing, not an optimization
+arm_kinematics::PositionPitchIkOptions PathTrackingIkOptions(
+    const arm_kinematics::PositionPitchIkOptions& base) {
+  arm_kinematics::PositionPitchIkOptions options = base;
+  options.position_tolerance = 1e-3;  // 10x looser than PositionPitchIkOptions' own default (1e-4)
+  options.pitch_tolerance = 5e-3;     // 5x looser than the default (1e-3)
+  options.max_restarts = 0;           // see above -- load-bearing, not an optimization
   // Best-effort means we accept whatever residual a sample settles at
-  // regardless -- burning the full default iteration/retry budget (100 x
-  // 10) on a sample that structurally can't converge further wastes work
-  // for no benefit, and across hundreds of samples in a long/hard path
-  // that adds up to real wall-clock time (found empirically: one test
-  // case took 10s, another didn't finish in 60s, before this). A much
-  // smaller budget still lets a genuinely-reachable sample converge
-  // quickly; it just stops sooner on one that can't.
+  // regardless -- burning a large iteration budget on a sample that
+  // structurally can't converge further wastes work for no benefit, and
+  // across hundreds of samples in a long/hard path that adds up to real
+  // wall-clock time (found empirically: one test case took 10s, another
+  // didn't finish in 60s, before this). A much smaller budget still lets a
+  // genuinely-reachable sample converge quickly; it just stops sooner on
+  // one that can't. (No max_inner_retries here, unlike the old
+  // InverseKinematicsSolver-based version: PositionPitchIkSolver has no
+  // accept/reject LM logic to retry -- see position_pitch_ik.h.)
   options.max_iterations = 20;
-  options.max_inner_retries = 5;
   return options;
 }
 
@@ -77,12 +87,13 @@ struct SampleAttempt {
 };
 
 SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsSolver& fk_solver,
+                                         const arm_kinematics::PositionPitchIkOptions& ik_options,
                                          const std::vector<double>& q_start,
                                          const Eigen::Isometry3d& pose_start,
                                          const Eigen::Isometry3d& pose_goal, double duration,
                                          int num_samples) {
   // Own solver, looser tolerances -- see PathTrackingIkOptions().
-  arm_kinematics::InverseKinematicsSolver path_ik_solver(fk_solver, PathTrackingIkOptions());
+  arm_kinematics::PositionPitchIkSolver path_ik_solver(fk_solver, PathTrackingIkOptions(ik_options));
 
   SampleAttempt attempt;
   attempt.q_samples.reserve(num_samples);
@@ -103,8 +114,11 @@ SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsS
     // Best-effort: take whatever IK finds, converged or not -- an
     // interior waypoint not being exactly reachable is expected on this
     // chain (see above), not a failure condition. Only the goal (checked
-    // by the caller before this function runs) must be exact.
-    arm_kinematics::IkResult ik = path_ik_solver.Solve(target, q_prev);
+    // by the caller before this function runs) must be exact. residual's
+    // rotation component (peak_orientation_deviation below) is
+    // informational only, same convention as PositionPitchIkResult
+    // elsewhere -- only its pitch-axis projection is actually enforced.
+    arm_kinematics::PositionPitchIkResult ik = path_ik_solver.Solve(target, q_prev);
     attempt.peak_position_deviation =
         std::max(attempt.peak_position_deviation, ik.residual.head<3>().norm());
     attempt.peak_orientation_deviation =
@@ -143,7 +157,7 @@ double WorstVelocityRatio(const std::vector<std::vector<double>>& q_samples,
 
 CartesianTrajectoryResult GenerateCartesianTrajectory(
     const arm_kinematics::ForwardKinematicsSolver& fk_solver,
-    const arm_kinematics::InverseKinematicsSolver& ik_solver, const std::vector<double>& q_start,
+    const arm_kinematics::PositionPitchIkOptions& ik_options, const std::vector<double>& q_start,
     const Eigen::Isometry3d& pose_goal, const std::vector<double>& velocity_limits,
     const std::vector<std::string>& joint_names, double sample_rate_hz,
     int max_duration_iterations) {
@@ -152,12 +166,16 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
 
   // Seed the joint-space delta (and hence duration) with a single IK
   // solve at the goal -- also validates the goal is reachable at all
-  // before any sampling work.
-  arm_kinematics::IkResult goal_ik = ik_solver.Solve(pose_goal, q_start);
+  // before any sampling work. Own solver at ik_options' own (strict)
+  // tolerances -- interior samples get their own, looser one, see
+  // GenerateSamplesAtDuration/PathTrackingIkOptions().
+  arm_kinematics::PositionPitchIkSolver goal_ik_solver(fk_solver, ik_options);
+  arm_kinematics::PositionPitchIkResult goal_ik = goal_ik_solver.Solve(pose_goal, q_start);
   if (!goal_ik.converged) {
     result.success = false;
     result.message = "goal pose did not converge: position error " +
-                      std::to_string(goal_ik.residual.head<3>().norm()) + " m, orientation error " +
+                      std::to_string(goal_ik.residual.head<3>().norm()) +
+                      " m, rotation residual (informational; only its pitch component is enforced) " +
                       std::to_string(goal_ik.residual.tail<3>().norm()) + " rad, after " +
                       std::to_string(goal_ik.restarts_used) + " restarts";
     return result;
@@ -221,8 +239,8 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
   const int max_full_resolution_corrections = max_duration_iterations;
 
   for (int iter = 0; iter < max_duration_iterations; ++iter) {
-    SampleAttempt coarse =
-        GenerateSamplesAtDuration(fk_solver, q_start, pose_start, pose_goal, duration, kCoarseSearchSamples);
+    SampleAttempt coarse = GenerateSamplesAtDuration(fk_solver, ik_options, q_start, pose_start,
+                                                      pose_goal, duration, kCoarseSearchSamples);
     double worst_ratio = WorstVelocityRatio(coarse.q_samples, coarse.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {
       break;
@@ -249,8 +267,8 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
       return result;
     }
 
-    attempt = GenerateSamplesAtDuration(fk_solver, q_start, pose_start, pose_goal, duration,
-                                        projected_samples);
+    attempt = GenerateSamplesAtDuration(fk_solver, ik_options, q_start, pose_start, pose_goal,
+                                        duration, projected_samples);
 
     double worst_ratio = WorstVelocityRatio(attempt.q_samples, attempt.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {

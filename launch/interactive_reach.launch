@@ -6,6 +6,16 @@
        marker to the desired end_effector pose, then right-click it and
        choose "Send to /reach_target_pose" to commit.
 
+       trajectory_service_node's IK is position+pitch only, with a
+       null-space secondary task (biasing nullspace_tip_link toward
+       vertical) ON by default: every reach through this launch file
+       shows it. Watch link_4's axes (rviz's RobotModel display, Show
+       Axes) settle toward vertical as the arm moves, on top of whatever
+       position+pitch the marker asked for. Tune it live, e.g. to see the
+       bias more/less aggressively:
+         roslaunch arm_trajectory interactive_reach.launch nullspace_gain:=0.15
+         roslaunch arm_trajectory interactive_reach.launch nullspace_gain:=0.0  (off)
+
        For the typing alternative instead of dragging:
          rosrun arm_trajectory reach_pose_cli.py -->
 
@@ -13,6 +23,8 @@
   <!-- use_rviz:=false lets this run without a display, e.g. for automated
        checks: rviz needs one and none is available in an automated/CI
        context (confirmed the hard way in M0). -->
+  <arg name="nullspace_tip_link" default="link_4"/>
+  <arg name="nullspace_gain" default="0.05"/>
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
@@ -29,7 +41,10 @@
     <param name="num_joints" type="int" value="6"/>
   </node>
 
-  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node">
+    <param name="nullspace_tip_link" value="$(arg nullspace_tip_link)" />
+    <param name="nullspace_gain" value="$(arg nullspace_gain)" />
+  </node>
   <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
   <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node" />
   <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
