@@ -13,6 +13,7 @@ pitch_tolerance: 0.001       # radians
 max_iterations: 200
 damping: 0.05                # Chiaverini singularity threshold, see resolved_rate.md
 max_step: 0.2                # radians, per-iteration inf-norm clamp
+max_inner_retries: 5         # backtracking line-search retries before giving up on an iteration
 max_restarts: 20
 
 # Null-space secondary task: biases nullspace_tip_link's own local Z axis

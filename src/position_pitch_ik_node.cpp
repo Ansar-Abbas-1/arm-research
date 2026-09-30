@@ -1,4 +1,3 @@
-#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -10,6 +9,7 @@
 
 #include "arm_kinematics/SolvePositionPitchIk.h"
 #include "arm_kinematics/forward_kinematics.h"
+#include "arm_kinematics/joint_state_utils.h"
 #include "arm_kinematics/position_pitch_ik.h"
 
 // ROS wrapper around PositionPitchIkSolver -- same shape as ik_node (which
@@ -35,6 +35,7 @@ class PositionPitchIkNode {
     pnh.param("max_iterations", options.max_iterations, options.max_iterations);
     pnh.param("damping", options.damping, options.damping);
     pnh.param("max_step", options.max_step, options.max_step);
+    pnh.param("max_inner_retries", options.max_inner_retries, options.max_inner_retries);
     pnh.param("max_restarts", options.max_restarts, options.max_restarts);
     pnh.param("nullspace_gain", options.nullspace_gain, options.nullspace_gain);
     pnh.param("nullspace_tolerance", options.nullspace_tolerance, options.nullspace_tolerance);
@@ -76,13 +77,9 @@ class PositionPitchIkNode {
 
  private:
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
-    std::vector<double> positions(joint_names_.size());
-    for (size_t i = 0; i < joint_names_.size(); ++i) {
-      auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
-      if (it == msg->name.end()) {
-        return;  // incomplete message; keep the previous cached state
-      }
-      positions[i] = msg->position[std::distance(msg->name.begin(), it)];
+    std::vector<double> positions;
+    if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &positions)) {
+      return;  // incomplete message; keep the previous cached state
     }
     std::lock_guard<std::mutex> lock(joint_state_mutex_);
     latest_joint_positions_ = positions;
