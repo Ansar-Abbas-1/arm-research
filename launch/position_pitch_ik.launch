@@ -1,6 +1,6 @@
 <launch>
   <!-- sim + position_pitch_ik_node, config loaded from
-       config/position_pitch_ik.yaml (see docs/position_pitch_ik.md) --
+       config/position_pitch_ik.yaml (see docs/position_pitch_ik.md):
        every PositionPitchIkOptions field is reconfigurable there, or
        overridden per-launch via the args below, or via any other
        rosparam-loading mechanism (this is a plain ROS param namespace,
