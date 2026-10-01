@@ -525,6 +525,9 @@ private:
 
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
         if (req.data) {
+            // Stale-register hazard, see the constructor: a leftover
+            // nonzero Goal Velocity becomes live the instant torque enables.
+            zeroAllVelocities();
             enableTorque();
             res.success = true;
             res.message = "Torque enabled.";

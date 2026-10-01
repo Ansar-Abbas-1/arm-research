@@ -14,6 +14,7 @@
 #include <dynamic_reconfigure/server.h>
 #include <arm_interface/ArmInterfaceConfig.h>
 #include <memory>
+#include <atomic>
 
 #include "arm_interface/watchdog.h"
 #include "arm_interface/gripper_conversion.h"
@@ -128,20 +129,29 @@ public:
                 std::string(packetHandler_->getTxRxResult(read_result)) +
                 ") -- refusing to enable torque against an unknown goal-position register state");
         }
-        bulkWrite_.clearParam();
         for (size_t i = 0; i < num_joints_; ++i) {
             if (!bulkRead_.isAvailable(dxl_ids_[i], addr_present_position_, len_present_position_)) {
                 throw std::runtime_error("Present position unavailable for joint_" + std::to_string(i + 1) +
                                           " -- refusing to enable torque");
             }
-            int32_t present = bulkRead_.getData(dxl_ids_[i], addr_present_position_, len_present_position_);
-            positions_[i] = present;
+            positions_[i] = bulkRead_.getData(dxl_ids_[i], addr_present_position_, len_present_position_);
+        }
+        writeGoalPositionsLocked(positions_);
+        ROS_INFO("Goal position seeded to current present position for all joints.");
+    }
 
+    // Caller must hold port_mutex_. Writes `ticks` as Goal Position for
+    // every joint. Throws on any failure (callers refuse to enable torque
+    // rather than proceed against an unverified goal-register state).
+    void writeGoalPositionsLocked(const std::vector<int32_t>& ticks) {
+        bulkWrite_.clearParam();
+        for (size_t i = 0; i < num_joints_; ++i) {
+            int32_t v = ticks[i];
             uint8_t param_goal_position[4];
-            param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(present));
-            param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(present));
-            param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(present));
-            param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(present));
+            param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(v));
+            param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(v));
+            param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(v));
+            param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(v));
             if (!bulkWrite_.addParam(dxl_ids_[i], addr_goal_position_, len_goal_position_, param_goal_position)) {
                 throw std::runtime_error("Failed to add goal-position seed param for joint_" + std::to_string(i + 1));
             }
@@ -152,7 +162,31 @@ public:
                                       std::string(packetHandler_->getTxRxResult(write_result)) +
                                       ") -- refusing to enable torque");
         }
-        ROS_INFO("Goal position seeded to current present position for all joints.");
+    }
+
+    // Runs on the control-loop thread only (called from readAndPublish,
+    // right after a successful bulk read), never from a ROS callback
+    // thread: it uses the FRESH positions_ from that same tick as the
+    // seed, and avoids touching bulkRead_'s shared buffers from two
+    // threads. This is the re-enable counterpart to the startup seed --
+    // the watchdog (and set_torque false) leave the goal registers
+    // holding the LAST commanded targets, so re-enabling torque without
+    // re-seeding could jump the arm back toward them if it moved or
+    // sagged while torque was off. Returns false (and logs) on failure,
+    // in which case torque is NOT enabled.
+    bool seedFromLatestReadAndEnableTorque() {
+        if (!debug_) {
+            try {
+                std::lock_guard<std::mutex> lock(port_mutex_);
+                writeGoalPositionsLocked(positions_);
+            } catch (const std::exception& e) {
+                ROS_ERROR("Refusing to re-enable torque: %s", e.what());
+                return false;
+            }
+            ROS_INFO("Goal position re-seeded to current present position before re-enabling torque.");
+        }
+        enableTorque();
+        return true;
     }
 
     void enableTorque() {
@@ -306,6 +340,21 @@ private:
         }
         joint_msg_.header.stamp = ros::Time::now();
         joint_in_pub_.publish(joint_msg_);
+
+        // Torque (re-)enable requests from ROS callback threads are
+        // serviced here, on this thread, only on a tick whose bulk read
+        // succeeded -- positions_ is then guaranteed fresh for seeding.
+        // 1 = first/next command after idle (also starts writing),
+        // 2 = /arm_interface/set_torque true (torque only).
+        int request = enable_request_.load();
+        if (request != 0 && read_success) {
+            bool ok = seedFromLatestReadAndEnableTorque();
+            if (ok && request == 1) {
+                start_writing_ = true;
+            }
+            enable_result_ = ok ? 1 : -1;
+            enable_request_ = 0;
+        }
 
         // Watchdog: Check command timeout
         if (start_writing_) {
@@ -516,8 +565,12 @@ private:
     void jointStatesOutCb(const sensor_msgs::JointState::ConstPtr& msg) {
         if (!start_writing_) {
             ROS_INFO("Received command joint state, enabling torque and starting to write to motors.");
-            enableTorque();
-            start_writing_ = true;
+            // Not enabled here: this runs on a ROS callback thread. The
+            // control loop (readAndPublish) re-seeds the goal registers
+            // from its freshest read, enables torque, and only then sets
+            // start_writing_ -- see seedFromLatestReadAndEnableTorque().
+            int expected = 0;
+            enable_request_.compare_exchange_strong(expected, 1);
         }
         last_cmd_time_ = ros::Time::now();
 
@@ -581,12 +634,25 @@ private:
 
                 {
                     std::lock_guard<std::mutex> lock(port_mutex_);
-                    dxl_comm_result = packetHandler_->write1ByteTxRx(
-                        portHandler_, dxl_id, addr_torque_enable_, torque_enable_, &dxl_error);
+                    // A reboot resets the motor's RAM registers, so its
+                    // Goal Position is NOT the pose it was last holding:
+                    // seed it from this motor's present position first,
+                    // same hazard as the startup/re-enable seeding.
+                    uint32_t present = 0;
+                    dxl_comm_result = packetHandler_->read4ByteTxRx(
+                        portHandler_, dxl_id, addr_present_position_, &present, &dxl_error);
+                    if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
+                        dxl_comm_result = packetHandler_->write4ByteTxRx(
+                            portHandler_, dxl_id, addr_goal_position_, present, &dxl_error);
+                    }
+                    if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
+                        dxl_comm_result = packetHandler_->write1ByteTxRx(
+                            portHandler_, dxl_id, addr_torque_enable_, torque_enable_, &dxl_error);
+                    }
                 }
 
                 if (dxl_comm_result != COMM_SUCCESS || dxl_error != 0) {
-                    ROS_ERROR("Failed to enable torque for Motor ID %d after reboot", dxl_id);
+                    ROS_ERROR("Failed to seed goal / enable torque for Motor ID %d after reboot (torque NOT enabled)", dxl_id);
                     failed_to_reenable_ids.push_back(dxl_id);
                 } else {
                     ROS_INFO("Successfully re-enabled Motor ID %d.", dxl_id);
@@ -629,23 +695,30 @@ private:
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
         if (req.data) {
             ROS_INFO("Service called: Enabling torque on all joints...");
-            std::lock_guard<std::mutex> lock(port_mutex_);
-            bool overall_success = true;
-            std::string error_msg = "";
-            for (size_t i = 0; i < num_joints_; ++i) {
-                uint8_t dxl_error = 0;
-                int dxl_comm_result = packetHandler_->write1ByteTxRx(
-                    portHandler_, dxl_ids_[i], addr_torque_enable_, torque_enable_, &dxl_error);
-                if (dxl_comm_result != COMM_SUCCESS || dxl_error != 0) {
-                    overall_success = false;
-                    error_msg += "joint_" + std::to_string(i + 1) + " ";
-                }
+            // Serviced by the control loop (re-seeds goals from a fresh
+            // read before enabling -- see seedFromLatestReadAndEnableTorque),
+            // not done directly here: enabling torque against stale goal
+            // registers is exactly the hazard that function exists for.
+            enable_result_ = 0;
+            int expected = 0;
+            if (!enable_request_.compare_exchange_strong(expected, 2)) {
+                res.success = false;
+                res.message = "A torque-enable request is already pending; try again.";
+                return true;
             }
-            res.success = overall_success;
-            if (overall_success) {
-                res.message = "Torque successfully enabled on all joints.";
+            for (int waited_ms = 0; waited_ms < 1000 && enable_request_.load() != 0; waited_ms += 10) {
+                ros::Duration(0.01).sleep();
+            }
+            if (enable_request_.load() != 0) {
+                int pending = 2;
+                enable_request_.compare_exchange_strong(pending, 0);  // withdraw; control loop never serviced it
+                res.success = false;
+                res.message = "Timed out waiting for the control loop (no successful bulk read?); torque NOT enabled.";
             } else {
-                res.message = "Failed to enable torque on: " + error_msg;
+                res.success = (enable_result_.load() == 1);
+                res.message = res.success
+                                  ? "Goals re-seeded to current position; torque enabled on all joints."
+                                  : "Failed to re-seed goals / enable torque; torque NOT enabled (see node log).";
             }
         } else {
             ROS_INFO("Service called: Disabling torque on all joints...");
@@ -687,6 +760,11 @@ private:
     // Parameters for joint state output
     double position_threshold_ = 0.1*100; // Limit in joint error to trigger a write
     bool start_writing_ = false; // Flag to control writing to motors
+    // Torque (re-)enable handshake between ROS callback threads and the
+    // control loop: 0 = none, 1 = command arrived while idle, 2 = set_torque(true).
+    // enable_result_: 0 = pending, 1 = enabled, -1 = refused/failed.
+    std::atomic<int> enable_request_{0};
+    std::atomic<int> enable_result_{0};
 
     // Watchdog parameters and variables
     double command_timeout_ = 0.1;
