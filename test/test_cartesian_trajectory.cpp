@@ -6,11 +6,14 @@
 #include <ros/package.h>
 #include <urdf/model.h>
 
+#include <arm_kinematics/base_collision.h>
 #include <arm_kinematics/forward_kinematics.h>
 #include <arm_kinematics/position_pitch_ik.h>
 
 #include "arm_trajectory/cartesian_trajectory.h"
 
+using arm_kinematics::ArmIntersectsBase;
+using arm_kinematics::BoxObstacle;
 using arm_trajectory::GenerateCartesianTrajectory;
 
 namespace {
@@ -34,6 +37,16 @@ double MaxConsecutiveJointStep(const trajectory_msgs::JointTrajectory& traj) {
     worst = std::max(worst, std::sqrt(step));
   }
   return worst;
+}
+
+// Box as actually deployed (see trajectory_service_node.cpp and
+// arm_kinematics' own test_base_collision.cpp): top face at base_link's
+// own origin, extending downward, half-extents 0.20.
+BoxObstacle DeployedBaseBox() {
+  BoxObstacle box;
+  box.half_extents = Eigen::Vector3d::Constant(0.20);
+  box.box_to_root = Eigen::Translation3d(0, 0, -0.20) * Eigen::Isometry3d::Identity();
+  return box;
 }
 
 }  // namespace
@@ -223,6 +236,84 @@ TEST_F(CartesianTrajectoryTest, NullspaceOptionsThreadedThroughWholeTrajectory) 
   EXPECT_GT(alignment_with, alignment_without)
       << "nullspace_gain configured via GenerateCartesianTrajectory's ik_options should measurably "
          "improve link_4's vertical alignment at the trajectory's end relative to no bias";
+}
+
+// Both endpoints individually verified collision-free (ArmIntersectsBase
+// below), and the move succeeds with no obstacle configured at all -- so a
+// failure here can only come from an INTERIOR sample, confirming
+// collision_obstacle actually reaches GenerateSamplesAtDuration via
+// PathTrackingIkOptions (cartesian_trajectory.cpp), not just the goal
+// check. Found via a randomized standalone probe against the built
+// library (endpoints pre-filtered for collision-freedom, candidate
+// pre-filtered for "fails specifically with an interior-collision
+// message"), then confirmed stable across 4 different rng_seed values
+// before being hand-asserted here.
+TEST_F(CartesianTrajectoryTest, BaseObstacleThreadedThroughInteriorSamples) {
+  std::vector<double> q_start = {1.8004, 2.2212, -0.8527, 4.4560, -0.5177};
+  std::vector<double> q_goal_config = {2.0811, 0.8884, -1.2326, 3.2579, -1.9493};
+  BoxObstacle box = DeployedBaseBox();
+  ASSERT_FALSE(ArmIntersectsBase(*fk_, q_start, box, 0.02)) << "test setup assumption broken";
+  ASSERT_FALSE(ArmIntersectsBase(*fk_, q_goal_config, box, 0.02)) << "test setup assumption broken";
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+
+  auto baseline = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
+                                               joint_names_, 50.0);
+  ASSERT_TRUE(baseline.success) << "test setup assumption broken: " << baseline.message;
+
+  arm_kinematics::PositionPitchIkOptions obstacle_options = ik_options_;
+  obstacle_options.collision_obstacle = &box;
+  auto result = GenerateCartesianTrajectory(*fk_, obstacle_options, q_start, goal_pose, velocity_limits_,
+                                             joint_names_, 50.0);
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("interior"), std::string::npos) << result.message;
+}
+
+// q_start itself is a genuine IK solution for its own FK pose (trivially),
+// but it also collides with the deployed box (same config as
+// arm_kinematics' ElbowFoldedIntoBaseCollides). max_restarts=0 means
+// goal_ik's own Solve() call never searches for a collision-free
+// alternative, so it reports the exact, converged, but colliding match --
+// exercising the goal-specific collision failure message, distinct from
+// both "did not converge" and the interior-sample message above.
+TEST_F(CartesianTrajectoryTest, GoalRequiringBaseCollisionFailsWithClearMessage) {
+  std::vector<double> q_start = {0.0, -1.6, 0.0, 0.0, 0.0};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_start);
+  BoxObstacle box = DeployedBaseBox();
+  ASSERT_TRUE(ArmIntersectsBase(*fk_, q_start, box, 0.02)) << "test setup assumption broken";
+
+  arm_kinematics::PositionPitchIkOptions obstacle_options = ik_options_;
+  obstacle_options.collision_obstacle = &box;
+  obstacle_options.max_restarts = 0;
+  auto result = GenerateCartesianTrajectory(*fk_, obstacle_options, q_start, goal_pose, velocity_limits_,
+                                             joint_names_, 50.0);
+  EXPECT_FALSE(result.success);
+  EXPECT_NE(result.message.find("colliding"), std::string::npos) << result.message;
+  EXPECT_TRUE(result.trajectory.points.empty());
+}
+
+// Regression: a move already covered by ReachesGuaranteedReachableGoal,
+// unaffected by the box -- generation succeeds identically whether or not
+// collision_obstacle is configured, confirming the collision check adds no
+// new failure mode for paths that were never anywhere near the obstacle.
+TEST_F(CartesianTrajectoryTest, UnobstructedPathUnaffectedByObstacleConfiguration) {
+  std::vector<double> q_start = {0.1, 0.5, -0.5, 0.5, -0.5};
+  std::vector<double> q_goal_config = {0.4, 0.7, -0.3, 0.6, -0.5};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+  BoxObstacle box = DeployedBaseBox();
+
+  auto baseline = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
+                                               joint_names_, 50.0);
+  ASSERT_TRUE(baseline.success) << baseline.message;
+
+  arm_kinematics::PositionPitchIkOptions obstacle_options = ik_options_;
+  obstacle_options.collision_obstacle = &box;
+  auto with_obstacle = GenerateCartesianTrajectory(*fk_, obstacle_options, q_start, goal_pose,
+                                                    velocity_limits_, joint_names_, 50.0);
+  ASSERT_TRUE(with_obstacle.success) << with_obstacle.message;
+  EXPECT_EQ(with_obstacle.trajectory.points.size(), baseline.trajectory.points.size());
+  for (size_t k = 0; k < baseline.trajectory.points.size(); ++k) {
+    EXPECT_EQ(with_obstacle.trajectory.points[k].positions, baseline.trajectory.points[k].positions);
+  }
 }
 
 int main(int argc, char** argv) {

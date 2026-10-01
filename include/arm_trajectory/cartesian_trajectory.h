@@ -13,8 +13,9 @@ namespace arm_trajectory {
 
 struct CartesianTrajectoryResult {
   bool success;
-  std::string message;  // failure detail if !success (only possible failure: the goal itself
-                         // isn't reachable -- interior path samples never fail, see below)
+  std::string message;  // failure detail if !success -- the goal not being reachable, OR (if
+                         // ik_options.collision_obstacle is configured) the goal or any interior
+                         // path sample colliding with it, see below
   trajectory_msgs::JointTrajectory trajectory;
   // Worst-case interior-sample tracking residual (best-effort path
   // tracking -- see GenerateCartesianTrajectory). 0 if success is false,
@@ -33,9 +34,21 @@ struct CartesianTrajectoryResult {
 // `ik_options` (caller-provided) configures the GOAL solve: position+pitch
 // tolerances, damping, and -- since PositionPitchIkOptions carries it --
 // the optional null-space secondary task (nullspace_secondary_link_solver/
-// nullspace_gain), which this function's own interior-sample solver also
-// inherits (see PathTrackingIkOptions() in the .cpp), so a configured bias
-// applies smoothly across the whole trajectory, not just the endpoint. The
+// nullspace_gain) and the optional base-collision check
+// (collision_obstacle/collision_capsule_radius/
+// collision_first_checked_segment_index, see base_collision.h), which this
+// function's own interior-sample solver also inherits (see
+// PathTrackingIkOptions() in the .cpp), so both apply smoothly across the
+// whole trajectory, not just the endpoint. UNLIKE the null-space bias,
+// though, collision is NOT best-effort at interior samples: a colliding
+// goal or interior sample is a hard failure of trajectory generation (see
+// `message`), distinct from best-effort tracking deviation -- interior
+// samples are solved with max_restarts=0 (see PathTrackingIkOptions() for
+// why that's load-bearing), so there is no restart search available there
+// to route around an obstacle the way the goal's own Solve() call can;
+// retiming the duration doesn't fix a geometrically-colliding interpolated
+// path either, so a colliding interior sample fails generation immediately
+// rather than continuing to retry at a different duration. The
 // actual target the caller asked for must be genuinely reachable at
 // ik_options' own tolerances, and this is the only way this function fails
 // (`message` explains why if so). INTERIOR samples are **best-effort**:

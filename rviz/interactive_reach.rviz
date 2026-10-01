@@ -149,6 +149,14 @@ Visualization Manager:
       Show Visual Aids: false
       Update Topic: /interactive_pose_marker/update
       Value: true
+    - Class: rviz/Marker
+      Enabled: true
+      Marker Topic: /base_collision_zone
+      Name: BaseCollisionZone
+      Namespaces:
+        {}
+      Queue Size: 1
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48

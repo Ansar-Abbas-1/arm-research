@@ -84,6 +84,12 @@ struct SampleAttempt {
   std::vector<double> t_samples;
   double peak_position_deviation;     // meters, worst interior-sample residual (best-effort tracking)
   double peak_orientation_deviation;  // radians
+  // Unlike tracking deviation, collision is NOT best-effort (see
+  // cartesian_trajectory.h) -- the first colliding sample stops generation
+  // immediately, so at most one of these is ever populated meaningfully.
+  bool has_collision = false;
+  int collision_sample_index = -1;
+  double collision_time = 0.0;  // seconds, == t_samples[collision_sample_index]
 };
 
 SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsSolver& fk_solver,
@@ -127,6 +133,16 @@ SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsS
     attempt.q_samples.push_back(ik.joint_positions);
     attempt.t_samples.push_back(t);
     q_prev = ik.joint_positions;
+
+    // Collision is a hard failure, not best-effort (see
+    // cartesian_trajectory.h) -- stop sampling the instant one is found
+    // rather than continuing to build out a path the caller can never use.
+    if (!ik.collision_free) {
+      attempt.has_collision = true;
+      attempt.collision_sample_index = k;
+      attempt.collision_time = t;
+      break;
+    }
   }
 
   return attempt;
@@ -177,6 +193,17 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
                       std::to_string(goal_ik.residual.head<3>().norm()) +
                       " m, rotation residual (informational; only its pitch component is enforced) " +
                       std::to_string(goal_ik.residual.tail<3>().norm()) + " rad, after " +
+                      std::to_string(goal_ik.restarts_used) + " restarts";
+    return result;
+  }
+  if (!goal_ik.collision_free) {
+    // Distinct message from the convergence failure above: this goal IS
+    // reachable, but only by colliding with the base -- goal_ik's own
+    // Solve() call already searched its restart budget for a
+    // collision-free alternative (see PositionPitchIkSolver::Solve) before
+    // reporting this.
+    result.success = false;
+    result.message = "goal pose only reachable by colliding with the base obstacle, after " +
                       std::to_string(goal_ik.restarts_used) + " restarts";
     return result;
   }
@@ -241,6 +268,15 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
   for (int iter = 0; iter < max_duration_iterations; ++iter) {
     SampleAttempt coarse = GenerateSamplesAtDuration(fk_solver, ik_options, q_start, pose_start,
                                                       pose_goal, duration, kCoarseSearchSamples);
+    if (coarse.has_collision) {
+      // Retiming doesn't fix a geometrically-colliding interpolated path
+      // (see cartesian_trajectory.h) -- fail fast rather than continuing
+      // to rescale duration against a path that can never pass.
+      result.success = false;
+      result.message = "interior path sample collides with the base obstacle at t=" +
+                        std::to_string(coarse.collision_time) + "s (coarse duration search)";
+      return result;
+    }
     double worst_ratio = WorstVelocityRatio(coarse.q_samples, coarse.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {
       break;
@@ -269,6 +305,17 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
 
     attempt = GenerateSamplesAtDuration(fk_solver, ik_options, q_start, pose_start, pose_goal,
                                         duration, projected_samples);
+
+    if (attempt.has_collision) {
+      // Same reasoning as the coarse search above: retiming can't fix a
+      // geometrically-colliding path, so fail immediately rather than
+      // burning more correction passes.
+      result.success = false;
+      result.message = "interior path sample collides with the base obstacle at t=" +
+                        std::to_string(attempt.collision_time) + "s (full-resolution duration=" +
+                        std::to_string(duration) + "s)";
+      return result;
+    }
 
     double worst_ratio = WorstVelocityRatio(attempt.q_samples, attempt.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {

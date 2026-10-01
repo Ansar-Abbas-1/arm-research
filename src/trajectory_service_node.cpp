@@ -6,7 +6,9 @@
 #include <sensor_msgs/JointState.h>
 #include <tf2_eigen/tf2_eigen.h>
 #include <urdf/model.h>
+#include <visualization_msgs/Marker.h>
 
+#include <arm_kinematics/base_collision.h>
 #include <arm_kinematics/forward_kinematics.h>
 #include <arm_kinematics/joint_state_utils.h>
 #include <arm_kinematics/position_pitch_ik.h>
@@ -52,6 +54,15 @@ class TrajectoryServiceNode {
     pnh.param("nullspace_tolerance", ik_options_.nullspace_tolerance,
               ik_options_.nullspace_tolerance);
 
+    double base_obstacle_half_extent;
+    pnh.param("base_obstacle_half_extent", base_obstacle_half_extent, 0.20);
+    pnh.param("collision_capsule_radius", ik_options_.collision_capsule_radius,
+              ik_options_.collision_capsule_radius);
+    // ON by default -- M4's base-collision-avoidance milestone, see
+    // ROADMAP.md: a caller shouldn't have to opt into not hitting the
+    // mounting base.
+    pnh.param("enable_base_collision_check", enable_base_collision_check_, true);
+
     urdf::Model model;
     if (!model.initParam("robot_description")) {
       throw std::runtime_error("trajectory_service_node: failed to load URDF from 'robot_description'");
@@ -65,6 +76,22 @@ class TrajectoryServiceNode {
     nullspace_solver_ =
         std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model, root_link, nullspace_tip_link);
     ik_options_.nullspace_secondary_link_solver = nullspace_solver_.get();
+
+    // Top face at root_link's own origin (z=0), extending downward -- the
+    // robot sits ON TOP of the cube (see ROADMAP.md and
+    // arm_kinematics/docs/base_collision.md), centered in X/Y. Deriving
+    // the z-offset from base_obstacle_half_extent itself, not a second
+    // hardcoded constant, keeps the two consistent if the box size param
+    // ever changes.
+    base_obstacle_.half_extents = Eigen::Vector3d::Constant(base_obstacle_half_extent);
+    base_obstacle_.box_to_root = Eigen::Translation3d(0, 0, -base_obstacle_half_extent) *
+                                  Eigen::Isometry3d::Identity();
+    // Same "always constructed, pointer is the opt-in signal" convention
+    // as nullspace_solver_ above.
+    if (enable_base_collision_check_) {
+      ik_options_.collision_obstacle = &base_obstacle_;
+      PublishBaseObstacleMarker(nh, root_link);
+    }
     ik_solver_ = std::make_unique<arm_kinematics::PositionPitchIkSolver>(*fk_solver_, ik_options_);
     joint_names_ = fk_solver_->GetActuatedJointNames();
     velocity_limits_ = fk_solver_->GetActuatedJointVelocityLimits();
@@ -79,10 +106,42 @@ class TrajectoryServiceNode {
                      << (ik_options_.nullspace_gain != 0.0
                              ? ", null-space bias toward vertical " + nullspace_tip_link
                              : "")
+                     << (enable_base_collision_check_
+                             ? ", base-collision check on (" +
+                                   std::to_string(2.0 * base_obstacle_half_extent) + "m cube)"
+                             : ", base-collision check OFF")
                      << ")");
   }
 
  private:
+  // Visualizes base_obstacle_ as an rviz CUBE marker ("no-access zone") --
+  // published once, latched (so a late-joining rviz still sees it), not on
+  // a timer: the obstacle is a fixed param set at construction, not
+  // something that moves or needs re-publishing for this node's lifetime.
+  // Deliberately distinct in color from RobotModel's own link materials,
+  // since it's a constraint being visualized, not part of the robot.
+  void PublishBaseObstacleMarker(ros::NodeHandle& nh, const std::string& root_link) {
+    base_obstacle_marker_pub_ = nh.advertise<visualization_msgs::Marker>("/base_collision_zone", 1,
+                                                                           /*latch=*/true);
+    visualization_msgs::Marker marker;
+    marker.header.frame_id = root_link;
+    marker.header.stamp = ros::Time::now();
+    marker.ns = "base_collision_zone";
+    marker.id = 0;
+    marker.type = visualization_msgs::Marker::CUBE;
+    marker.action = visualization_msgs::Marker::ADD;
+    marker.pose = tf2::toMsg(base_obstacle_.box_to_root);
+    marker.scale.x = 2.0 * base_obstacle_.half_extents.x();
+    marker.scale.y = 2.0 * base_obstacle_.half_extents.y();
+    marker.scale.z = 2.0 * base_obstacle_.half_extents.z();
+    marker.color.r = 1.0;
+    marker.color.g = 0.15;
+    marker.color.b = 0.0;
+    marker.color.a = 0.35;
+    marker.lifetime = ros::Duration(0.0);  // forever
+    base_obstacle_marker_pub_.publish(marker);
+  }
+
   void JointStatesCb(const sensor_msgs::JointState::ConstPtr& msg) {
     std::vector<double> positions;
     if (!arm_kinematics::ExtractJointPositions(*msg, joint_names_, &positions)) {
@@ -186,6 +245,8 @@ class TrajectoryServiceNode {
 
   std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> fk_solver_;
   std::unique_ptr<arm_kinematics::ForwardKinematicsSolver> nullspace_solver_;
+  arm_kinematics::BoxObstacle base_obstacle_;
+  bool enable_base_collision_check_;
   arm_kinematics::PositionPitchIkOptions ik_options_;
   std::unique_ptr<arm_kinematics::PositionPitchIkSolver> ik_solver_;
   std::vector<std::string> joint_names_;
@@ -194,6 +255,7 @@ class TrajectoryServiceNode {
 
   ros::Subscriber joint_sub_;
   ros::ServiceServer generate_srv_;
+  ros::Publisher base_obstacle_marker_pub_;
 
   std::mutex joint_state_mutex_;
   std::vector<double> latest_joint_positions_;
