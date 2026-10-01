@@ -13,7 +13,7 @@ and one new repo per milestone that adds a package, per the "new capability
 | M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
 | M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
 | M4 — Non-interactive reach + base-collision avoidance | **Done** (2026-10-01) | `arm_trajectory`, `arm_kinematics` |
-| M5 — Sim-to-real | Stage 1 (read-only) passed on real hardware; Stage 2 (first motion) prepped, not run | `arm_interface` |
+| M5 — Sim-to-real | Stages 1 (read-only) and 2 (single-joint motion, all 6 joints) passed on real hardware; Stage 3 (full pipeline, reduced speed) next | `arm_interface` |
 | M6 — Camera + calibration | Sketch | TBD |
 | M7 — Target detection/localization | Sketch | TBD |
 | M8 — Closed-loop reach | Sketch | — |
