@@ -67,3 +67,9 @@ Same class of gap existed in `robot_interface_velocity.cpp` for **Goal Velocity*
 ## 8. Stage 2 single-joint test script
 
 `scripts/stage2_single_joint_test.py` (`rosrun arm_interface stage2_single_joint_test.py --joint N --delta X`): reads one live `/joint_states_in` message, commands joint `N` to its current value plus `X`, holds every other joint at its own current value (see this file's own module docstring for why that's not optional — `robot_interface.cpp`'s commanded-position array otherwise starts at all-zero radians, not "current position"), publishes for `--publish-seconds` (default 1.0), then stops — `robot_interface`'s own `command_timeout` watchdog (default 0.5s) disables torque shortly after the last publish, so the script doesn't need its own stop/hold logic. Per-joint hardware limits (`encoder_min`/`encoder_max`) are still enforced by `robot_interface.cpp` on every write regardless of what this script sends.
+
+## 9. Stage 2, first real motion (2026-10-01): passed
+
+Position mode, non-debug launch, `stage2_single_joint_test.py --joint 6 --delta 0.01`. Log order was as designed: `Goal position seeded…` → `Torque enabled` → command received → writes → command-timeout watchdog (0.5s) → `Torque disabled`. Observed: gripper opened slightly, no other joint moved. Confirms end to end on real hardware: the goal-seeding fix, the hold-others-at-current command pattern, the gripper `LinearToRotational` write path with `gripper_invert`, and the watchdog's disable-torque behavior.
+
+**Caveat before testing any arm joint**: the watchdog's response to a stale command is `disableTorque()`, which drops holding force. That is harmless for the gripper but not for gravity-loaded arm joints (joints 2-4 especially): the arm will sag when the watchdog fires after a test move. Arm-joint tests need either support under the arm or a deliberate hold strategy, not just "stop publishing."
