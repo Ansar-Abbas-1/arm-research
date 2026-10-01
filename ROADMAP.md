@@ -13,7 +13,7 @@ and one new repo per milestone that adds a package, per the "new capability
 | M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
 | M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
 | M4 — Non-interactive reach + base-collision avoidance | **Done** (2026-10-01) | `arm_trajectory`, `arm_kinematics` |
-| M5 — Sim-to-real | Scaffolding in place (velocity interface, e-stop interface, gripper conversion); no hardware connected yet | `arm_interface` |
+| M5 — Sim-to-real | Stage 1 (read-only) passed on real hardware; Stage 2 (first motion) prepped, not run | `arm_interface` |
 | M6 — Camera + calibration | Sketch | TBD |
 | M7 — Target detection/localization | Sketch | TBD |
 | M8 — Closed-loop reach | Sketch | — |
@@ -148,7 +148,13 @@ Run M1–M4 (FK/IK/trajectory generation+execution, base-collision avoidance) on
 6. **No calibration step (finding 6): procedures proposed, none built.** Per instruction, not expected to be necessary — see `sim_to_real.md`'s own list (zero-offset check, startup URDF/YAML consistency check, gripper mechanism measurement) kept on hand rather than implemented.
 7. **No write-failure escalation (finding 7): not yet addressed**, carried forward to Stage 0 if/when real-hardware testing resumes.
 
-New files: `arm_interface/include/arm_interface/gripper_conversion.h` (+ test), `arm_interface/src/robot_interface_velocity.cpp`, `arm_interface/docs/sim_to_real.md`. Still not run against real hardware — compile-tested and unit-tested only (`arm_interface` test suite: 10 total, watchdog + gripper-conversion).
+New files: `arm_interface/include/arm_interface/gripper_conversion.h` (+ test), `arm_interface/src/robot_interface_velocity.cpp`, `arm_interface/docs/sim_to_real.md`.
+
+**Stage 1 run against real hardware (2026-10-01)**, first time any of this code touched the actual arm: read-only verification passed, and it caught a real bug — the gripper's reported open/close sense was opposite `arm_sim_validator_node`'s, fixed with an explicit `GripperConversion::invert` flag and confirmed matching afterward, all without any motor command. See `arm_interface/docs/sim_to_real.md` §5/§7 for both this and the full account of 8 below.
+
+**A second gap found while preparing Stage 2** (first live motion, not yet attempted): `enableTorque()` ran unconditionally at startup, before any command was ever received — on a Dynamixel in Position Control Mode this means torque-enable alone could move the arm toward whatever stale value was already in its Goal Position register, independent of this node or any script. Never hit before because every prior session ran in `debug:=true` (torque-enable a no-op). Fixed: present position is read and re-written as the goal position *before* torque ever enables (`seedGoalPositionToCurrentPosition()`), same fix applied to `robot_interface_velocity.cpp`'s Goal Velocity register. New `arm_interface/scripts/stage2_single_joint_test.py` for the actual first move, not yet run.
+
+`arm_interface` test suite: 13 total (watchdog + gripper-conversion, all green). Stage 2 itself has not started.
 
 ## M6 — Camera integration and calibration (sketch)
 
