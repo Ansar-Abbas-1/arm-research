@@ -12,7 +12,7 @@ and one new repo per milestone that adds a package, per the "new capability
 | M1 — Forward kinematics | **Done** (2026-09-25) | `arm_kinematics` (new) |
 | M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
 | M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
-| M4 — Joy-controller teleop | Next, detailed below | `arm_teleop` (new, proposed) |
+| M4 — Non-interactive reach + base-collision avoidance | **Done** (2026-10-01) | `arm_trajectory`, `arm_kinematics` |
 | M5 — Sim-to-real | Sketch | — |
 | M6 — Camera + calibration | Sketch | TBD |
 | M7 — Target detection/localization | Sketch | TBD |
@@ -84,32 +84,35 @@ Full derivation: [`src/arm_trajectory/docs/trajectory_generation.md`](src/arm_tr
 
 ---
 
-## M4 — Joy-controller teleop (detailed)
+## M4 — Non-interactive reach + base-collision avoidance
 
-**Goal:** drive the arm interactively via a joystick in simulation — the joystick moves a target (Cartesian pose, most naturally), and the arm continuously (re)plans and follows it, preempting an in-flight motion whenever a new target arrives. This is the intended consumer of M3's preemption support, not a new mechanism of its own.
+**Original goal (superseded):** joystick teleop in a new `arm_teleop` package. A prototype was built (`arm_teleop`: `teleop_node.cpp`, `joy_target_mapper.h`, docs, tests) but set aside in favor of the scope below — **ignore `arm_teleop`**, it is not part of this milestone's delivered or ongoing work.
 
-**Scope:** simulation only (`arm_sim_validator_node`), per the roadmap; hardware teleop is M5's concern under the hardware safety rules. 5-DOF Cartesian jogging; joint_6/gripper toggled independently (a direct, non-kinematic command, consistent with every earlier milestone's treatment of it).
+**Delivered (2026-09-29), on `arm_trajectory`:**
+- `/reach_target_pose` (non-interactive go-to-pose: orchestrates `/generate_trajectory` + `follow_joint_trajectory`, verifies the result via FK rather than trusting "generation succeeded") and two ways to drive it interactively without a joystick — an rviz 6-DOF interactive marker and `reach_pose_cli.py`.
+- IK across the whole day-to-day path (`trajectory_service_node`, `GenerateCartesianTrajectory`) switched from `InverseKinematicsSolver` (full 6D pose) to `PositionPitchIkSolver` (position + pitch only — roll/yaw are mechanically irrelevant on this arm), which opened a real null-space the arm now uses **by default** to regulate `link_4` toward vertical on every reach, not just when asked.
+- Found and fixed, all live-tested against the real simulator: null-space iteration starvation, a `converged`-staleness bug, a solver step-acceptance bug causing unbounded wandering on unreachable interior path samples, and a restart/selection bug that discarded a well-aligned seed for a random, poorly-aligned "exactly converged" one — see `src/arm_kinematics/docs/position_pitch_ik.md` for the full account of each.
+- `use_hardware` toggle added to every sim-backed launch file (swaps `arm_sim_validator_node` for the real `robot_interface` driver, same topic interface either way); `use_rviz` added where missing. Hardware path wired but not exercised.
+- A pass simplifying duplicated joint-state-lookup and distribution-sampling code across both packages, and `arm_interface`'s `joint_6` (gripper) reintroduced as a URDF branch off `end_effector` — invisible to every kinematics solver by construction, driven by a single linear (prismatic) `<mimic>`-paired two-finger joint.
 
-**Package (proposed):** new repo `arm_teleop`, depending on `arm_trajectory` (its `/generate_trajectory` service and `follow_joint_trajectory` action client) — a clear-cut case for the "new capability → new package" convention (an interactive control loop is a different kind of thing from trajectory math), unlike M3's more ambiguous case.
+Full test suites green throughout (`arm_kinematics` 86, `arm_trajectory` 51, `arm_interface` 11).
 
-**Approach:**
-- Subscribe to `sensor_msgs/Joy` (standard `joy` package output; a real joystick device is needed to *use* this, but automated tests substitute a synthetic publisher — see Tests).
-- Maintain an internal target pose, updated incrementally from joystick axes at a fixed, throttled rate (e.g. 10 Hz, not raw joystick rate ~50-100 Hz): `target_{k+1} = target_k + gain · axis · dt`, clamped to a sane jogging speed. Simple integration, not a new control law — no derivation needed beyond what M1-M3 already built.
-- On each update tick where the target actually changed: call `/generate_trajectory` (joint-space goal, i.e. `cartesian_path=false` — solve IK once for the new target, then a plain joint-space move to it; a full traced Cartesian path per tick isn't needed for jogging responsiveness, and avoids Finding 4's slow-path cost on every tick) and send the result to `follow_joint_trajectory`, which **preempts** whatever was already executing — exactly the mechanism M3 built and tested in isolation, now exercised by a real caller.
-- A button (or axis) drives `joint_6` (gripper) directly — bypasses the kinematics/trajectory stack entirely, consistent with it never being part of the pose chain since M0.
+---
 
-**Tests:**
-- Unit test: the joystick-axis-to-target-pose-increment mapping as a pure function (Joy msg + previous target + dt → new target) — no ROS/ hardware needed.
-- Integration/rostest: publish synthetic `sensor_msgs/Joy` messages (no real joystick required) simulating a stick push, confirm the target updates and the sim tracks it; then publish a *second* synthetic input while the first motion is still executing and confirm the resulting action goal actually preempts the first (validating M3's preemption is exercised by a real consumer, not just its own isolated test).
+**Base-collision avoidance, delivered (2026-10-01):**
 
-**Done when:**
-- Joystick input drives the simulated arm's end-effector target smoothly, jogging speed bounded.
-- A new joystick input while a motion is executing correctly preempts it (tested, not assumed).
-- Gripper (joint_6) toggles independently of the pose-tracking loop.
-- No changes to `arm_interface`/`DynamixelSDK`.
-- Hand-off test script given, same pattern as M1–M3 (a synthetic-Joy-publisher script, likely, given no real joystick hardware is assumed available for the reviewer either).
+- New `arm_kinematics/base_collision.h`/`.cpp`: `BoxObstacle` (swappable value type, not baked into the URDF) + `CapsuleIntersectsBox` (exact, closed-form, no iteration — minimizes a convex piecewise-quadratic along the segment) + `ArmIntersectsBase` (reuses `ForwardKinematicsSolver`'s existing accessors, no new FK machinery). Full derivation: [`src/arm_kinematics/docs/base_collision.md`](src/arm_kinematics/docs/base_collision.md).
+- `PositionPitchIkOptions`/`Solve()` made collision-aware: an opt-in `collision_obstacle` pointer (same "pointer=off" convention as the null-space task), checked once per restart candidate, reusing the *existing* restart/selection machinery rather than a parallel rejection path — exactly the resolved open question below. `GenerateCartesianTrajectory` threads it through via the same `PathTrackingIkOptions` copy the null-space fields already ride on, but treats interior-sample collision as a **hard failure** (not best-effort like tracking deviation) since interior samples run with `max_restarts=0` and retiming can't fix a geometrically-colliding path — see `arm_trajectory/docs/trajectory_generation.md` Finding 6.
+- `trajectory_service_node` wires it on by default (`~enable_base_collision_check`, `~base_obstacle_half_extent`, `~collision_capsule_radius`), box placement derived from the corrected open-question answer below.
+- 21 new tests (10 `test_base_collision.cpp`, 3 `test_position_pitch_ik.cpp`, 3 `test_cartesian_trajectory.cpp` — plus pre-existing suites, all still green: `arm_kinematics` 52 total, `arm_trajectory` 25 total). Verified live against the running simulator, not just gtest: restarted `trajectory_service_node`, confirmed `base-collision check on (0.400000m cube)` at startup, drove `/generate_trajectory` through both a successful live reroute and an honest (never silent) rejection.
+- **Mid-plan correction, worth recording:** the box placement open question below was originally answered "centered on `base_link`'s own origin" (all 3 axes). The user corrected this during the formal Plan review: the robot is centered on the cube in X/Y but sits **on top of** it in Z (box top face at `base_link`'s origin, extending downward). This reverses which segments near the root are provably collision-free vs. which must be checked — see `base_collision.md`'s own "earlier, wrong placement assumption" section for the full before/after.
+- **Live finding, not a regression:** this session's own recurring test pose (`position=(0.15,0.1,-0.2)`) turns out to sit inside the deployed box — a real discovery, not a bug introduced by this work. See `base_collision.md`.
 
-The formal **Plan** step (file list, exact interface shape, wait for approval before implementing) happens when M4 is actually started, per the working protocol — this section is the roadmap-level definition, not that plan.
+The 4 original "Open questions — resolved" below are superseded by the corrected placement above where they conflict; kept for the historical record of what was decided before implementation:
+1. ~~Box placement: centered on `base_link`'s own origin, all 3 axes~~ — corrected mid-plan, see above.
+2. Regulation scope: generation-time checking only — confirmed, no separate runtime monitor was added.
+3. Safety margin: the 40cm box dimension is literal; capsule radius (0.02m, from the URDF's own max link radius) provides the actual margin — confirmed as built.
+4. Collision response: not a hard failure on the first colliding attempt at the goal — confirmed as built, with one measured nuance: the restart search's "qualifying candidate always wins" policy means an infeasible target (reachable only by colliding) reports `collision_free=true, converged=false` rather than "found the least-bad colliding match" — see `base_collision.md`'s "qualifying-tier-dominates" section.
 
 ## M5 — Sim-to-real (sketch)
 
