@@ -13,7 +13,7 @@ and one new repo per milestone that adds a package, per the "new capability
 | M2 — Inverse kinematics | **Done** (2026-09-25) | `arm_kinematics` |
 | M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
 | M4 — Non-interactive reach + base-collision avoidance | **Done** (2026-10-01) | `arm_trajectory`, `arm_kinematics` |
-| M5 — Sim-to-real | Sketch | — |
+| M5 — Sim-to-real | Scaffolding in place (velocity interface, e-stop interface, gripper conversion); no hardware connected yet | `arm_interface` |
 | M6 — Camera + calibration | Sketch | TBD |
 | M7 — Target detection/localization | Sketch | TBD |
 | M8 — Closed-loop reach | Sketch | — |
@@ -114,9 +114,41 @@ The 4 original "Open questions — resolved" below are superseded by the correct
 3. Safety margin: the 40cm box dimension is literal; capsule radius (0.02m, from the URDF's own max link radius) provides the actual margin — confirmed as built.
 4. Collision response: not a hard failure on the first colliding attempt at the goal — confirmed as built, with one measured nuance: the restart search's "qualifying candidate always wins" policy means an infeasible target (reachable only by colliding) reports `collision_free=true, converged=false` rather than "found the least-bad colliding match" — see `base_collision.md`'s "qualifying-tier-dominates" section.
 
-## M5 — Sim-to-real (sketch)
+## M5 — Sim-to-real
 
-Run M2–M4 on real hardware through `arm_interface`/`DynamixelSDK`, under the project's hardware safety rules (joint/velocity/torque limits enforced on every hardware-facing command path, reduced speed on first real-hardware run of any new motion, explicit stop/disable-torque path, user runs anything touching motors).
+Run M1–M4 (FK/IK/trajectory generation+execution, base-collision avoidance) on real hardware through `arm_interface`/`DynamixelSDK`, under the project's hardware safety rules (joint/velocity/torque limits enforced on every hardware-facing command path, reduced speed on first real-hardware run of any new motion, explicit stop/disable-torque path, user runs anything touching motors). No hardware connected yet -- this section is prep/architecture only, detailed before any live-motor work per the project's established per-milestone pattern.
+
+**Correction to this milestone's own framing:** M1-M4 were validated against `arm_sim_validator_node` (`arm_interface`'s own lightweight, URDF-limit-clamped kinematic simulator -- no Gazebo dependency, confirmed via `arm_interface/docs/architecture.md`), not Gazebo Classic. `use_hardware` already toggles the same `/joint_states_in`/`/joint_states_out` topic contract between `arm_sim_validator_node` and `robot_interface` (M4's delivery), so M1-M4's own code needs zero changes for M5 -- this milestone is entirely about `robot_interface`'s own hardware-facing safety path, which predates this session and has never been reviewed here.
+
+**Audit finding (read-only review of `arm_interface/src/robot_interface.cpp`, `config/ArmInterface.yaml`, `urdf/arm.urdf`, launch files -- no code changed): `use_hardware:=true` is compile-tested only, never run against real motors, and has real safety gaps that must close before it is:**
+
+1. **The one runtime safety interlock is inert.** A commanded-vs-actual position mismatch check exists (`robot_interface.cpp:248-260`) but its threshold defaults to 10 rad (`config/ArmInterface.yaml`) -- larger than any joint's full range (max ~5.5 rad per `docs/architecture.md`), so it can never fire.
+2. **No velocity or torque/current limiting on outgoing commands at all.** Every write is an instantaneous goal-position setpoint; no Dynamixel profile-velocity register is configured anywhere, so a trajectory sample (or a bug) producing a large jump has nothing stopping it hardware-side except whatever the motor firmware defaults to.
+3. **No software or hardware e-stop.** Only options today: kill the ROS node (destructor retry-disables torque, but only up to 5 attempts during shutdown before giving up and logging CRITICAL), the `/arm_interface/set_torque` service, or the physical breaker (per `README.md`, explicitly the slowest option of the three).
+4. **Joint limits live in two unsynced places.** `arm_sim_validator_node` reads limits from the URDF (radians); `robot_interface` uses a hand-maintained encoder-tick array in `config/ArmInterface.yaml`, never cross-checked against the URDF. Measured drift: joints 1-3 agree to ≤0.02 rad, joint_4 ~0.017 rad off, joint_5 ~0.046 rad off -- not alarming alone, but an unverified, silently-divergent source of truth.
+5. **`joint_6` (gripper) has a real unit-domain mismatch, not just a documentation gap.** The URDF models it as prismatic (meters, 0-0.025 m range -- M4's gripper reintroduction) with an explicit in-URDF comment flagging "no calibrated source anywhere in this repo." `config/ArmInterface.yaml`'s bias/sign/encoder bounds for that same index still encode the *old rotary* convention (±1.29 rad range). `robot_interface.cpp` applies one uniform radian-per-tick formula to all 6 joints -- there is no per-joint unit distinction, so a meters-domain command for joint_6 would be silently misinterpreted as radians.
+6. **No calibration step is wired in.** `find_limits.cpp` (manual min/max tracking while a human moves the arm, printed on SIGINT) exists but isn't integrated into any launch file or verified against the current URDF/YAML pair.
+7. **Bulk-write has no failure escalation** (unlike bulk-read's `max_read_failures_` threshold) -- a single failed write just logs and the control loop continues.
+
+**Proposed staged plan** (no live motor testing happens before Stage 1; user runs every stage that touches motors, per the project's hardware-safety rule):
+
+- **Stage 0 -- harden `robot_interface`'s safety path (code only, no hardware needed):** fix the inert mismatch threshold to something that can actually catch a runaway command; add profile-velocity configuration derived from the URDF's own per-joint velocity limits (the same `GetActuatedJointVelocityLimits()` M1-M4 already use); add a software e-stop (topic or service, independent of the command-timeout watchdog, callable by any node or a human); resolve the joint_6 unit mismatch (decide in/out of scope for M5 -- see open questions); either derive `robot_interface`'s encoder bounds from the URDF at startup instead of a second hand-maintained array, or add a loud startup consistency check; add a consecutive-write-failure threshold mirroring the existing read one.
+- **Stage 1 -- read-only verification:** `robot_interface` running, torque disabled, confirm `/joint_states_in` reports plausible real positions and that the zero/sign calibration actually matches the physical arm at a few known poses.
+- **Stage 2 -- first live motion:** torque enabled, tiny single-joint moves through the now-velocity-limited write path, reduced speed, operator present and confirming each move.
+- **Stage 3 -- full M1-M4 pipeline at reduced speed:** `/reach_target_pose`/`/generate_trajectory` end-to-end against real hardware, global velocity scale-down, e-stop armed, operator-supervised.
+- **Stage 4 -- normal-speed operation**, once Stage 3 has run cleanly enough times to build confidence.
+
+**Decisions on the 7 audit findings** (resolved, replacing the open questions this section used to carry — full technical account in `arm_interface/docs/sim_to_real.md`):
+
+1. **Inert mismatch check (finding 1): left as-is.** Judged not worth hardening on its own — the velocity clamp and e-stop interface below cover the scenarios that actually matter more directly. Revisit only if real-hardware testing finds a gap neither of those would catch.
+2. **No velocity limiting (finding 2): addressed via a second hardware interface, not a retrofit of the first.** New `robot_interface_velocity.cpp` (Dynamixel Velocity Control Mode) with a real per-joint velocity clamp (`~max_velocity_rad_s`, default 0.1 rad/s — deliberately slow). Nothing upstream commands velocity yet (explicitly deferred); this is hardware-facing scaffolding only, toggled via `arm_interface.launch control_mode:=velocity`. The position-mode `robot_interface` itself is unchanged on this point.
+3. **No e-stop (finding 3): interface added, behavior explicitly NOT implemented.** `/arm_interface/estop` (`std_srvs/Trigger`) exists on both interfaces, returns an honest `success=false` ("not yet implemented") rather than a silent no-op or an unrequested fallback action. Intended final behavior (lock in place, not just disable torque) is documented for whoever builds it.
+4. **Unsynced joint-limit sources (finding 4): confirmed coherent, no fix needed.** Centering/scaling checked and found consistent between the URDF and YAML; the small measured drift (≤0.046 rad) is within acceptable tolerance.
+5. **`joint_6` unit mismatch (finding 5): fixed as a real conversion, not a type reversion.** The gripper stays prismatic (correct — the real motion is linear) and keeps the real actuator (correct — it's actuated by rotation); the missing piece was the conversion between those two domains, now `include/arm_interface/gripper_conversion.h`, applied at the ROS-interface boundary in both hardware nodes. Still an explicitly-flagged uncalibrated placeholder (affine approximation) pending a real mechanism measurement.
+6. **No calibration step (finding 6): procedures proposed, none built.** Per instruction, not expected to be necessary — see `sim_to_real.md`'s own list (zero-offset check, startup URDF/YAML consistency check, gripper mechanism measurement) kept on hand rather than implemented.
+7. **No write-failure escalation (finding 7): not yet addressed**, carried forward to Stage 0 if/when real-hardware testing resumes.
+
+New files: `arm_interface/include/arm_interface/gripper_conversion.h` (+ test), `arm_interface/src/robot_interface_velocity.cpp`, `arm_interface/docs/sim_to_real.md`. Still not run against real hardware — compile-tested and unit-tested only (`arm_interface` test suite: 10 total, watchdog + gripper-conversion).
 
 ## M6 — Camera integration and calibration (sketch)
 
