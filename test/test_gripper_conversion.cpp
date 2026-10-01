@@ -57,6 +57,36 @@ TEST(GripperConversionTest, VelocityConversionIsConstantSlope) {
   EXPECT_NEAR(c.RotationalToLinearVelocity(slope), 1.0, 1e-9);
 }
 
+// Confirmed live (2026-10-01): the real gripper's open/close sense was
+// opposite arm_sim_validator_node's with invert=false -- config/
+// ArmInterface.yaml now sets gripper_invert: true to match. These cases
+// guard that fix: endpoints swap which linear value they map to, but
+// round-tripping and clamping behavior stay correct either way.
+TEST(GripperConversionTest, InvertSwapsWhichEndpointMapsToWhichLinearValue) {
+  GripperConversion c = RealJoint6Conversion();
+  c.invert = true;
+  EXPECT_NEAR(c.RotationalToLinear(c.rotational_min), c.linear_max, 1e-9);
+  EXPECT_NEAR(c.RotationalToLinear(c.rotational_max), c.linear_min, 1e-9);
+  EXPECT_NEAR(c.LinearToRotational(c.linear_min), c.rotational_max, 1e-9);
+  EXPECT_NEAR(c.LinearToRotational(c.linear_max), c.rotational_min, 1e-9);
+}
+
+TEST(GripperConversionTest, InvertedRoundTripIsStillIdentity) {
+  GripperConversion c = RealJoint6Conversion();
+  c.invert = true;
+  for (double rot : {-1.0, -0.3, 0.0, 0.5, 1.1}) {
+    EXPECT_NEAR(c.LinearToRotational(c.RotationalToLinear(rot)), rot, 1e-9);
+  }
+}
+
+TEST(GripperConversionTest, InvertedVelocityConversionFlipsSign) {
+  GripperConversion c = RealJoint6Conversion();
+  c.invert = true;
+  double slope = (c.rotational_max - c.rotational_min) / (c.linear_max - c.linear_min);
+  EXPECT_NEAR(c.LinearToRotationalVelocity(1.0), -slope, 1e-9);
+  EXPECT_NEAR(c.RotationalToLinearVelocity(-slope), 1.0, 1e-9);
+}
+
 int main(int argc, char **argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

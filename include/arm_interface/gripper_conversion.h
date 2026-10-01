@@ -27,6 +27,15 @@ struct GripperConversion {
                            // for the gripper's index (joint_6)
   double linear_min;      // meters -- matching urdf/arm.urdf's joint_6 <limit>
   double linear_max;
+  // Which physical direction "increasing rotation" maps to is a fact
+  // about the real mechanism's wiring/assembly -- not derivable from the
+  // affine math above, and not something a default guess should be
+  // trusted on. false (default): rotational_min -> linear_min,
+  // rotational_max -> linear_max. true: reversed. Confirmed live
+  // (2026-10-01): with invert=false, a real Stage-1 read-only session
+  // showed the gripper's reported open/close sense opposite to
+  // arm_sim_validator_node's -- set true to match.
+  bool invert = false;
 
   // Clamped to [0,1] before mapping: a live motor reading can transiently
   // sit outside its own configured encoder bounds (startup, slop, a
@@ -36,25 +45,29 @@ struct GripperConversion {
   double RotationalToLinear(double rotational) const {
     double t = (rotational - rotational_min) / (rotational_max - rotational_min);
     t = std::max(0.0, std::min(1.0, t));
+    if (invert) t = 1.0 - t;
     return linear_min + t * (linear_max - linear_min);
   }
 
   double LinearToRotational(double linear) const {
     double t = (linear - linear_min) / (linear_max - linear_min);
     t = std::max(0.0, std::min(1.0, t));
+    if (invert) t = 1.0 - t;
     return rotational_min + t * (rotational_max - rotational_min);
   }
 
-  // Derivative of the above (constant, since the map is affine) -- for
-  // converting a commanded LINEAR velocity (e.g. from a future gripper
-  // velocity command) into the equivalent ROTATIONAL velocity the motor
-  // must be driven at, and back.
+  // Derivative of the above (constant in magnitude, flipped in sign by
+  // `invert`) -- for converting a commanded LINEAR velocity (e.g. from a
+  // future gripper velocity command) into the equivalent ROTATIONAL
+  // velocity the motor must be driven at, and back.
   double LinearToRotationalVelocity(double linear_velocity) const {
-    return linear_velocity * (rotational_max - rotational_min) / (linear_max - linear_min);
+    double slope = (rotational_max - rotational_min) / (linear_max - linear_min);
+    return invert ? -linear_velocity * slope : linear_velocity * slope;
   }
 
   double RotationalToLinearVelocity(double rotational_velocity) const {
-    return rotational_velocity * (linear_max - linear_min) / (rotational_max - rotational_min);
+    double slope = (linear_max - linear_min) / (rotational_max - rotational_min);
+    return invert ? -rotational_velocity * slope : rotational_velocity * slope;
   }
 };
 

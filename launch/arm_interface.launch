@@ -16,6 +16,14 @@
          routine use. Only read when use_hardware:=true. -->
     <arg name="control_mode" default="position"/>
 
+    <!-- M5 Stage 1 (see ROADMAP.md): debug:=true opens the port and
+         reads/publishes present position as normal, but skips
+         enableTorque() entirely and skips every bulk-write: read-only,
+         no command is ever sent to a motor. Overrides
+         config/ArmInterface.yaml's own debug:false, since the override
+         param below is placed AFTER that file's <rosparam> load. -->
+    <arg name="debug" default="false"/>
+
     <!-- Launch the robot_state_publisher with the URDF file -->
     <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
 
@@ -29,11 +37,13 @@
         <group if="$(eval control_mode == 'position')">
             <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
                 <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+                <param name="debug" value="$(arg debug)" />
             </node>
         </group>
         <group if="$(eval control_mode == 'velocity')">
             <node name="arm_interface" pkg="arm_interface" type="robot_interface_velocity" output="screen">
                 <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+                <param name="debug" value="$(arg debug)" />
             </node>
         </group>
     </group>

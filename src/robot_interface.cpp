@@ -354,6 +354,7 @@ private:
         pnh.param("gripper_joint_index", gripper_joint_index_, gripper_joint_index_);
         pnh.param("gripper_linear_min", gripper_conversion_.linear_min, gripper_conversion_.linear_min);
         pnh.param("gripper_linear_max", gripper_conversion_.linear_max, gripper_conversion_.linear_max);
+        pnh.param("gripper_invert", gripper_conversion_.invert, gripper_conversion_.invert);
 
         if (num_joints_ <= 0) {
             throw std::runtime_error("Parameter '~num_joints' must be greater than zero");

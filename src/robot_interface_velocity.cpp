@@ -374,6 +374,7 @@ private:
         pnh.param("gripper_joint_index", gripper_joint_index_, gripper_joint_index_);
         pnh.param("gripper_linear_min", gripper_conversion_.linear_min, gripper_conversion_.linear_min);
         pnh.param("gripper_linear_max", gripper_conversion_.linear_max, gripper_conversion_.linear_max);
+        pnh.param("gripper_invert", gripper_conversion_.invert, gripper_conversion_.invert);
 
         loadDoubleArrayParam(pnh, "bias", dxl_bias_);
         loadIntArrayParam(pnh, "sign", dxl_sign_);

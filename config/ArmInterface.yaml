@@ -37,6 +37,11 @@ encoder_max: [3584, 3071, 3495, 3248, 2570, 2190]
 gripper_joint_index: 5
 gripper_linear_min: 0.0
 gripper_linear_max: 0.025
+# Confirmed live (2026-10-01, Stage 1 read-only session): with invert
+# false, the gripper's reported open/close sense was opposite
+# arm_sim_validator_node's for the same physical motion. true matches
+# them -- see gripper_conversion.h's own comment.
+gripper_invert: true
 
 # robot_interface_velocity (M5 scaffolding, see docs/sim_to_real.md) --
 # unused by robot_interface (position mode).
