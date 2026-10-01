@@ -57,6 +57,29 @@ public:
             ROS_ERROR("Failed to set baudrate!");
             throw std::runtime_error("Failed to set baudrate");
         }
+        // Add parameter storage for each Dynamixel -- moved ahead of
+        // enableTorque() (was after it) because seedGoalPositionToCurrentPosition()
+        // below needs a working bulk-read before torque ever enables.
+        for (size_t i = 0; i < num_joints_; ++i) {
+            bulkRead_.addParam(dxl_ids_[i], addr_present_position_, len_present_position_);
+            bulkRead_.addParam(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_);
+        }
+
+        // Dynamixel servos in Position Control Mode actively drive toward
+        // whatever is already in their Goal Position register the INSTANT
+        // torque is enabled -- that register can hold an arbitrary stale
+        // value (a previous session, a power-on default), completely
+        // independent of anything this node has commanded yet. Without
+        // this, simply starting the node could cause an immediate,
+        // uncommanded move before any /joint_states_out message is ever
+        // received. Found while preparing M5 Stage 2 (first real
+        // hardware motion) -- every session before that ran in debug
+        // mode (enableTorque() a no-op), so this gap was never hit.
+        // Throws (constructor failure, same as the port-open checks
+        // above) rather than proceeding to enable torque against an
+        // unverified goal-position state.
+        seedGoalPositionToCurrentPosition();
+
         // Initialize Dynamixel Torque
         enableTorque();
         ROS_INFO("robot_interface node initialized and ready.");
@@ -70,12 +93,6 @@ public:
         reconfigure_server_->updateConfig(initial_config);
         reconfigure_server_->setCallback(
             boost::bind(&DynamixelArmInterface::reconfigureCallback, this, _1, _2));
-
-        // Add parameter storage for each Dynamixel
-        for (size_t i = 0; i < num_joints_; ++i) {
-            bulkRead_.addParam(dxl_ids_[i], addr_present_position_, len_present_position_);
-            bulkRead_.addParam(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_);
-        }
 
         // JointState message setup
         size_t publish_joints = std::max((size_t)6, (size_t)num_joints_);
@@ -91,6 +108,51 @@ public:
         // Close port
         if (portHandler_ != nullptr)  
             portHandler_->closePort();
+    }
+
+    // See the constructor's own comment on why this must run before
+    // enableTorque(). Reads present position once and writes it straight
+    // back as Goal Position for every joint -- after this, enabling
+    // torque is guaranteed to hold the arm's CURRENT pose, not drive it
+    // toward whatever the register held before this node started.
+    void seedGoalPositionToCurrentPosition() {
+        if (debug_) {
+            ROS_INFO("Debugging, not seeding goal position.");
+            return;
+        }
+        std::lock_guard<std::mutex> lock(port_mutex_);
+        int read_result = bulkRead_.txRxPacket();
+        if (read_result != COMM_SUCCESS) {
+            throw std::runtime_error(
+                "Failed to read present position before enabling torque (" +
+                std::string(packetHandler_->getTxRxResult(read_result)) +
+                ") -- refusing to enable torque against an unknown goal-position register state");
+        }
+        bulkWrite_.clearParam();
+        for (size_t i = 0; i < num_joints_; ++i) {
+            if (!bulkRead_.isAvailable(dxl_ids_[i], addr_present_position_, len_present_position_)) {
+                throw std::runtime_error("Present position unavailable for joint_" + std::to_string(i + 1) +
+                                          " -- refusing to enable torque");
+            }
+            int32_t present = bulkRead_.getData(dxl_ids_[i], addr_present_position_, len_present_position_);
+            positions_[i] = present;
+
+            uint8_t param_goal_position[4];
+            param_goal_position[0] = DXL_LOBYTE(DXL_LOWORD(present));
+            param_goal_position[1] = DXL_HIBYTE(DXL_LOWORD(present));
+            param_goal_position[2] = DXL_LOBYTE(DXL_HIWORD(present));
+            param_goal_position[3] = DXL_HIBYTE(DXL_HIWORD(present));
+            if (!bulkWrite_.addParam(dxl_ids_[i], addr_goal_position_, len_goal_position_, param_goal_position)) {
+                throw std::runtime_error("Failed to add goal-position seed param for joint_" + std::to_string(i + 1));
+            }
+        }
+        int write_result = bulkWrite_.txPacket();
+        if (write_result != COMM_SUCCESS) {
+            throw std::runtime_error("Failed to seed goal position (" +
+                                      std::string(packetHandler_->getTxRxResult(write_result)) +
+                                      ") -- refusing to enable torque");
+        }
+        ROS_INFO("Goal position seeded to current present position for all joints.");
     }
 
     void enableTorque() {

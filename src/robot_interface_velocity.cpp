@@ -88,6 +88,15 @@ public:
         // the motors already have configured, implicitly Position
         // Control Mode).
         setVelocityControlMode();
+        // Same class of gap as robot_interface.cpp's
+        // seedGoalPositionToCurrentPosition() (found while preparing M5
+        // Stage 2): a Dynamixel's Goal Velocity register can hold an
+        // arbitrary stale nonzero value from a previous session, and
+        // torque enabling makes it live immediately. zeroAllVelocities()
+        // already exists for the timeout/shutdown path; call it here too
+        // so a fresh register state is guaranteed before torque ever
+        // enables, not just before torque ever DISables.
+        zeroAllVelocities();
         enableTorque();
         ROS_INFO("robot_interface_velocity node initialized and ready.");
 
