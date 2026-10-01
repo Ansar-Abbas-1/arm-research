@@ -8,3 +8,7 @@ graphify-out/
 # editor/OS cruft
 *.swp
 .vscode/
+
+# Python bytecode cache
+__pycache__/
+*.pyc
