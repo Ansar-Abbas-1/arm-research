@@ -10,10 +10,13 @@
 #include <ros/package.h>
 #include <urdf/model.h>
 
+#include "arm_kinematics/base_collision.h"
 #include "arm_kinematics/forward_kinematics.h"
 #include "arm_kinematics/inverse_kinematics.h"
 #include "arm_kinematics/position_pitch_ik.h"
 
+using arm_kinematics::ArmIntersectsBase;
+using arm_kinematics::BoxObstacle;
 using arm_kinematics::PositionPitchIkOptions;
 using arm_kinematics::PositionPitchIkSolver;
 
@@ -33,6 +36,16 @@ double PitchComponent(const Eigen::Isometry3d& pose_a, const Eigen::Isometry3d& 
   Eigen::Vector3d pitch_axis = pose_a.rotation() * Eigen::Vector3d::UnitY();
   Eigen::AngleAxisd aa(pose_a.rotation() * pose_b.rotation().transpose());
   return pitch_axis.dot(aa.angle() * aa.axis());
+}
+
+// Box as actually deployed (see trajectory_service_node.cpp and
+// test_base_collision.cpp): top face at base_link's own origin, extending
+// downward, half-extents 0.20.
+BoxObstacle DeployedBaseBox() {
+  BoxObstacle box;
+  box.half_extents = Eigen::Vector3d::Constant(0.20);
+  box.box_to_root = Eigen::Translation3d(0, 0, -0.20) * Eigen::Isometry3d::Identity();
+  return box;
 }
 
 }  // namespace
@@ -201,6 +214,92 @@ TEST_F(PositionPitchIkTest, ConvergesOnATargetTheFullPoseIkCannotReach) {
       << "position+pitch of this target should still be reachable even though the full 6D pose "
          "isn't -- residual: "
       << reduced_result.residual.transpose();
+}
+
+// q=(0,-1.6,0,0,0): elbow folded straight down, confirmed colliding with
+// the deployed base box via a standalone probe against the built library
+// (same config as test_base_collision.cpp's ElbowFoldedIntoBaseCollides).
+// Seeding Solve() exactly at this config means SolveFromSeed trivially
+// converges to it (residual 0) WITHOUT collision checking -- so a
+// restart search finding something else can only be the collision check
+// actually doing its job, not an artifact of a hard-to-reach target.
+TEST_F(PositionPitchIkTest, RestartSearchFindsCollisionFreeConfiguration) {
+  std::vector<double> q_colliding = {0.0, -1.6, 0.0, 0.0, 0.0};
+  Eigen::Isometry3d target = solver_->ComputePose(q_colliding);
+  BoxObstacle box = DeployedBaseBox();
+
+  PositionPitchIkOptions options;
+  options.collision_obstacle = &box;
+  options.max_restarts = 100;
+  options.rng_seed = 7;  // verified via standalone probe: finds a collision-free match in 10 restarts
+  PositionPitchIkSolver ik(*solver_, options);
+  auto result = ik.Solve(target, q_colliding);
+
+  EXPECT_TRUE(result.converged) << "residual: " << result.residual.transpose();
+  EXPECT_TRUE(result.collision_free);
+  EXPECT_FALSE(ArmIntersectsBase(*solver_, result.joint_positions, box, 0.02));
+}
+
+// Same scenario as above, with a null-space secondary task also
+// configured -- confirms the collision check is threaded through BOTH of
+// Solve()'s restart branches (have_nullspace_bias true/false), not just
+// the simpler no-bias one.
+TEST_F(PositionPitchIkTest, CollisionCheckAppliesIndependentlyOfNullspaceBias) {
+  std::vector<double> q_colliding = {0.0, -1.6, 0.0, 0.0, 0.0};
+  Eigen::Isometry3d target = solver_->ComputePose(q_colliding);
+  BoxObstacle box = DeployedBaseBox();
+
+  PositionPitchIkOptions options;
+  options.collision_obstacle = &box;
+  options.max_restarts = 100;
+  options.rng_seed = 7;  // verified via standalone probe: finds a collision-free match in 34 restarts
+  options.nullspace_secondary_link_solver = link4_solver_.get();
+  options.nullspace_gain = 0.05;
+  PositionPitchIkSolver ik(*solver_, options);
+  auto result = ik.Solve(target, q_colliding);
+
+  EXPECT_TRUE(result.converged) << "residual: " << result.residual.transpose();
+  EXPECT_TRUE(result.collision_free);
+  EXPECT_FALSE(ArmIntersectsBase(*solver_, result.joint_positions, box, 0.02));
+}
+
+// Target's own position is deep inside the box (tip=(-0.0221,0,-0.1347),
+// confirmed via probe) -- EVERY configuration that actually reaches it
+// necessarily collides (the final segment's own endpoint is inside the
+// box, by construction), regardless of which branch of the chain's 1-DOF
+// redundancy a solution lands in. This is a case the collision-aware
+// restart search genuinely cannot satisfy both bars on at once.
+//
+// Verified behavior (standalone probe, 5 rng seeds x 50 restarts, all
+// agreeing): the restart/selection logic's qualifying-tier-dominates
+// policy -- the SAME pattern already used for the primary
+// acceptable/not-acceptable gate elsewhere in this function, just with
+// collision folded into what "qualifying" means -- means it prefers ANY
+// collision-free candidate over a colliding one unconditionally, even an
+// unconverged, poorly-aligned one, rather than ever returning the
+// perfectly-converged but colliding exact match. So the honest result
+// here is collision_free=true, converged=false -- NOT, as originally
+// assumed before this was actually measured, collision_free=false. A
+// caller must check both fields; `converged=false` is what correctly
+// surfaces "this target could not be reached without colliding."
+TEST_F(PositionPitchIkTest, InfeasibleTargetPrefersCollisionFreeOverExactCollidingMatch) {
+  std::vector<double> q_inside = {0.0, 0.8, 1.1, 0.0, 0.0};
+  Eigen::Isometry3d target = solver_->ComputePose(q_inside);
+  BoxObstacle box = DeployedBaseBox();
+
+  PositionPitchIkOptions options;
+  options.collision_obstacle = &box;
+  options.max_restarts = 50;
+  options.rng_seed = 1;
+  PositionPitchIkSolver ik(*solver_, options);
+  auto result = ik.Solve(target, q_inside);
+
+  EXPECT_TRUE(result.collision_free);
+  EXPECT_FALSE(result.converged)
+      << "converging exactly on this target requires colliding -- the search should have "
+         "preferred a non-colliding, non-converged candidate instead; residual: "
+      << result.residual.transpose();
+  EXPECT_FALSE(ArmIntersectsBase(*solver_, result.joint_positions, box, 0.02));
 }
 
 int main(int argc, char** argv) {

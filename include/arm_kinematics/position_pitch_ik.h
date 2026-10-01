@@ -6,6 +6,7 @@
 #include <Eigen/Dense>
 #include <Eigen/Geometry>
 
+#include "arm_kinematics/base_collision.h"
 #include "arm_kinematics/forward_kinematics.h"
 
 namespace arm_kinematics {
@@ -33,6 +34,11 @@ struct PositionPitchIkResult {
                                           // minimum-norm solution if no bias, happened to settle at)
   int iterations;
   int restarts_used;
+  // True if no collision_obstacle is configured, or joint_positions clears
+  // it (see PositionPitchIkOptions::collision_obstacle). A SEPARATE signal
+  // from `converged` -- callers that care about base collision must check
+  // both; `converged` keeps its existing, collision-unaware meaning.
+  bool collision_free = true;
 };
 
 struct PositionPitchIkOptions {
@@ -160,6 +166,21 @@ struct PositionPitchIkOptions {
   // better number, so left as a tunable rather than "fixed" further. See
   // docs/position_pitch_ik.md.
   double nullspace_tolerance = 1e-3;
+
+  // Optional base-collision avoidance (see base_collision.h). Off by
+  // default (nullptr), same "pointer = off" convention as
+  // nullspace_secondary_link_solver above. When set, Solve()'s existing
+  // restart/selection machinery also searches for a collision-free
+  // configuration -- see PositionPitchIkResult::collision_free and
+  // Solve()'s own comment. SolveFromSeed's Newton loop itself is NOT
+  // collision-aware: only a Solve() call's final joint_positions is ever
+  // executed, so only that is checked.
+  const BoxObstacle* collision_obstacle = nullptr;
+  double collision_capsule_radius = 0.02;
+  // NOT a casual tuning knob -- see ArmIntersectsBase's own comment in
+  // base_collision.h for why 1 is correct specifically for the current
+  // base-box placement, and must be re-derived if that placement changes.
+  size_t collision_first_checked_segment_index = 1;
 };
 
 // Reduced-task IK: solves for position (3) + pitch (1, about the CURRENT

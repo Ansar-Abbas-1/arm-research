@@ -100,7 +100,23 @@ PositionPitchIkResult PositionPitchIkSolver::Solve(const Eigen::Isometry3d& targ
                                  std::to_string(limits.size()));
   }
 
+  // Evaluated once per restart candidate, right after SolveFromSeed
+  // returns -- never inside SolveFromSeed's own Newton loop, since only a
+  // Solve() call's FINAL joint_positions is ever executed/commanded;
+  // transient iterates are never observed, so checking them would add
+  // cost for no safety benefit. !have_collision_check short-circuits to
+  // "always collision_free," so every existing caller (no obstacle
+  // configured) sees byte-identical behavior to before this field existed.
+  bool have_collision_check = options_.collision_obstacle != nullptr;
+  auto NotColliding = [this, have_collision_check](const PositionPitchIkResult& r) {
+    return !have_collision_check ||
+           !ArmIntersectsBase(solver_, r.joint_positions, *options_.collision_obstacle,
+                               options_.collision_capsule_radius,
+                               options_.collision_first_checked_segment_index);
+  };
+
   PositionPitchIkResult best = SolveFromSeed(target_pose, seed);
+  best.collision_free = NotColliding(best);
 
   std::vector<std::uniform_real_distribution<double>> dists = DistributionsFromJointLimits(limits);
 
@@ -145,35 +161,55 @@ PositionPitchIkResult PositionPitchIkSolver::Solve(const Eigen::Isometry3d& targ
   // acceptable candidates the better-aligned one wins.
   int restarts_attempted = 0;
   if (have_nullspace_bias) {
-    for (int r = 0; r < options_.max_restarts && !IsAcceptable(best); ++r) {
+    for (int r = 0; r < options_.max_restarts && !(IsAcceptable(best) && best.collision_free); ++r) {
       std::vector<double> restart_seed(limits.size());
       for (size_t i = 0; i < limits.size(); ++i) {
         restart_seed[i] = dists[i](rng_);
       }
       PositionPitchIkResult candidate = SolveFromSeed(target_pose, restart_seed);
+      candidate.collision_free = NotColliding(candidate);
       ++restarts_attempted;
-      bool best_acceptable = IsAcceptable(best);
-      bool candidate_acceptable = IsAcceptable(candidate);
+      bool best_acceptable = IsAcceptable(best) && best.collision_free;
+      bool candidate_acceptable = IsAcceptable(candidate) && candidate.collision_free;
       if (candidate_acceptable && (!best_acceptable ||
                                     Alignment(candidate.joint_positions) > Alignment(best.joint_positions))) {
         best = candidate;
-      } else if (!candidate_acceptable && !best_acceptable &&
-                 candidate.residual.head<3>().norm() < best.residual.head<3>().norm()) {
-        best = candidate;  // neither is acceptable yet -- fall back to the old policy
+      } else if (!candidate_acceptable && !best_acceptable) {
+        // Neither clears the acceptable+collision-free bar yet. A
+        // colliding candidate is never preferred over a non-colliding one
+        // on residual grounds alone; only fall back to the old
+        // residual-comparison policy when collision status is tied
+        // (including the common "no obstacle configured" case, where both
+        // are always collision_free and this is byte-identical to before).
+        if (candidate.collision_free != best.collision_free) {
+          if (candidate.collision_free) {
+            best = candidate;
+          }
+        } else if (candidate.residual.head<3>().norm() < best.residual.head<3>().norm()) {
+          best = candidate;
+        }
       }
     }
   } else {
     // Same restart bookkeeping as InverseKinematicsSolver::Solve: count
     // every attempt made, not just whichever one produced the best result.
-    for (int r = 0; r < options_.max_restarts && !best.converged; ++r) {
+    for (int r = 0; r < options_.max_restarts && !(best.converged && best.collision_free); ++r) {
       std::vector<double> restart_seed(limits.size());
       for (size_t i = 0; i < limits.size(); ++i) {
         restart_seed[i] = dists[i](rng_);
       }
       PositionPitchIkResult candidate = SolveFromSeed(target_pose, restart_seed);
+      candidate.collision_free = NotColliding(candidate);
       ++restarts_attempted;
-      if (candidate.converged ||
-          candidate.residual.head<3>().norm() < best.residual.head<3>().norm()) {
+      // Same rule as the have_nullspace_bias branch above: collision
+      // status gates the old converged/residual comparison rather than
+      // being compared on equal footing with it.
+      if (candidate.collision_free != best.collision_free) {
+        if (candidate.collision_free) {
+          best = candidate;
+        }
+      } else if (candidate.converged ||
+                 candidate.residual.head<3>().norm() < best.residual.head<3>().norm()) {
         best = candidate;
       }
     }

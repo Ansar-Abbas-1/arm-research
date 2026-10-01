@@ -47,6 +47,7 @@ add_library(arm_kinematics
   src/task_space_math.cpp
   src/resolved_rate.cpp
   src/position_pitch_ik.cpp
+  src/base_collision.cpp
 )
 target_link_libraries(arm_kinematics
   ${catkin_LIBRARIES}
@@ -120,6 +121,11 @@ if(CATKIN_ENABLE_TESTING)
   catkin_add_gtest(${PROJECT_NAME}-test-position-pitch-ik test/test_position_pitch_ik.cpp)
   if(TARGET ${PROJECT_NAME}-test-position-pitch-ik)
     target_link_libraries(${PROJECT_NAME}-test-position-pitch-ik arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
+  endif()
+
+  catkin_add_gtest(${PROJECT_NAME}-test-base-collision test/test_base_collision.cpp)
+  if(TARGET ${PROJECT_NAME}-test-base-collision)
+    target_link_libraries(${PROJECT_NAME}-test-base-collision arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
   find_package(rostest REQUIRED)
