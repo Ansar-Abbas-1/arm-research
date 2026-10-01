@@ -7,6 +7,15 @@
          asked otherwise. -->
     <arg name="use_hardware" default="true"/>
 
+    <!-- M5 scaffolding, see ROADMAP.md and docs/sim_to_real.md:
+         control_mode:=velocity swaps robot_interface (Position Control
+         Mode) for robot_interface_velocity (Velocity Control Mode).
+         Nothing upstream commands velocity yet, so there is no real
+         reason to pass velocity today: this toggle exists so the new
+         node is launchable/discoverable, not because it's ready for
+         routine use. Only read when use_hardware:=true. -->
+    <arg name="control_mode" default="position"/>
+
     <!-- Launch the robot_state_publisher with the URDF file -->
     <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
 
@@ -17,9 +26,16 @@
 
     <!-- Activate the robot interface -->
     <group if="$(arg use_hardware)">
-        <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
-            <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
-        </node>
+        <group if="$(eval control_mode == 'position')">
+            <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+                <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+            </node>
+        </group>
+        <group if="$(eval control_mode == 'velocity')">
+            <node name="arm_interface" pkg="arm_interface" type="robot_interface_velocity" output="screen">
+                <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+            </node>
+        </group>
     </group>
     <group unless="$(arg use_hardware)">
         <node name="arm_sim_validator_node" pkg="arm_interface" type="arm_sim_validator_node" output="screen">

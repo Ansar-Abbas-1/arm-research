@@ -1,0 +1,51 @@
+# Sim-to-real (M5) — decisions and scaffolding
+
+No hardware is connected during this work; everything here is compile-tested against the existing M0 architecture (`docs/architecture.md`), never run against real motors. See `ROADMAP.md`'s M5 section for the audit this builds on (the 6 risks found in `robot_interface.cpp`, never reviewed before this milestone) and the staged plan these changes are the first step of.
+
+## 1. The commanded/actual position-mismatch check: left as-is, deliberately
+
+`robot_interface.cpp`'s `position_threshold_` (default 10.0 rad, larger than any joint's full range — confirmed inert) was flagged by the M5 audit as a risk. Decided: **not worth fixing right now.** Its only job is catching a divergence between what was commanded and what the hardware reports — a real backstop, but a narrower one than it first appears, and the two mechanisms already planned/scaffolded elsewhere in this milestone (a real velocity clamp on the new interface, and the e-stop interface below) cover the actual dangerous scenarios (a runaway setpoint, an operator-triggered stop) more directly. Revisit only if real-hardware testing turns up a divergence scenario specifically this check would have caught and the others wouldn't.
+
+## 2. `robot_interface_velocity.cpp`: a second, velocity-commanded hardware interface
+
+New node, `src/robot_interface_velocity.cpp`, structurally mirroring `robot_interface.cpp` (same watchdog, torque enable/disable, bulk-read-for-monitoring, service shape) but commanding Dynamixel **Velocity Control Mode** (Operating Mode register = 1) instead of Position Control Mode. Deliberate duplication rather than a shared base class — the two differ in safety-critical specifics, not just which register they write, and forcing a shared abstraction would obscure that rather than simplify it.
+
+**Explicitly scoped down, per instruction**: nothing upstream (`arm_kinematics`/`arm_trajectory`) emits velocity commands yet, and adapting them is out of scope here. This node has no real caller today — it exists so the hardware-facing plumbing is ready when that adaptation happens, not because it's part of the day-to-day pipeline now.
+
+**The key safety difference from position mode, and why it drove the implementation**: a Dynamixel in Velocity Control Mode keeps executing its last-written goal velocity *continuously* until a new command arrives or torque is disabled — unlike position mode, where the motor simply stops making further progress once it reaches its last goal. "Stop writing new commands" is therefore **not** a safe response to a stale command here. The watchdog explicitly bulk-writes a zero velocity to every joint before disabling torque, both on command timeout and on read-failure fault — see `readAndPublish()`'s own comment.
+
+**Command interface**: reuses `/joint_states_out` (`sensor_msgs/JointState`), populated in the `.velocity` field instead of `.position` — the same topic/type `robot_interface.cpp` already subscribes to, so swapping which node is running is the only thing that changes which domain a caller must populate. Avoids a second topic for what is, from upstream's perspective, still "the hardware command channel."
+
+**Safety clamp**: every outgoing velocity is clamped to `~max_velocity_rad_s` (per-joint, YAML array, default `0.1 rad/s` for all six — deliberately slow, matching the ROADMAP's own "reduced speed on first real-hardware run of any new motion" rule) regardless of what upstream commands. Since nothing upstream exists yet, this is the only velocity limit in effect.
+
+**Operating Mode sequencing**: Dynamixel's Operating Mode register can only be changed while torque is disabled, so `setVelocityControlMode()` runs before the first `enableTorque()` call in the constructor — getting this ordering wrong would either silently fail or (depending on firmware) write ignored.
+
+**Protocol constants used** (Protocol 2.0, X/MX-series control table, all overridable via `~` params): Operating Mode address 11, Goal Velocity address 104 (4 bytes), velocity resolution 0.229 rev/min per LSB. Not independently re-verified against real hardware — standard values for this motor family, flagged for confirmation before first live use.
+
+## 3. E-stop: interface only, not implemented
+
+Per explicit instruction: "prepare the basics... do not implement it yet." Both `robot_interface.cpp` and `robot_interface_velocity.cpp` now advertise `/arm_interface/estop` (`std_srvs/Trigger`, matching the existing `/arm_interface/set_torque`/`/arm_interface/reenable_failed_motors` convention rather than a new custom `.srv`). The handler logs an error and returns `success=false` with an explanatory message — **no motor action is taken**. An honest failure, not a silent no-op or a surprise fallback to some other action (e.g. `disableTorque()`) nobody asked for.
+
+**Intended final behavior, documented for whoever implements it**: lock all motors *in place*, not just cut power. `disableTorque()` alone would let the arm droop under gravity — the opposite of "locked." The two mechanisms this milestone already built are each a partial ingredient but not the answer on their own:
+- Position mode: the motor already holds its last commanded position under torque: a real e-stop here is closer to "stop accepting new commands, keep holding the current one" — needs confirming the firmware's own internal position-hold behavior is strong enough under disturbance to call that "locked."
+- Velocity mode: zeroing velocity (already implemented, see `zeroAllVelocities()`) regulates to zero *speed*, not a held *position* — under a sustained external force the arm can still drift. A real lock here most likely means switching back to Position Control Mode, commanding the current present-position as goal, and holding — not built here.
+
+## 4. Joint-limit sources (URDF vs. YAML encoder ticks): confirmed coherent
+
+Flagged by the audit as two unsynced sources of truth with measured drift (joints 1–3 ≤0.02 rad, joint_4 ~0.017 rad, joint_5 ~0.046 rad). Confirmed: these are coherent for centering (zero offset / `bias`) and scaling (resolution / `sign`) — the measured drift is within expected/acceptable tolerance, not a real divergence. No change made.
+
+## 5. The gripper (joint_6): prismatic joint, rotational actuator — a real conversion, not a unit swap
+
+The earlier M4 gripper redesign made `joint_6` prismatic in the URDF (correct — the fingers genuinely translate) but left `robot_interface.cpp`'s hardware-facing code treating it exactly like every other joint: motor ticks → radians, uniformly. That's the real bug the M5 audit found — not that the joint *should* be rotational, but that the **conversion between the motor's real rotational actuation and the joint's real linear motion was missing entirely.**
+
+Fix: `include/arm_interface/gripper_conversion.h`, a small `GripperConversion` type mapping between the motor's real rotational range (derived from `config/ArmInterface.yaml`'s own `bias`/`sign`/`encoder_min`/`encoder_max` at the gripper's index, not re-hardcoded) and the URDF's linear range (`gripper_linear_min`/`gripper_linear_max`, matching `urdf/arm.urdf`'s `joint_6` `<limit>`). Both `robot_interface.cpp` and `robot_interface_velocity.cpp` convert at exactly the ROS-interface boundary — incoming commands and outgoing state publishes — keeping every *internal* representation (`positions_rad_`/`joint_cmds_` in the position node, `joint_cmds_vel_` in the velocity node) uniformly in the motor's own rotational domain, so the mismatch check and the generic per-joint tick-conversion loop need no gripper-specific branching at all.
+
+**Still an uncalibrated placeholder**, explicitly flagged in the header and the YAML: the conversion assumes a simple affine (linear-in-angle) relationship, exact for an ideal lead-screw/rack-and-pinion, approximate for many real small-gripper mechanisms — this repo has no measurement or spec of the actual mechanism. `gripper_linear_max` (0.025m) is carried over unchanged from the M4 redesign's own "realistic finger travel" estimate; `gripper_linear_min`/`max` and the rotational bounds are now at least *consistently* related rather than being two independently-wrong numbers in two different unit systems.
+
+## 6. Calibration procedures (proposed, not required)
+
+Current state: no calibration step is wired into any launch file. `find_limits.cpp` (manual min/max tracking while a human moves the arm, printed on SIGINT) exists but is a standalone utility, never integrated. Per instruction, this isn't expected to be necessary — these are ideas to have on hand if real-hardware testing ever surfaces a need, not a commitment to build any of them:
+
+- **Zero-offset check**: a small script/service that, given the arm manually posed at a known reference configuration (e.g. hanging straight down, or a jig), reads present-position and reports the `bias` each motor's YAML entry *should* have — a single comparison against the current YAML, not a new calibration procedure, catching drift without requiring the full `find_limits.cpp` range-sweep workflow.
+- **Startup consistency check**: at `robot_interface`/`robot_interface_velocity` launch, compare the YAML-derived limits against the URDF's own `<limit>` tags (read via `robot_description`, the way `arm_sim_validator_node` already does) and warn loudly if they diverge beyond a small tolerance — turns "two unsynced sources" into "two sources that are checked against each other," without picking one as authoritative or requiring a new calibration workflow.
+- **Gripper mechanism measurement**: the one genuinely open calibration item — measuring the real lead-screw/linkage ratio (or whatever the actual mechanism turns out to be) to replace `gripper_conversion.h`'s affine placeholder with the real relationship, once the gripper is physically accessible.

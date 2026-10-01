@@ -16,6 +16,7 @@
 #include <memory>
 
 #include "arm_interface/watchdog.h"
+#include "arm_interface/gripper_conversion.h"
 
 
 class DynamixelArmInterface {
@@ -42,6 +43,10 @@ public:
         joint_out_sub_ = nh_.subscribe("/joint_states_out", 10, &DynamixelArmInterface::jointStatesOutCb, this);
         reenable_srv_ = nh_.advertiseService("/arm_interface/reenable_failed_motors", &DynamixelArmInterface::handleReenableMotors, this);
         set_torque_srv_ = nh_.advertiseService("/arm_interface/set_torque", &DynamixelArmInterface::handleSetTorque, this);
+        // Scaffolding only -- see handleEStop()'s own comment and
+        // docs/sim_to_real.md: the interface is discoverable/callable,
+        // the "lock all motors in place" behavior itself isn't built yet.
+        estop_srv_ = nh_.advertiseService("/arm_interface/estop", &DynamixelArmInterface::handleEStop, this);
 
         // Dynamixel SDK setup
         if (!portHandler_->openPort()) {
@@ -222,9 +227,17 @@ private:
             msg.data = positions_[i];
             pos_in_enc_pubs_[i].publish(msg);
 
-            // Map to radians with bias and sign
-            joint_msg_.position[i] = dxl_sign_[i] * (positions_[i] - dxl_bias_[i]) * dxl_rad_per_tick_;
-            positions_rad_[i] = joint_msg_.position[i]; // Save for later use
+            // Map to radians with bias and sign -- this is the motor's
+            // own ROTATIONAL position, kept as the internal
+            // representation for every joint (used below by both the
+            // mismatch check and the write-path's tick conversion).
+            double rotational = dxl_sign_[i] * (positions_[i] - dxl_bias_[i]) * dxl_rad_per_tick_;
+            positions_rad_[i] = rotational;
+            // The gripper is kinematically prismatic (see urdf/arm.urdf
+            // and gripper_conversion.h) -- convert to its linear domain
+            // only at this publish boundary, not internally.
+            joint_msg_.position[i] =
+                (static_cast<int>(i) == gripper_joint_index_) ? gripper_conversion_.RotationalToLinear(rotational) : rotational;
         }
         for (size_t i = num_joints_; i < joint_msg_.position.size(); ++i) {
             joint_msg_.position[i] = 0.0;
@@ -338,6 +351,10 @@ private:
         loadIntArrayParam(pnh, "encoder_max", encoder_max_);
         loadIntArrayParam(pnh, "ids", dxl_ids_);
 
+        pnh.param("gripper_joint_index", gripper_joint_index_, gripper_joint_index_);
+        pnh.param("gripper_linear_min", gripper_conversion_.linear_min, gripper_conversion_.linear_min);
+        pnh.param("gripper_linear_max", gripper_conversion_.linear_max, gripper_conversion_.linear_max);
+
         if (num_joints_ <= 0) {
             throw std::runtime_error("Parameter '~num_joints' must be greater than zero");
         }
@@ -347,6 +364,17 @@ private:
         validateJointParamSize("sign", dxl_sign_.size());
         validateJointParamSize("encoder_min", encoder_min_.size());
         validateJointParamSize("encoder_max", encoder_max_.size());
+
+        // Gripper's real rotational range, derived from its own bias/
+        // sign/encoder bounds (not a second hardcoded constant) -- see
+        // gripper_conversion.h.
+        if (gripper_joint_index_ >= 0 && gripper_joint_index_ < num_joints_) {
+            size_t gi = static_cast<size_t>(gripper_joint_index_);
+            double at_min = dxl_sign_[gi] * (encoder_min_[gi] - dxl_bias_[gi]) * dxl_rad_per_tick_;
+            double at_max = dxl_sign_[gi] * (encoder_max_[gi] - dxl_bias_[gi]) * dxl_rad_per_tick_;
+            gripper_conversion_.rotational_min = std::min(at_min, at_max);
+            gripper_conversion_.rotational_max = std::max(at_min, at_max);
+        }
 
         positions_.assign(num_joints_, 0);
         positions_rad_.assign(num_joints_, 0.0);
@@ -437,7 +465,16 @@ private:
             if (it != msg->name.end()) {
                 size_t index = std::distance(msg->name.begin(), it);
                 if (index < msg->position.size()) {
-                    joint_cmds_[i] = msg->position[index];
+                    double cmd = msg->position[index];
+                    // Convert the gripper's commanded LINEAR position
+                    // back to the motor's own rotational domain here, at
+                    // ingest -- so joint_cmds_ stays uniformly
+                    // rotational for every joint, matching positions_rad_
+                    // (see readAndPublish's own comment), and the
+                    // mismatch check / tick-conversion loop below need no
+                    // gripper-specific handling at all.
+                    joint_cmds_[i] =
+                        (static_cast<int>(i) == gripper_joint_index_) ? gripper_conversion_.LinearToRotational(cmd) : cmd;
                 } else {
                     ROS_WARN_THROTTLE(2.0, "Name mapping succeeded but index %zu is out of bounds in position array.", index);
                 }
@@ -515,6 +552,17 @@ private:
         return true;
     }
 
+    // SCAFFOLDING ONLY -- see robot_interface_velocity.cpp's own
+    // handleEStop() comment, same intended-final-behavior note applies
+    // here (lock in place, not disable torque): not built yet, returns
+    // an honest failure so a caller can't mistake this for a real stop.
+    bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        ROS_ERROR("E-stop requested but NOT YET IMPLEMENTED -- see ROADMAP.md M5 and this handler's own comment. No motor action taken.");
+        res.success = false;
+        res.message = "E-stop interface exists but is not yet implemented -- no motor action was taken. See ROADMAP.md M5.";
+        return true;
+    }
+
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
         if (req.data) {
             ROS_INFO("Service called: Enabling torque on all joints...");
@@ -554,6 +602,7 @@ private:
     ros::Subscriber joint_out_sub_;
     ros::ServiceServer reenable_srv_;
     ros::ServiceServer set_torque_srv_;
+    ros::ServiceServer estop_srv_;
     dynamixel::PortHandler *portHandler_;
     dynamixel::PacketHandler *packetHandler_;
     dynamixel::GroupBulkRead bulkRead_;
@@ -601,6 +650,9 @@ private:
 
     std::vector<uint8_t> motor_errors_;
     std::mutex port_mutex_;
+
+    int gripper_joint_index_ = 5;  // 0-based; joint_6
+    arm_interface::GripperConversion gripper_conversion_{0.0, 0.0, 0.0, 0.025};
 
 };
 

@@ -146,6 +146,16 @@ add_executable(robot_interface src/robot_interface.cpp)
 add_dependencies(robot_interface ${catkin_EXPORTED_TARGETS} dynamixel_sdk ${PROJECT_NAME}_gencfg)
 target_link_libraries(robot_interface ${catkin_LIBRARIES} dynamixel_sdk)
 
+# Second, velocity-commanded hardware interface (M5) -- see
+# docs/sim_to_real.md. Separate executable rather than a mode flag on
+# robot_interface: different Dynamixel operating mode, different
+# command-domain semantics (a stale velocity command keeps driving the
+# motor, unlike a stale position command), different safety-critical
+# timeout behavior.
+add_executable(robot_interface_velocity src/robot_interface_velocity.cpp)
+add_dependencies(robot_interface_velocity ${catkin_EXPORTED_TARGETS} dynamixel_sdk ${PROJECT_NAME}_gencfg)
+target_link_libraries(robot_interface_velocity ${catkin_LIBRARIES} dynamixel_sdk)
+
 # ─── Simulation Validator Node (for control validation in sim) ────────────────
 add_executable(arm_sim_validator_node src/arm_sim_validator_node.cpp)
 add_dependencies(arm_sim_validator_node ${catkin_EXPORTED_TARGETS})
@@ -223,6 +233,7 @@ target_link_libraries(replay_bag ${catkin_LIBRARIES})
 
 ## Add gtest based cpp test target and link libraries
 catkin_add_gtest(${PROJECT_NAME}-test-watchdog test/test_watchdog.cpp)
+catkin_add_gtest(${PROJECT_NAME}-test-gripper-conversion test/test_gripper_conversion.cpp)
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
