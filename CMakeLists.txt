@@ -104,6 +104,11 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(${PROJECT_NAME}-test-joint-space-trajectory arm_trajectory ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
+  catkin_add_gtest(${PROJECT_NAME}-test-estop-monitor test/test_estop_monitor.cpp)
+  if(TARGET ${PROJECT_NAME}-test-estop-monitor)
+    target_link_libraries(${PROJECT_NAME}-test-estop-monitor ${catkin_LIBRARIES})
+  endif()
+
   catkin_add_gtest(${PROJECT_NAME}-test-reach-correction test/test_reach_correction.cpp)
   if(TARGET ${PROJECT_NAME}-test-reach-correction)
     target_link_libraries(${PROJECT_NAME}-test-reach-correction ${catkin_LIBRARIES})

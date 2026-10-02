@@ -14,6 +14,7 @@
 
 #include "arm_trajectory/GenerateTrajectory.h"
 #include "arm_trajectory/ReachTargetPose.h"
+#include "arm_trajectory/estop_monitor.h"
 #include "arm_trajectory/reach_correction.h"
 
 // Non-interactive "go to this pose" entry point -- the M4-teleop-free
@@ -75,6 +76,12 @@ class ReachTargetPoseNode {
     // pose. Kept short: robot_interface's watchdog drops torque 0.5 s after
     // the last command, and a correction should start before that.
     pnh.param("correction_settle", correction_settle_, 0.05);
+
+    // The executor is the real choke point; this gives a clear early answer
+    // and stops the correction loop. Fail-closed like the executor.
+    bool require_estop_state = true;
+    pnh.param("require_estop_state", require_estop_state, true);
+    estop_ = std::make_unique<arm_trajectory::EStopMonitor>(nh_, require_estop_state);
 
     urdf::Model model;
     if (!model.initParam("robot_description")) {
@@ -191,6 +198,13 @@ class ReachTargetPoseNode {
 
   bool ReachCb(arm_trajectory::ReachTargetPose::Request& req,
                arm_trajectory::ReachTargetPose::Response& res) {
+    estop_->WaitForState(1.0);
+    if (!estop_->AllowsMotion()) {
+      res.success = false;
+      res.message = "reach_target_pose: not moving: " + estop_->Reason();
+      return true;
+    }
+
     std::string error;
     if (!GenerateAndExecute(req.target_pose, req.cartesian_path, req.sample_rate, &error)) {
       res.success = false;
@@ -221,6 +235,10 @@ class ReachTargetPoseNode {
     double pitch_compensation = 0.0;
     std::string correction_note;
     while (true) {
+      if (estop_->engaged()) {
+        correction_note = " (correction stopped: e-stop engaged)";
+        break;
+      }
       arm_trajectory::CorrectionDecision d = arm_trajectory::NextCorrection(
           target_pose.translation(), measured.pose.translation(), compensation, correction_, steps_done);
       arm_trajectory::PitchDecision dp = arm_trajectory::NextPitchCorrection(
@@ -295,6 +313,7 @@ class ReachTargetPoseNode {
   double position_tolerance_;
   double orientation_tolerance_;
   double execution_timeout_margin_;
+  std::unique_ptr<arm_trajectory::EStopMonitor> estop_;
   arm_trajectory::ReachCorrectionOptions correction_;
   double correction_settle_ = 0.05;
   ros::Time last_exec_end_;  // when the previous trajectory finished (zero = none yet)
