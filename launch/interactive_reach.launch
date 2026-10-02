@@ -40,7 +40,14 @@
   <arg name="velocity_scale"
        default="$(eval 0.1 if arg('use_hardware') else 1.0)"/>
   <arg name="nullspace_tip_link" default="link_4"/>
-  <arg name="nullspace_gain" default="0.05"/>
+  <!-- nullspace_gain: defaults to 0 (bias off) on hardware. The bias is a
+       per-sample STEP, not a rate: at a low velocity_scale the duration
+       search adds samples without shrinking the bias motion per sample, so
+       it never converges and trips the runaway-duration guard (reproduced
+       in simulation at velocity_scale 0.1, gain 0.05; see
+       docs/trajectory_generation.md Finding 7). Same truthiness note as
+       velocity_scale above. -->
+  <arg name="nullspace_gain" default="$(eval 0.0 if arg('use_hardware') else 0.05)"/>
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
