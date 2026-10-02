@@ -156,6 +156,8 @@ New files: `arm_interface/include/arm_interface/gripper_conversion.h` (+ test), 
 
 `arm_interface` test suite: 13 total (watchdog + gripper-conversion, all green). Stage 2 itself has not started.
 
+**Restructure after the first hardware sessions (2026-10-02)**: the ~0.5 s command-timeout torque drop (arm sagging to the singular rest pose after every move) and the jump on torque re-enable were fixed structurally rather than patched. `robot_interface` now has a formal drive state machine (`TORQUE_OFF / HOLDING / TRACKING / ESTOPPED`, pure and unit-tested): the end of a command stream means HOLD with torque on (operator decision: indefinitely), torque changes only on explicit `set_torque`, e-stop or bus fault; every goal written to the motors is slew-limited from the last written goal (`max_goal_slew_rad_s`), which also caps commanded speed in position mode. The e-stop is now visible to every command sender: all backends (hardware position, hardware velocity, simulator) publish the latched `/arm_interface/estop_state`; the trajectory executor refuses new goals while it is engaged or unknown (fail-closed) and aborts a running trajectory the moment it engages. Verified offline against the simulator's new e-stop; the `robot_interface` control-loop glue awaits hardware verification (test plan in `arm_interface/docs/sim_to_real.md` section 16).
+
 ## M6 — Camera integration and calibration (sketch)
 
 Intrinsics, camera-to-robot extrinsics.
