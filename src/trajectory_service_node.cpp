@@ -95,6 +95,21 @@ class TrajectoryServiceNode {
     ik_solver_ = std::make_unique<arm_kinematics::PositionPitchIkSolver>(*fk_solver_, ik_options_);
     joint_names_ = fk_solver_->GetActuatedJointNames();
     velocity_limits_ = fk_solver_->GetActuatedJointVelocityLimits();
+    // Uniform slow-down of every generated trajectory (M5 Stage 3: reduced
+    // speed on first real-hardware runs). Applied to the limits the
+    // generators time against, so every sample's finite-differenced
+    // velocity stays within scale x the URDF limit -- not a post-hoc
+    // time stretch. Invalid values throw rather than silently falling
+    // back to full speed, since this is a hardware-safety knob.
+    double velocity_scale;
+    pnh.param("velocity_scale", velocity_scale, 1.0);
+    if (!(velocity_scale > 0.0 && velocity_scale <= 1.0)) {
+      throw std::runtime_error("trajectory_service_node: ~velocity_scale must be in (0, 1], got " +
+                                std::to_string(velocity_scale));
+    }
+    for (double& v : velocity_limits_) {
+      v *= velocity_scale;
+    }
     latest_joint_positions_.assign(joint_names_.size(), 0.0);
     have_joint_state_ = false;
 
@@ -110,6 +125,9 @@ class TrajectoryServiceNode {
                              ? ", base-collision check on (" +
                                    std::to_string(2.0 * base_obstacle_half_extent) + "m cube)"
                              : ", base-collision check OFF")
+                     << (velocity_scale != 1.0
+                             ? ", velocity limits scaled x" + std::to_string(velocity_scale)
+                             : "")
                      << ")");
   }
 

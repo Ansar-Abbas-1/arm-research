@@ -30,6 +30,15 @@
        subscribe interface either way, so nothing else in this file needs
        to change. Every reach committed through the marker/CLI would then
        move the real arm. -->
+  <!-- velocity_scale: uniform slow-down of every generated trajectory
+       (M5 Stage 3, reduced speed on first real-hardware runs). Defaults
+       to 0.1 whenever use_hardware is true, 1.0 in simulation, so
+       forgetting this arg can never give full speed on the real arm.
+       Override explicitly with velocity_scale:=0.25 etc. Note: inside
+       $(eval), arg() returns Python-typed values (true becomes the boolean
+       True), so this tests truthiness, not the string 'true'. -->
+  <arg name="velocity_scale"
+       default="$(eval 0.1 if arg('use_hardware') else 1.0)"/>
   <arg name="nullspace_tip_link" default="link_4"/>
   <arg name="nullspace_gain" default="0.05"/>
 
@@ -58,6 +67,7 @@
   <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node">
     <param name="nullspace_tip_link" value="$(arg nullspace_tip_link)" />
     <param name="nullspace_gain" value="$(arg nullspace_gain)" />
+    <param name="velocity_scale" value="$(arg velocity_scale)" />
   </node>
   <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
   <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node" />
