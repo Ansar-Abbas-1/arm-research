@@ -48,6 +48,7 @@ from arm_trajectory.srv import GenerateTrajectory, GenerateTrajectoryRequest
 JOINTS = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5"]
 
 PIVOT_Q = [0.15, 0.25, -0.25, 0.25, -0.25]
+UPRIGHT_TOL = 0.2  # rad
 # FK of PIVOT_Q on the simulator (fk_node), 2026-10-02.
 PIVOT_POS = (0.13049, 0.01972, 0.55087)
 PIVOT_QUAT = (-0.05113, 0.68049, 0.05477, 0.72892)  # x y z w
@@ -74,7 +75,7 @@ def main():
     ap.add_argument("--offset", type=float, nargs=3, default=[0.0, 0.0, 0.03], metavar=("DX", "DY", "DZ"),
                     help="meters, added to the reference EE position (default: 3 cm up)")
     ap.add_argument("--pivot", choices=["auto", "always", "never"], default="auto",
-                    help="route via PIVOT_Q first; auto = when joints 2-5 are all within 0.1 rad of zero (upright)")
+                    help="route via PIVOT_Q first; auto = when joints 2-5 are all within UPRIGHT_TOL (0.2 rad) of zero")
     ap.add_argument("--max-delta", type=float, default=0.4, help="refuse if any joint moves more than this in a phase (rad)")
     ap.add_argument("--max-deviation", type=float, default=0.005,
                     help="refuse if the Cartesian path strays from the target path by more than this (m)")
@@ -88,8 +89,12 @@ def main():
     js = rospy.wait_for_message("/joint_states_in", JointState, timeout=5.0)
     now = dict(zip(js.name, js.position))
     live = [now[j] for j in JOINTS]
-    upright = max(abs(q) for q in live[1:]) < 0.1
+    # The arm's sagged rest pose is near-all-zeros but joint_3 settles at about
+    # -0.157 rad; the pivot's joints are all >= 0.25. 0.2 separates them.
+    upright = max(abs(q) for q in live[1:]) < UPRIGHT_TOL
     use_pivot = args.pivot == "always" or (args.pivot == "auto" and upright)
+    print("Live joints 2-5 max |q| = %.3f (upright threshold %.2f) -> %s" % (
+        max(abs(q) for q in live[1:]), UPRIGHT_TOL, "routing via the pivot" if use_pivot else "planning directly from the live pose"))
 
     rospy.wait_for_service("/generate_trajectory", timeout=5.0)
     gen = rospy.ServiceProxy("/generate_trajectory", GenerateTrajectory)
