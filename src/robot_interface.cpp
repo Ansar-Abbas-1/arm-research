@@ -185,6 +185,13 @@ public:
             }
             ROS_INFO("Goal position re-seeded to current present position before re-enabling torque.");
         }
+        // Joints no command has named yet hold their current position
+        // (fresh from this tick's read) instead of their initial 0 rad.
+        for (size_t i = 0; i < num_joints_; ++i) {
+            if (!cmd_seen_[i]) {
+                joint_cmds_[i] = positions_rad_[i];
+            }
+        }
         enableTorque();
         return true;
     }
@@ -362,6 +369,7 @@ private:
                 ROS_ERROR_THROTTLE(1.0, "Command timeout! No commands received for %.2f seconds. Disabling torque.", command_timeout_);
                 disableTorque();
                 start_writing_ = false; // Stop writing until next command received
+                std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
                 return;
             }
         }
@@ -491,6 +499,7 @@ private:
         positions_.assign(num_joints_, 0);
         positions_rad_.assign(num_joints_, 0.0);
         joint_cmds_.assign(num_joints_, 0.0);
+        cmd_seen_.assign(num_joints_, 0);
         motor_errors_.assign(num_joints_, 0);
     }
 
@@ -591,11 +600,12 @@ private:
                     // gripper-specific handling at all.
                     joint_cmds_[i] =
                         (static_cast<int>(i) == gripper_joint_index_) ? gripper_conversion_.LinearToRotational(cmd) : cmd;
+                    cmd_seen_[i] = 1;
                 } else {
                     ROS_WARN_THROTTLE(2.0, "Name mapping succeeded but index %zu is out of bounds in position array.", index);
                 }
             } else {
-                ROS_WARN_THROTTLE(2.0, "Commanded JointState is missing required joint: %s", target_name.c_str());
+                ROS_DEBUG_THROTTLE(2.0, "Commanded JointState does not name %s; holding its current position.", target_name.c_str());
             }
         }
     }
@@ -763,6 +773,11 @@ private:
     // Torque (re-)enable handshake between ROS callback threads and the
     // control loop: 0 = none, 1 = command arrived while idle, 2 = set_torque(true).
     // enable_result_: 0 = pending, 1 = enabled, -1 = refused/failed.
+    // Per joint: has a /joint_states_out command named this joint since the
+    // last idle->active transition? Joints never named (the trajectory
+    // executor only commands joint_1..5, never the gripper) must HOLD
+    // their current position, not default to joint_cmds_'s initial 0 rad.
+    std::vector<char> cmd_seen_;
     std::atomic<int> enable_request_{0};
     std::atomic<int> enable_result_{0};
 
