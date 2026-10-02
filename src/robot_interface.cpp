@@ -1,5 +1,7 @@
 #include <ros/ros.h>
 #include <std_msgs/Int32.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
 #include <sensor_msgs/JointState.h>
 #include <dynamixel_sdk/dynamixel_sdk.h>
@@ -18,6 +20,7 @@
 
 #include "arm_interface/watchdog.h"
 #include "arm_interface/gripper_conversion.h"
+#include "arm_interface/estop.h"
 
 
 class DynamixelArmInterface {
@@ -44,10 +47,15 @@ public:
         joint_out_sub_ = nh_.subscribe("/joint_states_out", 10, &DynamixelArmInterface::jointStatesOutCb, this);
         reenable_srv_ = nh_.advertiseService("/arm_interface/reenable_failed_motors", &DynamixelArmInterface::handleReenableMotors, this);
         set_torque_srv_ = nh_.advertiseService("/arm_interface/set_torque", &DynamixelArmInterface::handleSetTorque, this);
-        // Scaffolding only -- see handleEStop()'s own comment and
-        // docs/sim_to_real.md: the interface is discoverable/callable,
-        // the "lock all motors in place" behavior itself isn't built yet.
+        // Software e-stop (docs/sim_to_real.md section 15): latched "hold
+        // in place", applied by the control loop. Service = blocking with a
+        // real result; the Empty topic is the fire-and-forget path (e.g.
+        // `rostopic pub -1 /arm_interface/estop_trigger std_msgs/Empty`).
         estop_srv_ = nh_.advertiseService("/arm_interface/estop", &DynamixelArmInterface::handleEStop, this);
+        estop_reset_srv_ = nh_.advertiseService("/arm_interface/estop_reset", &DynamixelArmInterface::handleEStopReset, this);
+        estop_trigger_sub_ = nh_.subscribe("/arm_interface/estop_trigger", 10, &DynamixelArmInterface::estopTriggerCb, this);
+        estop_state_pub_ = nh_.advertise<std_msgs::Bool>("/arm_interface/estop_state", 1, true);
+        publishEStopState();
 
         // Dynamixel SDK setup
         if (!portHandler_->openPort()) {
@@ -348,6 +356,31 @@ private:
         joint_msg_.header.stamp = ros::Time::now();
         joint_in_pub_.publish(joint_msg_);
 
+        // E-stop hold. Runs first in the tick (before enable requests, the
+        // watchdog and the write section) and only on a tick whose bulk
+        // read succeeded, so the hold is seeded from fresh positions. While
+        // latched this retries every tick until a hold has actually been
+        // written; start_writing_ is dropped so the write section and the
+        // watchdog stay inert and torque stays on.
+        if (estop_.latched()) {
+            start_writing_ = false;
+            std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
+            if (enable_request_.load() != 0) {
+                enable_result_ = -1;  // refuse any pending enable request
+                enable_request_ = 0;
+            }
+            if (estop_.HoldPending() && read_success) {
+                bool ok = seedFromLatestReadAndEnableTorque();
+                estop_.MarkHoldApplied(ok);
+                if (ok) {
+                    ROS_ERROR("E-stop hold applied: goal = present position, torque on.");
+                } else {
+                    ROS_ERROR_THROTTLE(1.0, "E-stop hold FAILED, retrying next tick.");
+                }
+            }
+            return;
+        }
+
         // Torque (re-)enable requests from ROS callback threads are
         // serviced here, on this thread, only on a tick whose bulk read
         // succeeded -- positions_ is then guaranteed fresh for seeding.
@@ -572,6 +605,10 @@ private:
     }
 
     void jointStatesOutCb(const sensor_msgs::JointState::ConstPtr& msg) {
+        if (!estop_.CommandsAllowed()) {
+            ROS_WARN_THROTTLE(2.0, "E-stop latched: ignoring /joint_states_out commands.");
+            return;
+        }
         if (!start_writing_) {
             ROS_INFO("Received command joint state, enabling torque and starting to write to motors.");
             // Not enabled here: this runs on a ROS callback thread. The
@@ -691,18 +728,68 @@ private:
         return true;
     }
 
-    // SCAFFOLDING ONLY -- see robot_interface_velocity.cpp's own
-    // handleEStop() comment, same intended-final-behavior note applies
-    // here (lock in place, not disable torque): not built yet, returns
-    // an honest failure so a caller can't mistake this for a real stop.
+    void publishEStopState() {
+        std_msgs::Bool msg;
+        msg.data = estop_.latched();
+        estop_state_pub_.publish(msg);
+    }
+
+    // Latches the e-stop. The actual hold (goal := fresh present position,
+    // torque on) is done by the control loop on its next tick, so this only
+    // flips the latch -- which immediately makes jointStatesOutCb ignore
+    // commands and the write section skip -- and then reports the outcome.
+    bool triggerEStop() {
+        if (estop_.Trigger()) {
+            ROS_ERROR("E-STOP TRIGGERED: ignoring commands, holding the arm at its current position.");
+            publishEStopState();
+        }
+        for (int waited_ms = 0; waited_ms < 1000 && estop_.HoldPending(); waited_ms += 10) {
+            ros::Duration(0.01).sleep();
+        }
+        return estop_.hold_applied();
+    }
+
     bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
-        ROS_ERROR("E-stop requested but NOT YET IMPLEMENTED -- see ROADMAP.md M5 and this handler's own comment. No motor action taken.");
-        res.success = false;
-        res.message = "E-stop interface exists but is not yet implemented -- no motor action was taken. See ROADMAP.md M5.";
+        res.success = triggerEStop();
+        res.message = res.success
+                          ? "E-stop latched: commands ignored, arm holding its current position with torque on."
+                          : "E-stop latched and commands are blocked, but the hold has NOT been confirmed "
+                            "(no good read or write failed); retrying every control tick -- check the node log.";
+        return true;
+    }
+
+    void estopTriggerCb(const std_msgs::Empty::ConstPtr&) {
+        // Fire-and-forget: latch now; the loop applies the hold. Do not block.
+        if (estop_.Trigger()) {
+            ROS_ERROR("E-STOP TRIGGERED (topic): ignoring commands, holding the arm at its current position.");
+            publishEStopState();
+        }
+    }
+
+    // Releases the latch. Moves nothing: the arm keeps holding with torque on
+    // (the watchdog is only armed while writing), until the next command
+    // re-enters the normal path or set_torque(false) is called.
+    bool handleEStopReset(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        if (estop_.Reset()) {
+            ROS_WARN("E-stop released. The arm is still holding; the next command or set_torque(false) takes over.");
+            publishEStopState();
+            res.success = true;
+            res.message = "E-stop released; arm still holding position with torque on.";
+        } else {
+            res.success = true;
+            res.message = "E-stop was not latched.";
+        }
         return true;
     }
 
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
+        if (estop_.latched()) {
+            // Disabling torque would drop the lock (the arm falls); enabling
+            // is already the held state. Either way the operator resets first.
+            res.success = false;
+            res.message = "E-stop is latched: set_torque refused. Call /arm_interface/estop_reset first.";
+            return true;
+        }
         if (req.data) {
             ROS_INFO("Service called: Enabling torque on all joints...");
             // Serviced by the control loop (re-seeds goals from a fresh
@@ -749,6 +836,10 @@ private:
     ros::ServiceServer reenable_srv_;
     ros::ServiceServer set_torque_srv_;
     ros::ServiceServer estop_srv_;
+    ros::ServiceServer estop_reset_srv_;
+    ros::Subscriber estop_trigger_sub_;
+    ros::Publisher estop_state_pub_;
+    arm_interface::EStopLatch estop_;
     dynamixel::PortHandler *portHandler_;
     dynamixel::PacketHandler *packetHandler_;
     dynamixel::GroupBulkRead bulkRead_;

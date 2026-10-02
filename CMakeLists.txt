@@ -234,6 +234,7 @@ target_link_libraries(replay_bag ${catkin_LIBRARIES})
 ## Add gtest based cpp test target and link libraries
 catkin_add_gtest(${PROJECT_NAME}-test-watchdog test/test_watchdog.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-gripper-conversion test/test_gripper_conversion.cpp)
+catkin_add_gtest(${PROJECT_NAME}-test-estop test/test_estop.cpp)
 
 ## Python tests (URDF vs. hardware encoder limits)
 catkin_add_nosetests(test/test_limits_consistent.py)

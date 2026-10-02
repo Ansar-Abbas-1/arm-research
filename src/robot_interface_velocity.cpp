@@ -555,7 +555,7 @@ private:
     bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
         ROS_ERROR("E-stop requested but NOT YET IMPLEMENTED -- see ROADMAP.md M5 and this handler's own comment. No motor action taken.");
         res.success = false;
-        res.message = "E-stop interface exists but is not yet implemented -- no motor action was taken. See ROADMAP.md M5.";
+        res.message = "E-stop is implemented in position-mode robot_interface only (docs/sim_to_real.md section 15); this velocity node still has the stub -- no motor action was taken.";
         return true;
     }
 
