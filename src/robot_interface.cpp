@@ -1,6 +1,7 @@
 #include <ros/ros.h>
 #include <std_msgs/Int32.h>
 #include <std_msgs/Bool.h>
+#include <std_msgs/String.h>
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
 #include <sensor_msgs/JointState.h>
@@ -21,6 +22,8 @@
 #include "arm_interface/watchdog.h"
 #include "arm_interface/gripper_conversion.h"
 #include "arm_interface/estop.h"
+#include "arm_interface/drive_state.h"
+#include "arm_interface/goal_slew.h"
 
 
 class DynamixelArmInterface {
@@ -56,6 +59,9 @@ public:
         estop_trigger_sub_ = nh_.subscribe("/arm_interface/estop_trigger", 10, &DynamixelArmInterface::estopTriggerCb, this);
         estop_state_pub_ = nh_.advertise<std_msgs::Bool>("/arm_interface/estop_state", 1, true);
         publishEStopState();
+        // Latched: the drive state (TORQUE_OFF / HOLDING / TRACKING / ESTOPPED)
+        // for operators and tools; docs/sim_to_real.md section 16.
+        drive_state_pub_ = nh_.advertise<std_msgs::String>("/arm_interface/drive_state", 1, true);
 
         // Dynamixel SDK setup
         if (!portHandler_->openPort()) {
@@ -91,6 +97,8 @@ public:
 
         // Initialize Dynamixel Torque
         enableTorque();
+        // Startup is HOLDING: torque on, goal = the present pose just seeded.
+        setDriveState(arm_interface::DriveState::kHolding);
         ROS_INFO("robot_interface node initialized and ready.");
 
         // dynamic_reconfigure for command_timeout: seed the server with the
@@ -193,13 +201,10 @@ public:
             }
             ROS_INFO("Goal position re-seeded to current present position before re-enabling torque.");
         }
-        // Joints no command has named yet hold their current position
-        // (fresh from this tick's read) instead of their initial 0 rad.
-        for (size_t i = 0; i < num_joints_; ++i) {
-            if (!cmd_seen_[i]) {
-                joint_cmds_[i] = positions_rad_[i];
-            }
-        }
+        // The goal register now equals the present position; the slew
+        // limiter continues from here, so nothing downstream can step it.
+        goal_written_ = positions_rad_;
+        goal_written_valid_ = true;
         enableTorque();
         return true;
     }
@@ -300,9 +305,16 @@ private:
             }
 
             if (consecutive_read_failures_ >= max_read_failures_) {
-                ROS_ERROR("Max consecutive bulk read failures reached (%d). Fault triggered. Disabling torque and shutting down.", consecutive_read_failures_);
-                disableTorque();
-                // ros::shutdown();
+                // Fault event: torque off, once. (The old code re-ran the
+                // blocking disable loop on every failed tick.) The latch of
+                // an active e-stop is NOT cleared, so its hold re-applies
+                // by itself when the bus comes back.
+                arm_interface::DriveTransition t = arm_interface::NextDriveState(drive_state_, arm_interface::DriveEvent::kFault);
+                if (t.action == arm_interface::DriveAction::kDisable) {
+                    ROS_ERROR("Max consecutive bulk read failures reached (%d). Bus fault: disabling torque.", consecutive_read_failures_);
+                    disableTorque();
+                }
+                setDriveState(t.next);
                 return;
             }
         } else {
@@ -356,19 +368,37 @@ private:
         joint_msg_.header.stamp = ros::Time::now();
         joint_in_pub_.publish(joint_msg_);
 
-        // E-stop hold. Runs first in the tick (before enable requests, the
-        // watchdog and the write section) and only on a tick whose bulk
-        // read succeeded, so the hold is seeded from fresh positions. While
-        // latched this retries every tick until a hold has actually been
-        // written; start_writing_ is dropped so the write section and the
-        // watchdog stay inert and torque stays on.
-        if (estop_.latched()) {
-            start_writing_ = false;
-            std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
-            if (enable_request_.load() != 0) {
-                enable_result_ = -1;  // refuse any pending enable request
-                enable_request_ = 0;
+        // ---- Drive state machine glue. Policy lives in drive_state.h (pure,
+        // unit-tested); this executes its actions on the hardware. Order:
+        // e-stop edges, explicit torque requests, command arrival, stream
+        // timeout, then the slew-limited write.
+        const ros::Time now = ros::Time::now();
+        double dt = last_tick_time_.isZero() ? 0.01 : (now - last_tick_time_).toSec();
+        dt = std::max(0.001, std::min(dt, 0.05));
+        last_tick_time_ = now;
+        if (!goal_written_valid_) {
+            if (!read_success) {
+                return;  // never transition or write before knowing where the goal register is
             }
+            goal_written_ = positions_rad_;
+            goal_written_valid_ = true;
+        }
+
+        if (estop_.latched() && drive_state_ != arm_interface::DriveState::kEStopped) {
+            setDriveState(arm_interface::NextDriveState(drive_state_, arm_interface::DriveEvent::kEStopTrigger).next);
+            std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
+        } else if (!estop_.latched() && drive_state_ == arm_interface::DriveState::kEStopped) {
+            setDriveState(arm_interface::NextDriveState(drive_state_, arm_interface::DriveEvent::kEStopReset).next);
+            ROS_WARN("E-stop released: holding (torque on); the next command or set_torque takes over.");
+        }
+        if (drive_state_ == arm_interface::DriveState::kEStopped) {
+            command_pending_ = false;
+            if (torque_request_.load() != 0) {
+                torque_result_ = -1;  // refused while latched
+                torque_request_ = 0;
+            }
+            // Hold: goal := fresh present position, torque on. Retried every
+            // tick until a hold has actually been written.
             if (estop_.HoldPending() && read_success) {
                 bool ok = seedFromLatestReadAndEnableTorque();
                 estop_.MarkHoldApplied(ok);
@@ -381,34 +411,57 @@ private:
             return;
         }
 
-        // Torque (re-)enable requests from ROS callback threads are
-        // serviced here, on this thread, only on a tick whose bulk read
-        // succeeded -- positions_ is then guaranteed fresh for seeding.
-        // 1 = first/next command after idle (also starts writing),
-        // 2 = /arm_interface/set_torque true (torque only).
-        int request = enable_request_.load();
-        if (request != 0 && read_success) {
-            bool ok = seedFromLatestReadAndEnableTorque();
-            if (ok && request == 1) {
-                start_writing_ = true;
-            }
-            enable_result_ = ok ? 1 : -1;
-            enable_request_ = 0;
-        }
-
-        // Watchdog: Check command timeout
-        if (start_writing_) {
-            if (arm_interface::IsCommandStale((ros::Time::now() - last_cmd_time_).toSec(), command_timeout_)) {
-                ROS_ERROR_THROTTLE(1.0, "Command timeout! No commands received for %.2f seconds. Disabling torque.", command_timeout_);
-                disableTorque();
-                start_writing_ = false; // Stop writing until next command received
-                std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
-                return;
+        // Explicit set_torque requests (from the service thread).
+        int treq = torque_request_.load();
+        if (treq != 0) {
+            arm_interface::DriveTransition t = arm_interface::NextDriveState(
+                drive_state_, treq == 1 ? arm_interface::DriveEvent::kTorqueOnRequest : arm_interface::DriveEvent::kTorqueOffRequest);
+            if (t.action != arm_interface::DriveAction::kSeedAndEnable || read_success) {
+                bool ok = executeDriveAction(t.action);
+                if (ok) {
+                    setDriveState(t.next);
+                }
+                torque_result_ = ok ? 1 : -1;
+                torque_request_ = 0;
             }
         }
 
-        // Write to motors if commanded positions are received
-        if (start_writing_) {
+        // A command arrived. From HOLDING/TRACKING torque is already on and
+        // nothing is toggled; only from TORQUE_OFF is the goal re-seeded and
+        // torque enabled first.
+        if (command_pending_.load()) {
+            arm_interface::DriveTransition t = arm_interface::NextDriveState(drive_state_, arm_interface::DriveEvent::kCommand);
+            if (t.action != arm_interface::DriveAction::kSeedAndEnable || read_success) {
+                command_pending_ = false;
+                if (executeDriveAction(t.action)) {
+                    if (drive_state_ != arm_interface::DriveState::kTracking) {
+                        // Joints no command has named (the executor never names
+                        // joint_6) keep the goal already written for them.
+                        for (size_t i = 0; i < num_joints_; ++i) {
+                            if (!cmd_seen_[i]) {
+                                joint_cmds_[i] = goal_written_[i];
+                            }
+                        }
+                        ROS_INFO("Command stream started: tracking (torque already on: %s).",
+                                 t.action == arm_interface::DriveAction::kNone ? "yes" : "re-enabled");
+                    }
+                    setDriveState(t.next);
+                }
+            }
+        }
+
+        // The command stream ended (trajectory finished, or the sender is
+        // gone): HOLD. Torque is NOT touched; the motors keep driving to the
+        // last written goal. Releasing torque is an explicit act (set_torque
+        // false), an e-stop, or a bus fault, never a timeout.
+        if (drive_state_ == arm_interface::DriveState::kTracking &&
+            arm_interface::IsCommandStale((now - last_cmd_time_).toSec(), command_timeout_)) {
+            setDriveState(arm_interface::NextDriveState(drive_state_, arm_interface::DriveEvent::kCommandTimeout).next);
+            std::fill(cmd_seen_.begin(), cmd_seen_.end(), 0);
+            ROS_INFO("Command stream ended (no command for %.2f s): holding the last goal, torque stays on.", command_timeout_);
+        }
+
+        if (drive_state_ == arm_interface::DriveState::kTracking) {
             // Check for commanded/actual position mismatch
             bool error = false;
             for (size_t i = 0; i < num_joints_; ++i){
@@ -419,15 +472,21 @@ private:
                     error = true;
                 }
             }
-            // error = false;
             if (error && !debug_error_){
                 ROS_WARN("Position mismatch detected, not writing to motors.");
             }else{
                 std::lock_guard<std::mutex> lock(port_mutex_);
                 bulkWrite_.clearParam();
+                bool slewing = false;
                 for (size_t i = 0; i < num_joints_; ++i)
                 {
-                    int encoder_val = (int) (joint_cmds_[i]/dxl_rad_per_tick_/dxl_sign_[i]) + dxl_bias_[i];
+                    // The goal the motor sees is the commanded one reached by
+                    // at most max_goal_slew * dt from the goal last written
+                    // (goal_slew.h): continuous by construction.
+                    goal_written_[i] = arm_interface::SlewToward(goal_written_[i], joint_cmds_[i], max_goal_slew_[i] * dt);
+                    slewing = slewing || std::fabs(joint_cmds_[i] - goal_written_[i]) > 1e-9;
+
+                    int encoder_val = (int) (goal_written_[i]/dxl_rad_per_tick_/dxl_sign_[i]) + dxl_bias_[i];
                     encoder_val = std::max(encoder_min_[i], std::min(encoder_val, encoder_max_[i]));
 
                     std_msgs::Int32 out_msg;
@@ -444,12 +503,9 @@ private:
                     {
                         ROS_ERROR_STREAM("Failed to add param for joint " << dxl_ids_[i]);
                     }
-                    
-                    // Send position to output topic
-                    // This is for compatibility with existing topics
-                    std_msgs::Float64 out_msg_double;
-                    out_msg.data = encoder_val;
-                    pos_out_enc_pubs_[i].publish(out_msg);
+                }
+                if (slewing) {
+                    ROS_INFO_THROTTLE(2.0, "Goal slew limiting active: the written goal is catching up to the commanded one (max_goal_slew_rad_s).");
                 }
                 if(!debug_){
                     int dxl_comm_result = bulkWrite_.txPacket();
@@ -460,6 +516,36 @@ private:
                 }
             }
         }
+    }
+
+    // Hardware side of a DriveAction. kEStopHold is handled by the latch's
+    // own retry path in readAndPublish, not here.
+    bool executeDriveAction(arm_interface::DriveAction action) {
+        switch (action) {
+            case arm_interface::DriveAction::kSeedAndEnable:
+                return seedFromLatestReadAndEnableTorque();
+            case arm_interface::DriveAction::kDisable:
+                disableTorque();
+                return true;
+            case arm_interface::DriveAction::kNone:
+            case arm_interface::DriveAction::kEStopHold:
+                return true;
+        }
+        return true;
+    }
+
+    void setDriveState(arm_interface::DriveState s) {
+        if (s == drive_state_ && state_published_) {
+            return;
+        }
+        if (s != drive_state_) {
+            ROS_INFO("Drive state: %s -> %s", arm_interface::ToString(drive_state_), arm_interface::ToString(s));
+        }
+        drive_state_ = s;
+        state_published_ = true;
+        std_msgs::String msg;
+        msg.data = arm_interface::ToString(s);
+        drive_state_pub_.publish(msg);
     }
 
     static std::string getDeviceName() {
@@ -481,7 +567,6 @@ private:
         pnh.param("debug", debug_, debug_);
         pnh.param("debug_error", debug_error_, debug_error_);
         pnh.param("threshold", position_threshold_, position_threshold_);
-        pnh.param("start_writing_", start_writing_, start_writing_);
         pnh.param("command_timeout", command_timeout_, command_timeout_);
         pnh.param("max_read_failures", max_read_failures_, max_read_failures_);
         pnh.param("baudrate", baudrate_, baudrate_);
@@ -527,6 +612,20 @@ private:
             double at_max = dxl_sign_[gi] * (encoder_max_[gi] - dxl_bias_[gi]) * dxl_rad_per_tick_;
             gripper_conversion_.rotational_min = std::min(at_min, at_max);
             gripper_conversion_.rotational_max = std::max(at_min, at_max);
+        }
+
+        loadDoubleArrayParam(pnh, "max_goal_slew_rad_s", max_goal_slew_);
+        if (max_goal_slew_.size() != static_cast<size_t>(num_joints_)) {
+            // Deliberately conservative (the commissioning "reduced speed"
+            // rule): 0.5 rad/s per joint, well above the 0.2 rad/s
+            // trajectories at velocity_scale 0.1, so it only ever catches
+            // steps, not normal tracking at that scale.
+            max_goal_slew_.assign(num_joints_, 0.5);
+        }
+        for (double v : max_goal_slew_) {
+            if (!(v > 0.0)) {
+                throw std::runtime_error("Parameter '~max_goal_slew_rad_s' entries must be > 0");
+            }
         }
 
         positions_.assign(num_joints_, 0);
@@ -609,15 +708,6 @@ private:
             ROS_WARN_THROTTLE(2.0, "E-stop latched: ignoring /joint_states_out commands.");
             return;
         }
-        if (!start_writing_) {
-            ROS_INFO("Received command joint state, enabling torque and starting to write to motors.");
-            // Not enabled here: this runs on a ROS callback thread. The
-            // control loop (readAndPublish) re-seeds the goal registers
-            // from its freshest read, enables torque, and only then sets
-            // start_writing_ -- see seedFromLatestReadAndEnableTorque().
-            int expected = 0;
-            enable_request_.compare_exchange_strong(expected, 1);
-        }
         last_cmd_time_ = ros::Time::now();
 
         // Map incoming positions by name to joint_cmds_
@@ -642,9 +732,12 @@ private:
                     ROS_WARN_THROTTLE(2.0, "Name mapping succeeded but index %zu is out of bounds in position array.", index);
                 }
             } else {
-                ROS_DEBUG_THROTTLE(2.0, "Commanded JointState does not name %s; holding its current position.", target_name.c_str());
+                ROS_DEBUG_THROTTLE(2.0, "Commanded JointState does not name %s; it keeps the goal already written for it.", target_name.c_str());
             }
         }
+        // Signalled only after the joints are stored, so the control loop
+        // never sees the event ahead of its data.
+        command_pending_ = true;
     }
 
 
@@ -691,6 +784,9 @@ private:
                     if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
                         dxl_comm_result = packetHandler_->write4ByteTxRx(
                             portHandler_, dxl_id, addr_goal_position_, present, &dxl_error);
+                        if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0 && goal_written_valid_) {
+                            goal_written_[i] = dxl_sign_[i] * (static_cast<int32_t>(present) - dxl_bias_[i]) * dxl_rad_per_tick_;
+                        }
                     }
                     if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
                         dxl_comm_result = packetHandler_->write1ByteTxRx(
@@ -782,6 +878,8 @@ private:
         return true;
     }
 
+    // Both directions are executed by the control loop (the single owner of
+    // the drive state), and this call waits for the real outcome.
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
         if (estop_.latched()) {
             // Disabling torque would drop the lock (the arm falls); enabling
@@ -790,38 +888,31 @@ private:
             res.message = "E-stop is latched: set_torque refused. Call /arm_interface/estop_reset first.";
             return true;
         }
-        if (req.data) {
-            ROS_INFO("Service called: Enabling torque on all joints...");
-            // Serviced by the control loop (re-seeds goals from a fresh
-            // read before enabling -- see seedFromLatestReadAndEnableTorque),
-            // not done directly here: enabling torque against stale goal
-            // registers is exactly the hazard that function exists for.
-            enable_result_ = 0;
-            int expected = 0;
-            if (!enable_request_.compare_exchange_strong(expected, 2)) {
-                res.success = false;
-                res.message = "A torque-enable request is already pending; try again.";
-                return true;
-            }
-            for (int waited_ms = 0; waited_ms < 1000 && enable_request_.load() != 0; waited_ms += 10) {
-                ros::Duration(0.01).sleep();
-            }
-            if (enable_request_.load() != 0) {
-                int pending = 2;
-                enable_request_.compare_exchange_strong(pending, 0);  // withdraw; control loop never serviced it
-                res.success = false;
-                res.message = "Timed out waiting for the control loop (no successful bulk read?); torque NOT enabled.";
-            } else {
-                res.success = (enable_result_.load() == 1);
-                res.message = res.success
-                                  ? "Goals re-seeded to current position; torque enabled on all joints."
-                                  : "Failed to re-seed goals / enable torque; torque NOT enabled (see node log).";
-            }
+        ROS_INFO("Service called: %s torque on all joints...", req.data ? "enabling" : "DISABLING");
+        torque_result_ = 0;
+        int expected = 0;
+        if (!torque_request_.compare_exchange_strong(expected, req.data ? 1 : 2)) {
+            res.success = false;
+            res.message = "A torque request is already pending; try again.";
+            return true;
+        }
+        for (int waited_ms = 0; waited_ms < 3000 && torque_request_.load() != 0; waited_ms += 10) {
+            ros::Duration(0.01).sleep();
+        }
+        if (torque_request_.load() != 0) {
+            int pending = req.data ? 1 : 2;
+            torque_request_.compare_exchange_strong(pending, 0);  // withdraw; the loop never serviced it
+            res.success = false;
+            res.message = "Timed out waiting for the control loop (no successful bulk read?); torque state unchanged.";
         } else {
-            ROS_INFO("Service called: Disabling torque on all joints...");
-            disableTorque();
-            res.success = true;
-            res.message = "Torque successfully disabled on all joints.";
+            res.success = (torque_result_.load() == 1);
+            if (req.data) {
+                res.message = res.success ? "Goals re-seeded to current position; torque enabled on all joints."
+                                           : "Failed to re-seed goals / enable torque (see node log).";
+            } else {
+                res.message = res.success ? "Torque disabled on all joints: the arm is now limp."
+                                           : "Failed to disable torque (see node log).";
+            }
         }
         return true;
     }
@@ -860,17 +951,25 @@ private:
 
     // Parameters for joint state output
     double position_threshold_ = 0.1*100; // Limit in joint error to trigger a write
-    bool start_writing_ = false; // Flag to control writing to motors
-    // Torque (re-)enable handshake between ROS callback threads and the
-    // control loop: 0 = none, 1 = command arrived while idle, 2 = set_torque(true).
-    // enable_result_: 0 = pending, 1 = enabled, -1 = refused/failed.
-    // Per joint: has a /joint_states_out command named this joint since the
-    // last idle->active transition? Joints never named (the trajectory
-    // executor only commands joint_1..5, never the gripper) must HOLD
-    // their current position, not default to joint_cmds_'s initial 0 rad.
+    // ---- Drive state (policy in drive_state.h; only the control loop
+    // changes drive_state_). Callback threads post to the loop through the
+    // atomics below.
+    arm_interface::DriveState drive_state_ = arm_interface::DriveState::kHolding;
+    bool state_published_ = false;
+    ros::Publisher drive_state_pub_;
+    std::atomic<bool> command_pending_{false};  // a /joint_states_out command arrived
+    std::atomic<int> torque_request_{0};        // 0 none, 1 on, 2 off (set_torque service)
+    std::atomic<int> torque_result_{0};         // 0 pending, 1 ok, -1 refused/failed
+    // Per joint: has a command named this joint since the stream last
+    // started? Joints never named (the executor never names the gripper)
+    // keep the goal already written for them.
     std::vector<char> cmd_seen_;
-    std::atomic<int> enable_request_{0};
-    std::atomic<int> enable_result_{0};
+    // The goal last written to each motor, rotational radians. Every new
+    // write is slew-limited from this (goal_slew.h).
+    std::vector<double> goal_written_;
+    bool goal_written_valid_ = false;
+    ros::Time last_tick_time_;
+    std::vector<double> max_goal_slew_;  // rad/s per joint, from ~max_goal_slew_rad_s
 
     // Watchdog parameters and variables
     double command_timeout_ = 0.1;

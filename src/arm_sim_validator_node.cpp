@@ -11,11 +11,21 @@
  * 
  * Publishes:
  *   - /joint_states_in (sensor_msgs/JointState): simulated current joint positions
+ *   - /arm_interface/estop_state (std_msgs/Bool, latched)
+ *
+ * E-stop: the same interface as the hardware robot_interface so the whole
+ * stack behaves identically in simulation (/arm_interface/estop and
+ * /arm_interface/estop_reset services, /arm_interface/estop_trigger topic).
+ * Latched: commands are ignored and the arm freezes where it is.
  */
 
 #include <ros/ros.h>
 #include <sensor_msgs/JointState.h>
 #include <urdf/model.h>
+#include <std_msgs/Bool.h>
+#include <std_msgs/Empty.h>
+#include <std_srvs/Trigger.h>
+#include "arm_interface/estop.h"
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -74,6 +84,12 @@ public:
         sub_commanded_ = nh.subscribe("/joint_states_out", 10, &ArmSimulatorNode::commandedCb, this);
         pub_simulated_ = nh.advertise<sensor_msgs::JointState>("/joint_states_in", 10);
 
+        estop_srv_ = nh.advertiseService("/arm_interface/estop", &ArmSimulatorNode::handleEStop, this);
+        estop_reset_srv_ = nh.advertiseService("/arm_interface/estop_reset", &ArmSimulatorNode::handleEStopReset, this);
+        estop_trigger_sub_ = nh.subscribe("/arm_interface/estop_trigger", 10, &ArmSimulatorNode::estopTriggerCb, this);
+        estop_state_pub_ = nh.advertise<std_msgs::Bool>("/arm_interface/estop_state", 1, true);
+        publishEStopState();
+
         // Timer for simulation loop
         sim_timer_ = nh.createTimer(ros::Duration(1.0 / publish_rate_),
                                     &ArmSimulatorNode::simulationLoop, this);
@@ -105,11 +121,58 @@ private:
     std::vector<double> max_limits_;
     ros::Time last_update_;
 
+    arm_interface::EStopLatch estop_;
+    ros::ServiceServer estop_srv_;
+    ros::ServiceServer estop_reset_srv_;
+    ros::Subscriber estop_trigger_sub_;
+    ros::Publisher estop_state_pub_;
+
+    void publishEStopState() {
+        std_msgs::Bool msg;
+        msg.data = estop_.latched();
+        estop_state_pub_.publish(msg);
+    }
+
+    bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        if (estop_.Trigger()) {
+            ROS_ERROR("Sim E-STOP TRIGGERED: ignoring commands, arm frozen.");
+            publishEStopState();
+        }
+        for (int waited_ms = 0; waited_ms < 1000 && estop_.HoldPending(); waited_ms += 10) {
+            ros::Duration(0.01).sleep();
+        }
+        res.success = estop_.hold_applied();
+        res.message = res.success ? "E-stop latched: commands ignored, simulated arm frozen."
+                                  : "E-stop latched but the freeze was not confirmed.";
+        return true;
+    }
+
+    void estopTriggerCb(const std_msgs::Empty::ConstPtr&) {
+        if (estop_.Trigger()) {
+            ROS_ERROR("Sim E-STOP TRIGGERED (topic): ignoring commands, arm frozen.");
+            publishEStopState();
+        }
+    }
+
+    bool handleEStopReset(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        if (estop_.Reset()) {
+            ROS_WARN("Sim e-stop released.");
+            publishEStopState();
+        }
+        res.success = true;
+        res.message = "E-stop released (or was not latched).";
+        return true;
+    }
+
     ros::Subscriber sub_commanded_;
     ros::Publisher pub_simulated_;
     ros::Timer sim_timer_;
 
     void commandedCb(const sensor_msgs::JointState::ConstPtr& msg) {
+        if (!estop_.CommandsAllowed()) {
+            ROS_WARN_THROTTLE(2.0, "Sim e-stop latched: ignoring /joint_states_out commands.");
+            return;
+        }
         // Map incoming positions by name to match internal joint_names_
         for (int i = 0; i < num_joints_; ++i) {
             auto it = std::find(msg->name.begin(), msg->name.end(), joint_names_[i]);
@@ -130,6 +193,14 @@ private:
         double dt = event.current_real.toSec() - last_update_.toSec();
         if (dt > 1.0) dt = 0.02;  // Clamp to reasonable max on first call
         last_update_ = event.current_real;
+
+        if (estop_.latched()) {
+            // Freeze: whatever was commanded is dropped, the arm stays put.
+            commanded_positions_ = current_positions_;
+            estop_.MarkHoldApplied(true);
+            publishSimulatedState();
+            return;
+        }
 
         if (sim_mode_ == "ideal") {
             // Ideal mode: commanded positions instantly become current positions

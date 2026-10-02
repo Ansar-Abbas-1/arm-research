@@ -7,7 +7,6 @@ baudrate: 1000000
 debug: false
 debug_error: false
 threshold: 10.0
-start_writing_: false
 
 addr_torque_enable: 64
 torque_enable: 1
@@ -55,3 +54,11 @@ velocity_unit_rev_per_min_per_lsb: 0.229
 # never actually exercised, but a safety clamp should not default to
 # "unclamped" even so.
 max_velocity_rad_s: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+# Position-mode goal rate limit, rad/s per joint (goal_slew.h). The goal
+# written to a motor never moves faster than this from the goal last written,
+# which removes steps/jumps on resume-from-hold and torque re-enable, and is
+# also a hard speed cap on whatever a sender commands (commissioning rule:
+# reduced speed). 0.5 sits above the 0.2 rad/s trajectories at
+# velocity_scale 0.1; raise it together with velocity_scale.
+max_goal_slew_rad_s: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]

@@ -22,6 +22,7 @@
 // handling in readAndPublish() below).
 #include <ros/ros.h>
 #include <std_msgs/Int32.h>
+#include <std_msgs/Bool.h>
 #include <sensor_msgs/JointState.h>
 #include <dynamixel_sdk/dynamixel_sdk.h>
 #include <algorithm>
@@ -71,6 +72,15 @@ public:
         // intended "lock all motors in place" behavior -- see
         // handleEStop()'s own comment and docs/sim_to_real.md.
         estop_srv_ = nh_.advertiseService("/arm_interface/estop", &DynamixelVelocityInterface::handleEStop, this);
+        // Command senders require an e-stop state from the backend; this node
+        // can never latch one (its e-stop is the stub), so it publishes
+        // "released" and the stub service reports honestly that it cannot lock.
+        estop_state_pub_ = nh_.advertise<std_msgs::Bool>("/arm_interface/estop_state", 1, true);
+        {
+            std_msgs::Bool released;
+            released.data = false;
+            estop_state_pub_.publish(released);
+        }
 
         if (!portHandler_->openPort()) {
             ROS_ERROR("Failed to open port!");
@@ -568,6 +578,7 @@ private:
     ros::ServiceServer reenable_srv_;
     ros::ServiceServer set_torque_srv_;
     ros::ServiceServer estop_srv_;
+    ros::Publisher estop_state_pub_;
     dynamixel::PortHandler *portHandler_;
     dynamixel::PacketHandler *packetHandler_;
     dynamixel::GroupBulkRead bulkRead_;
