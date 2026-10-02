@@ -95,9 +95,17 @@ def main():
     if client.get_state() not in (3,):  # actionlib SUCCEEDED
         rospy.logwarn("Not finished/succeeded -- cancelling the goal.")
         client.cancel_all_goals()
-    after = rospy.wait_for_message("/joint_states_in", JointState, timeout=5.0)
-    final = dict(zip(after.name, after.position))
-    print("final error per joint (rad):", ["%+.3f" % (final[j] - g) for j, g in zip(JOINTS, args.goal)])
+    # Error right at the end of the action, then again 0.3 s later (still
+    # inside the 0.5 s watchdog window): if the second is smaller, the arm
+    # was still settling; if equal, it is a steady-state offset (gravity
+    # load / motor compliance in position mode).
+    def error_now():
+        msg = rospy.wait_for_message("/joint_states_in", JointState, timeout=5.0)
+        cur = dict(zip(msg.name, msg.position))
+        return ["%+.3f" % (cur[j] - g) for j, g in zip(JOINTS, args.goal)]
+    print("final error per joint (rad), at end of move:", error_now())
+    rospy.sleep(0.3)
+    print("final error per joint (rad), 0.3 s later:   ", error_now())
 
 
 if __name__ == "__main__":
