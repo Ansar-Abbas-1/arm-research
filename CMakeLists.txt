@@ -235,5 +235,5 @@ target_link_libraries(replay_bag ${catkin_LIBRARIES})
 catkin_add_gtest(${PROJECT_NAME}-test-watchdog test/test_watchdog.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-gripper-conversion test/test_gripper_conversion.cpp)
 
-## Add folders to be run by python nosetests
-# catkin_add_nosetests(test)
+## Python tests (URDF vs. hardware encoder limits)
+catkin_add_nosetests(test/test_limits_consistent.py)

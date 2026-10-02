@@ -23,13 +23,18 @@
         </inertial>
     </link>
 
-    <!-- Joint 1: Rotates around z axis -->
+    <!-- Joint 1: Rotates around z axis. Upper limit is 2.736, not the
+         symmetric 2.745: config/ArmInterface.yaml's encoder_max for this
+         motor (3584 ticks, bias 1800) is 2.7367 rad, and robot_interface
+         clamps commands to that, so a larger URDF limit lets IK and
+         trajectory generation plan poses the hardware would silently clip.
+         test/test_limits_consistent.py enforces URDF within hardware. -->
     <joint name="joint_1" type="revolute">
         <parent link="base_link"/>
         <child link="link_1"/>
         <origin xyz="0 0 0.03" rpy="0 0 0"/>
         <axis xyz="0 0 1"/>
-        <limit lower="-2.745" upper="2.745" effort="10" velocity="2"/>
+        <limit lower="-2.745" upper="2.736" effort="10" velocity="2"/>
     </joint>
 
     <!-- Link 1: Vertical cylinder -->
