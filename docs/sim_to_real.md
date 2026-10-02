@@ -101,3 +101,9 @@ Exercised in simulation only so far: out-of-limits and too-large refusals, decli
 **First Stage 3 hardware move (2026-10-02)**: `--goal 0.15 0.25 -0.25 0.25 -0.25` from `[-0.095, 0.003, -0.158, -0.014, 0.018]`, 2.52 s, peak 0.2 rad/s. Smooth. Final errors `[-0.024, -0.003, +0.043, +0.009, +0.021]` rad (joint_3 covered ~53% of its small 0.09 rad move; the others 90-103%). The script now also samples the error 0.3 s after the move ends to separate settling from steady-state offset (gravity load / position-mode compliance); not yet measured on hardware.
 
 **Gripper hold verified live (2026-10-02)**: during the Stage 3 joint-space move, which names only joint_1..5, the gripper stayed put (`cmd_seen_` hold logic in `robot_interface.cpp`).
+
+## 13. Stage 3 Cartesian tooling: `scripts/stage3_cartesian_reach.py` (2026-10-02)
+
+First Cartesian reach on hardware: target = the live end-effector pose (from the read-only `fk_node`, `rosrun arm_kinematics fk_node`) plus a small `--offset` (default 3 cm up, refused above 10 cm) with the same orientation. It requests a Cartesian-path trajectory (position+pitch IK, base-box collision checks in the generator), prints the plan, refuses on generation failure / any joint over `--max-delta` (0.4 rad) / path deviation over `--max-deviation` (5 mm) / end joints outside the URDF limits, and sends nothing without a typed `yes`. Afterwards it prints the EE error at the end of the move and 0.3 s later.
+
+Sim-tested on an isolated master (declined gate, 20 cm refusal, confirmed run: 0.8 mm EE error). Hardware defaults in `interactive_reach.launch`: `velocity_scale` 0.1 and `nullspace_gain` 0 (see `arm_trajectory/docs/trajectory_generation.md` Finding 7 for why the bias is off).
