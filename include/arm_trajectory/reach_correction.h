@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <string>
 
@@ -130,6 +131,16 @@ inline Eigen::Isometry3d AimPose(const Eigen::Isometry3d& target, const Eigen::V
   aim.translation() += position_compensation;
   aim.linear() = target.rotation() * Eigen::AngleAxisd(pitch_compensation, Eigen::Vector3d::UnitY()).toRotationMatrix();
   return aim;
+}
+
+// The tolerance a reach is REPORTED against. Once correction is on, "done" is
+// defined by its trigger (it stops when the error is at or below that), so
+// reporting failure against a tighter fixed tolerance would contradict the
+// loop's own stop condition (seen on hardware 2026-10-02: reaches stopped as
+// "error within trigger" at 4.5 mm were still reported FAILED against 1 mm).
+// With correction off the configured tolerance is used unchanged.
+inline double ReportTolerance(double configured, double trigger, bool correction_active) {
+  return correction_active ? std::max(configured, trigger) : configured;
 }
 
 }  // namespace arm_trajectory

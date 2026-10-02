@@ -179,6 +179,15 @@ TEST(PitchCorrection, CapAndSaturationAndBudget) {
   EXPECT_FALSE(NextPitchCorrection(0.07, 0.0, On(), 3).apply);
 }
 
+TEST(ReportTolerance, CorrectionOnUsesAtLeastTheTrigger) {
+  EXPECT_DOUBLE_EQ(arm_trajectory::ReportTolerance(0.001, 0.006, true), 0.006);
+  EXPECT_DOUBLE_EQ(arm_trajectory::ReportTolerance(0.010, 0.006, true), 0.010);  // looser configured value wins
+}
+
+TEST(ReportTolerance, CorrectionOffLeavesTheConfiguredToleranceAlone) {
+  EXPECT_DOUBLE_EQ(arm_trajectory::ReportTolerance(0.001, 0.006, false), 0.001);
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

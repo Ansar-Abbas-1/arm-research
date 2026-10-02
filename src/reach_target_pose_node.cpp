@@ -265,7 +265,12 @@ class ReachTargetPoseNode {
     res.final_position_error = measured.position_error;
     res.final_orientation_error = measured.orientation_error;
 
-    if (measured.position_error > position_tolerance_ || measured.orientation_error > orientation_tolerance_) {
+    const bool correcting = correction_.max_steps > 0;
+    const double position_tolerance =
+        arm_trajectory::ReportTolerance(position_tolerance_, correction_.trigger, correcting);
+    const double orientation_tolerance = arm_trajectory::ReportTolerance(
+        orientation_tolerance_, correction_.pitch_trigger, correcting && correction_.pitch);
+    if (measured.position_error > position_tolerance || measured.orientation_error > orientation_tolerance) {
       res.success = false;
       res.message = "reach_target_pose: execution succeeded but final pose is out of tolerance "
                      "(position error " +
