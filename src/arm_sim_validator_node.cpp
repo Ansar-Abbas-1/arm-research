@@ -133,25 +133,27 @@ private:
         estop_state_pub_.publish(msg);
     }
 
-    bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+    // The simulated freeze is instantaneous, so it is applied right here
+    // (this node spins single-threaded: a handler that waited for the timer
+    // to confirm would block that very timer). The loop keeps enforcing it.
+    void latchAndFreeze(const char* via) {
         if (estop_.Trigger()) {
-            ROS_ERROR("Sim E-STOP TRIGGERED: ignoring commands, arm frozen.");
-            publishEStopState();
+            ROS_ERROR("Sim E-STOP TRIGGERED (%s): ignoring commands, arm frozen.", via);
         }
-        for (int waited_ms = 0; waited_ms < 1000 && estop_.HoldPending(); waited_ms += 10) {
-            ros::Duration(0.01).sleep();
-        }
+        commanded_positions_ = current_positions_;
+        estop_.MarkHoldApplied(true);
+        publishEStopState();
+    }
+
+    bool handleEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        latchAndFreeze("service");
         res.success = estop_.hold_applied();
-        res.message = res.success ? "E-stop latched: commands ignored, simulated arm frozen."
-                                  : "E-stop latched but the freeze was not confirmed.";
+        res.message = "E-stop latched: commands ignored, simulated arm frozen.";
         return true;
     }
 
     void estopTriggerCb(const std_msgs::Empty::ConstPtr&) {
-        if (estop_.Trigger()) {
-            ROS_ERROR("Sim E-STOP TRIGGERED (topic): ignoring commands, arm frozen.");
-            publishEStopState();
-        }
+        latchAndFreeze("topic");
     }
 
     bool handleEStopReset(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {

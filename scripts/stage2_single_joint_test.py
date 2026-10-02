@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Stage 2 manual test (ROADMAP M5): commands ONE joint a small delta from
 its current position, holding every other joint exactly where it already
-is, then stops publishing so robot_interface's own watchdog
-(command_timeout, default 0.5s) disables torque automatically shortly
-after -- this script relies on that existing safety mechanism rather than
-re-implementing a stop condition itself.
+is, then stops publishing. robot_interface treats the end of the stream
+as "hold" (since 2026-10-02: torque stays on, last goal held); it no longer
+drops torque after command_timeout. Release with
+`rosservice call /arm_interface/set_torque "data: false"`.
 
 SAFETY-CRITICAL DETAIL, not optional: robot_interface.cpp initializes its
 internal commanded-position array to all-zero RADIANS at startup, not
@@ -26,6 +26,7 @@ import sys
 
 import rospy
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Bool
 
 JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
@@ -44,6 +45,18 @@ def main():
     args = parser.parse_args(rospy.myargv()[1:])
 
     rospy.init_node("stage2_single_joint_test", anonymous=True)
+
+    # This script publishes straight to /joint_states_out, bypassing the
+    # trajectory executor (the e-stop choke point for trajectories), so it
+    # checks the state itself: fail-closed on engaged OR unknown.
+    try:
+        engaged = rospy.wait_for_message("/arm_interface/estop_state", Bool, timeout=3.0).data
+    except rospy.ROSException:
+        rospy.logfatal("No /arm_interface/estop_state -- backend not running or old build; refusing to move. Nothing published.")
+        sys.exit(1)
+    if engaged:
+        rospy.logfatal("E-stop is engaged -- reset it first. Nothing published.")
+        sys.exit(1)
 
     rospy.loginfo("Waiting for one /joint_states_in message...")
     current = rospy.wait_for_message("/joint_states_in", JointState, timeout=5.0)
@@ -75,7 +88,7 @@ def main():
         pub.publish(msg)
         rate.sleep()
 
-    rospy.loginfo("Stopped publishing. robot_interface's command_timeout watchdog will disable torque shortly.")
+    rospy.loginfo("Stopped publishing. robot_interface now HOLDS this pose with torque on (set_torque false to release).")
 
 
 if __name__ == "__main__":

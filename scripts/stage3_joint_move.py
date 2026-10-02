@@ -13,8 +13,9 @@ URDF limits (the joint-space service does NOT check this itself;
 robot_interface would silently clip to encoder bounds instead), or any
 joint would move more than --max-delta radians.
 
-SAFETY: robot_interface's command-timeout watchdog disables torque ~0.5 s
-after the last command, so the arm LOSES HOLDING TORQUE right after the
+SAFETY: since the 2026-10-02 hold restructure, robot_interface keeps torque
+ON and holds the last goal when the command stream ends (it no longer drops
+torque after ~0.5 s). The arm stays rigid after the
 move ends. Support it, or stand clear of where it would fall.
 
 Usage (run by the user):
@@ -78,7 +79,7 @@ def main():
     for i, j in enumerate(JOINTS):
         print("  %s  %7.3f  %7.3f  %+7.3f   %.3f" % (j, start[i], args.goal[i], deltas[i], peak[i]))
     print("  duration %.2f s, %d samples. joint_6 (gripper) will hold its current position." % (duration, len(traj.points)))
-    print("  Torque drops ~0.5 s after the move ends -- arm supported / clear?")
+    print("  The arm HOLDS its final pose with torque on after the move (e-stop: /arm_interface/estop) -- clear?")
     if input("Type 'yes' to execute on the real arm: ").strip() != "yes":
         print("Aborted, nothing sent.")
         return

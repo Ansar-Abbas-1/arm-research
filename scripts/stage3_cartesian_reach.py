@@ -26,8 +26,8 @@ joint-space pivot phase is NOT collision-checked by the generator; the
 straight joint line from upright to PIVOT_Q was checked offline against the
 base box (0 of 401 samples colliding).
 
-SAFETY: robot_interface's watchdog disables torque ~0.5 s after the last
-command, so the arm LOSES HOLDING TORQUE right after the move. Support it,
+SAFETY: since the 2026-10-02 hold restructure, robot_interface keeps torque
+ON and holds the final pose after the move (no ~0.5 s drop). Keep clear of it,
 or stand clear of where it would fall.
 
 Usage (run by the user):
@@ -165,7 +165,7 @@ def main():
             p.time_from_start = p.time_from_start + offset_t
             merged.points.append(p)
     duration = merged.points[-1].time_from_start.to_sec()
-    print("  Total %.2f s, %d samples. Torque drops ~0.5 s after the move ends -- arm supported / clear?" % (
+    print("  Total %.2f s, %d samples. The arm then HOLDS its final pose with torque on -- clear?" % (
         duration, len(merged.points)))
     if input("Type 'yes' to execute on the real arm: ").strip() != "yes":
         print("Aborted, nothing sent.")

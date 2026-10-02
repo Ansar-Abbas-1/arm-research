@@ -314,6 +314,12 @@ private:
                     ROS_ERROR("Max consecutive bulk read failures reached (%d). Bus fault: disabling torque.", consecutive_read_failures_);
                     disableTorque();
                 }
+                // A latched e-stop outlives the fault: its hold is no longer
+                // in effect (torque is off), so mark it pending again and it
+                // re-applies by itself as soon as reads work.
+                if (estop_.latched()) {
+                    estop_.MarkHoldApplied(false);
+                }
                 setDriveState(t.next);
                 return;
             }
