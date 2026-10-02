@@ -39,6 +39,17 @@
        True), so this tests truthiness, not the string 'true'. -->
   <arg name="velocity_scale"
        default="$(eval 0.1 if arg('use_hardware') else 1.0)"/>
+  <!-- Steady-state correction for reach_target_pose_node, OFF by default.
+       correction_steps:=N (N > 0) makes the node re-aim up to N times after
+       a reach, adding the measured end-effector error to a running
+       compensation (see include/arm_trajectory/reach_correction.h).
+       correction_trigger: error (m) at or below which it stops.
+       correction_max_total: cap (m) on the total compensation.
+       correction_gain: fraction of the remaining error added per step. -->
+  <arg name="correction_steps" default="0"/>
+  <arg name="correction_trigger" default="0.002"/>
+  <arg name="correction_max_total" default="0.03"/>
+  <arg name="correction_gain" default="1.0"/>
   <arg name="nullspace_tip_link" default="link_4"/>
   <!-- nullspace_gain: defaults to 0 (bias off) on hardware. The bias is a
        per-sample STEP, not a rate: at a low velocity_scale the duration
@@ -77,7 +88,12 @@
     <param name="velocity_scale" value="$(arg velocity_scale)" />
   </node>
   <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
-  <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node" />
+  <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node">
+    <param name="correction_steps" value="$(arg correction_steps)" />
+    <param name="correction_trigger" value="$(arg correction_trigger)" />
+    <param name="correction_max_total" value="$(arg correction_max_total)" />
+    <param name="correction_gain" value="$(arg correction_gain)" />
+  </node>
   <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
 
   <group if="$(arg use_rviz)">

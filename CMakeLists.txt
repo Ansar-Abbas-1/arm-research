@@ -104,6 +104,11 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(${PROJECT_NAME}-test-joint-space-trajectory arm_trajectory ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
+  catkin_add_gtest(${PROJECT_NAME}-test-reach-correction test/test_reach_correction.cpp)
+  if(TARGET ${PROJECT_NAME}-test-reach-correction)
+    target_link_libraries(${PROJECT_NAME}-test-reach-correction ${catkin_LIBRARIES})
+  endif()
+
   catkin_add_gtest(${PROJECT_NAME}-test-cartesian-trajectory test/test_cartesian_trajectory.cpp)
   if(TARGET ${PROJECT_NAME}-test-cartesian-trajectory)
     target_link_libraries(${PROJECT_NAME}-test-cartesian-trajectory arm_trajectory ${catkin_LIBRARIES} ${roslib_LIBRARIES})

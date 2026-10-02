@@ -14,6 +14,7 @@
 
 #include "arm_trajectory/GenerateTrajectory.h"
 #include "arm_trajectory/ReachTargetPose.h"
+#include "arm_trajectory/reach_correction.h"
 
 // Non-interactive "go to this pose" entry point -- the M4-teleop-free
 // replacement for this branch's milestone. Deliberately thin: no new
@@ -58,6 +59,17 @@ class ReachTargetPoseNode {
     // the graph, not expected to fire in normal operation.
     pnh.param("execution_timeout_margin", execution_timeout_margin_, 10.0);
 
+    // Optional steady-state correction, OFF by default (correction_steps
+    // = 0): see reach_correction.h for why it exists and how it behaves.
+    pnh.param("correction_steps", correction_.max_steps, 0);
+    pnh.param("correction_trigger", correction_.trigger, correction_.trigger);
+    pnh.param("correction_max_total", correction_.max_total, correction_.max_total);
+    pnh.param("correction_gain", correction_.gain, correction_.gain);
+    // Wait before measuring when correcting, so the reading is the settled
+    // pose. Kept short: robot_interface's watchdog drops torque 0.5 s after
+    // the last command, and a correction should start before that.
+    pnh.param("correction_settle", correction_settle_, 0.05);
+
     urdf::Model model;
     if (!model.initParam("robot_description")) {
       throw std::runtime_error("reach_target_pose_node: failed to load URDF from 'robot_description'");
@@ -72,7 +84,10 @@ class ReachTargetPoseNode {
     ROS_INFO("reach_target_pose_node: waiting for /generate_trajectory and follow_joint_trajectory ...");
     generate_client_.waitForExistence();
     action_client_.waitForServer();
-    ROS_INFO_STREAM("reach_target_pose_node: ready, " << root_link << " -> " << tip_link);
+    ROS_INFO_STREAM("reach_target_pose_node: ready, " << root_link << " -> " << tip_link
+                    << (correction_.max_steps > 0
+                            ? ", steady-state correction ON (" + std::to_string(correction_.max_steps) + " steps)"
+                            : ""));
   }
 
  private:
@@ -95,32 +110,37 @@ class ReachTargetPoseNode {
     return true;
   }
 
-  bool ReachCb(arm_trajectory::ReachTargetPose::Request& req,
-               arm_trajectory::ReachTargetPose::Response& res) {
+  // Generates a trajectory to `pose` from the LIVE joint state and runs it
+  // to completion. On any failure fills *error and returns false.
+  bool GenerateAndExecute(const geometry_msgs::Pose& pose, bool cartesian_path, double sample_rate,
+                          std::string* error) {
     arm_trajectory::GenerateTrajectory generate;
-    generate.request.goal_pose = req.target_pose;
-    generate.request.cartesian_path = req.cartesian_path;
-    generate.request.sample_rate = req.sample_rate;
+    generate.request.goal_pose = pose;
+    generate.request.cartesian_path = cartesian_path;
+    generate.request.sample_rate = sample_rate;
 
     if (!generate_client_.call(generate)) {
-      res.success = false;
-      res.message = "reach_target_pose: /generate_trajectory call failed (service unavailable?)";
-      return true;
+      *error = "reach_target_pose: /generate_trajectory call failed (service unavailable?)";
+      return false;
     }
     if (!generate.response.success) {
-      res.success = false;
-      res.message = "reach_target_pose: trajectory generation failed: " + generate.response.message;
-      return true;
+      *error = "reach_target_pose: trajectory generation failed: " + generate.response.message;
+      return false;
     }
     if (generate.response.trajectory.points.empty()) {
-      res.success = false;
-      res.message = "reach_target_pose: generated trajectory has no points";
-      return true;
+      *error = "reach_target_pose: generated trajectory has no points";
+      return false;
     }
 
     control_msgs::FollowJointTrajectoryGoal goal;
     goal.trajectory = generate.response.trajectory;
     goal.trajectory.header.stamp = ros::Time::now();
+    if (!last_exec_end_.isZero() && correction_.max_steps > 0) {
+      // robot_interface drops torque 0.5 s after the last command; a
+      // correction that starts later begins from a sagged pose.
+      ROS_INFO("reach_target_pose: %.3f s since the previous trajectory ended (torque watchdog 0.5 s)",
+               (ros::Time::now() - last_exec_end_).toSec());
+    }
     action_client_.sendGoal(goal);
 
     double planned_duration = goal.trajectory.points.back().time_from_start.toSec();
@@ -128,55 +148,123 @@ class ReachTargetPoseNode {
         ros::Duration(planned_duration + execution_timeout_margin_));
     if (!finished) {
       action_client_.cancelGoal();
-      res.success = false;
-      res.message = "reach_target_pose: execution did not finish within " +
-                     std::to_string(planned_duration + execution_timeout_margin_) + "s, cancelled";
-      return true;
+      *error = "reach_target_pose: execution did not finish within " +
+               std::to_string(planned_duration + execution_timeout_margin_) + "s, cancelled";
+      return false;
     }
+    last_exec_end_ = ros::Time::now();
     if (action_client_.getState() != actionlib::SimpleClientGoalState::SUCCEEDED) {
+      *error = "reach_target_pose: execution did not succeed: " + action_client_.getState().toString() + " (" +
+               action_client_.getState().getText() + ")";
+      return false;
+    }
+    return true;
+  }
+
+  struct Measured {
+    Eigen::Isometry3d pose;
+    double position_error;
+    double orientation_error;
+  };
+
+  // FK of the latest joint state vs `target_pose`. Orientation error is the
+  // PITCH-axis-projected rotation error only, same convention as
+  // PositionPitchIkSolver's own e_pitch (roll/yaw are free, never checked).
+  bool Measure(const Eigen::Isometry3d& target_pose, Measured* out) {
+    std::vector<double> final_q;
+    if (!LatestJointPositions(&final_q)) {
+      return false;
+    }
+    out->pose = fk_solver_->ComputePose(final_q);
+    out->position_error = (out->pose.translation() - target_pose.translation()).norm();
+    Eigen::Vector3d pitch_axis = out->pose.rotation() * Eigen::Vector3d::UnitY();
+    Eigen::AngleAxisd rotation_diff(target_pose.rotation() * out->pose.rotation().transpose());
+    Eigen::Vector3d rotation_error = rotation_diff.angle() * rotation_diff.axis();
+    out->orientation_error = std::fabs(pitch_axis.dot(rotation_error));
+    return true;
+  }
+
+  bool ReachCb(arm_trajectory::ReachTargetPose::Request& req,
+               arm_trajectory::ReachTargetPose::Response& res) {
+    std::string error;
+    if (!GenerateAndExecute(req.target_pose, req.cartesian_path, req.sample_rate, &error)) {
       res.success = false;
-      res.message = "reach_target_pose: execution did not succeed: " +
-                     action_client_.getState().toString() + " (" +
-                     action_client_.getState().getText() + ")";
+      res.message = error;
       return true;
     }
 
-    std::vector<double> final_q;
-    if (!LatestJointPositions(&final_q)) {
+    Eigen::Isometry3d target_pose;
+    tf2::fromMsg(req.target_pose, target_pose);
+
+    if (correction_.max_steps > 0) {
+      ros::Duration(correction_settle_).sleep();
+    }
+    Measured measured;
+    if (!Measure(target_pose, &measured)) {
       res.success = false;
       res.message = "reach_target_pose: execution finished but no /joint_states_in received yet, "
                      "cannot verify final pose";
       return true;
     }
 
-    Eigen::Isometry3d final_pose = fk_solver_->ComputePose(final_q);
-    Eigen::Isometry3d target_pose;
-    tf2::fromMsg(req.target_pose, target_pose);
+    // Optional steady-state correction (off unless ~correction_steps > 0).
+    // Always verified against the ORIGINAL target, never the compensated
+    // aim point. Any failure just stops correcting; what is reported is
+    // always the arm's real, re-measured final state.
+    int steps_done = 0;
+    Eigen::Vector3d compensation = Eigen::Vector3d::Zero();
+    std::string correction_note;
+    while (true) {
+      arm_trajectory::CorrectionDecision d = arm_trajectory::NextCorrection(
+          target_pose.translation(), measured.pose.translation(), compensation, correction_, steps_done);
+      if (!d.apply) {
+        if (correction_.max_steps > 0) {
+          correction_note = " (correction stopped: " + d.reason + ")";
+        }
+        break;
+      }
+      geometry_msgs::Pose aim = req.target_pose;
+      aim.position.x += d.compensation.x();
+      aim.position.y += d.compensation.y();
+      aim.position.z += d.compensation.z();
+      ROS_INFO("reach_target_pose: correction %d/%d, error %.4f m, total compensation (%.4f, %.4f, %.4f) m",
+               steps_done + 1, correction_.max_steps, measured.position_error, d.compensation.x(),
+               d.compensation.y(), d.compensation.z());
+      bool executed = GenerateAndExecute(aim, req.cartesian_path, req.sample_rate, &error);
+      ros::Duration(correction_settle_).sleep();
+      if (executed) {
+        ++steps_done;
+        compensation = d.compensation;
+      } else {
+        correction_note = " (correction step failed and stopped: " + error + ")";
+      }
+      Measured again;
+      if (!Measure(target_pose, &again)) {
+        break;
+      }
+      measured = again;
+      if (!executed) {
+        break;
+      }
+    }
+    if (steps_done > 0) {
+      correction_note = " after " + std::to_string(steps_done) + " correction step(s)" + correction_note;
+    }
 
-    double position_error = (final_pose.translation() - target_pose.translation()).norm();
-    // Pitch-axis-projected rotation error only, same convention as
-    // PositionPitchIkSolver's own e_pitch (see class comment above): the
-    // achieved pose's own local Y axis, dotted with the full angle-axis
-    // rotation error. Roll/yaw are free and never checked here.
-    Eigen::Vector3d pitch_axis = final_pose.rotation() * Eigen::Vector3d::UnitY();
-    Eigen::AngleAxisd rotation_diff(target_pose.rotation() * final_pose.rotation().transpose());
-    Eigen::Vector3d rotation_error = rotation_diff.angle() * rotation_diff.axis();
-    double orientation_error = std::fabs(pitch_axis.dot(rotation_error));
+    res.final_position_error = measured.position_error;
+    res.final_orientation_error = measured.orientation_error;
 
-    res.final_position_error = position_error;
-    res.final_orientation_error = orientation_error;
-
-    if (position_error > position_tolerance_ || orientation_error > orientation_tolerance_) {
+    if (measured.position_error > position_tolerance_ || measured.orientation_error > orientation_tolerance_) {
       res.success = false;
       res.message = "reach_target_pose: execution succeeded but final pose is out of tolerance "
                      "(position error " +
-                     std::to_string(position_error) + " m, orientation error " +
-                     std::to_string(orientation_error) + " rad)";
+                     std::to_string(measured.position_error) + " m, orientation error " +
+                     std::to_string(measured.orientation_error) + " rad)" + correction_note;
       return true;
     }
 
     res.success = true;
-    res.message = "reached target pose";
+    res.message = "reached target pose" + correction_note;
     return true;
   }
 
@@ -191,6 +279,9 @@ class ReachTargetPoseNode {
   double position_tolerance_;
   double orientation_tolerance_;
   double execution_timeout_margin_;
+  arm_trajectory::ReachCorrectionOptions correction_;
+  double correction_settle_ = 0.05;
+  ros::Time last_exec_end_;  // when the previous trajectory finished (zero = none yet)
 
   std::mutex joint_state_mutex_;
   std::vector<double> latest_joint_positions_;
