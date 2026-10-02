@@ -7,12 +7,27 @@ using arm_trajectory::ReachCorrectionOptions;
 using Vec = Eigen::Vector3d;
 
 namespace {
+// Explicit values (not the defaults) so these tests do not move when the
+// tuned defaults do; the defaults are pinned separately below.
 ReachCorrectionOptions On() {
   ReachCorrectionOptions o;
   o.max_steps = 3;
+  o.trigger = 0.002;
+  o.max_total = 0.03;
   return o;
 }
 }  // namespace
+
+TEST(ReachCorrection, TunedDefaultsFromHardwareAB) {
+  ReachCorrectionOptions o;
+  EXPECT_EQ(o.max_steps, 0);          // feature stays off unless enabled
+  EXPECT_DOUBLE_EQ(o.trigger, 0.006);
+  EXPECT_DOUBLE_EQ(o.max_total, 0.06);
+  // A 4 mm error is inside the noise floor: no correction at the defaults.
+  o.max_steps = 2;
+  EXPECT_FALSE(NextCorrection(Vec(0, 0, 0), Vec(0, 0, -0.004), Vec::Zero(), o, 0).apply);
+  EXPECT_TRUE(NextCorrection(Vec(0, 0, 0), Vec(0, 0, -0.012), Vec::Zero(), o, 0).apply);
+}
 
 TEST(ReachCorrection, OffByDefault) {
   auto d = NextCorrection(Vec(0, 0, 0), Vec(0.02, 0, 0), Vec::Zero(), ReachCorrectionOptions{}, 0);

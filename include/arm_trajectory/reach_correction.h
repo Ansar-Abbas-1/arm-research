@@ -22,8 +22,12 @@ namespace arm_trajectory {
 // oscillating around a fixed overshoot.
 struct ReachCorrectionOptions {
   int max_steps = 0;          // 0 = correction off
-  double trigger = 0.002;     // m: error at or below this needs no correction
-  double max_total = 0.03;    // m: cap on the accumulated compensation magnitude
+  // trigger/max_total set from the 2026-10-02 hardware A/B (see
+  // docs/trajectory_generation.md Finding 8): the arm's repeatability under
+  // load is ~5-6 mm, so correcting below ~6 mm chases noise, and initial
+  // errors reached 39 mm so a 30 mm cap bound in 3 of 4 runs.
+  double trigger = 0.006;     // m: error at or below this needs no correction
+  double max_total = 0.06;    // m: cap on the accumulated compensation magnitude
   double gain = 1.0;          // fraction of the remaining error added per step, (0, 1]
   // Pitch compensation (the same integral scheme on the one orientation
   // component this arm controls; roll and yaw are free, never corrected).
