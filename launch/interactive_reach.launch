@@ -50,6 +50,12 @@
   <arg name="correction_trigger" default="0.002"/>
   <arg name="correction_max_total" default="0.03"/>
   <arg name="correction_gain" default="1.0"/>
+  <!-- correction_pitch: also compensate the pitch error (rad, rotation about
+       the end effector's own Y axis) the same way; on whenever correction is
+       on. correction_pitch_trigger / correction_pitch_max_total in rad. -->
+  <arg name="correction_pitch" default="true"/>
+  <arg name="correction_pitch_trigger" default="0.01"/>
+  <arg name="correction_pitch_max_total" default="0.2"/>
   <arg name="nullspace_tip_link" default="link_4"/>
   <!-- nullspace_gain: defaults to 0 (bias off) on hardware. The bias is a
        per-sample STEP, not a rate: at a low velocity_scale the duration
@@ -93,6 +99,9 @@
     <param name="correction_trigger" value="$(arg correction_trigger)" />
     <param name="correction_max_total" value="$(arg correction_max_total)" />
     <param name="correction_gain" value="$(arg correction_gain)" />
+    <param name="correction_pitch" value="$(arg correction_pitch)" />
+    <param name="correction_pitch_trigger" value="$(arg correction_pitch_trigger)" />
+    <param name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)" />
   </node>
   <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
 

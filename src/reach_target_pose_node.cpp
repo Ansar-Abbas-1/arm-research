@@ -65,6 +65,12 @@ class ReachTargetPoseNode {
     pnh.param("correction_trigger", correction_.trigger, correction_.trigger);
     pnh.param("correction_max_total", correction_.max_total, correction_.max_total);
     pnh.param("correction_gain", correction_.gain, correction_.gain);
+    // Pitch compensation (the position scheme applied to the one orientation
+    // component the arm controls): active whenever correction is on, unless
+    // switched off here.
+    pnh.param("correction_pitch", correction_.pitch, correction_.pitch);
+    pnh.param("correction_pitch_trigger", correction_.pitch_trigger, correction_.pitch_trigger);
+    pnh.param("correction_pitch_max_total", correction_.pitch_max_total, correction_.pitch_max_total);
     // Wait before measuring when correcting, so the reading is the settled
     // pose. Kept short: robot_interface's watchdog drops torque 0.5 s after
     // the last command, and a correction should start before that.
@@ -164,7 +170,8 @@ class ReachTargetPoseNode {
   struct Measured {
     Eigen::Isometry3d pose;
     double position_error;
-    double orientation_error;
+    double orientation_error;  // |pitch error|
+    double pitch_error;        // signed, see arm_trajectory::PitchError
   };
 
   // FK of the latest joint state vs `target_pose`. Orientation error is the
@@ -177,10 +184,8 @@ class ReachTargetPoseNode {
     }
     out->pose = fk_solver_->ComputePose(final_q);
     out->position_error = (out->pose.translation() - target_pose.translation()).norm();
-    Eigen::Vector3d pitch_axis = out->pose.rotation() * Eigen::Vector3d::UnitY();
-    Eigen::AngleAxisd rotation_diff(target_pose.rotation() * out->pose.rotation().transpose());
-    Eigen::Vector3d rotation_error = rotation_diff.angle() * rotation_diff.axis();
-    out->orientation_error = std::fabs(pitch_axis.dot(rotation_error));
+    out->pitch_error = arm_trajectory::PitchError(target_pose.rotation(), out->pose.rotation());
+    out->orientation_error = std::fabs(out->pitch_error);
     return true;
   }
 
@@ -213,28 +218,34 @@ class ReachTargetPoseNode {
     // always the arm's real, re-measured final state.
     int steps_done = 0;
     Eigen::Vector3d compensation = Eigen::Vector3d::Zero();
+    double pitch_compensation = 0.0;
     std::string correction_note;
     while (true) {
       arm_trajectory::CorrectionDecision d = arm_trajectory::NextCorrection(
           target_pose.translation(), measured.pose.translation(), compensation, correction_, steps_done);
-      if (!d.apply) {
+      arm_trajectory::PitchDecision dp = arm_trajectory::NextPitchCorrection(
+          measured.pitch_error, pitch_compensation, correction_, steps_done);
+      if (!d.apply && !dp.apply) {
         if (correction_.max_steps > 0) {
-          correction_note = " (correction stopped: " + d.reason + ")";
+          correction_note = " (correction stopped: " + d.reason + "; " + dp.reason + ")";
         }
         break;
       }
-      geometry_msgs::Pose aim = req.target_pose;
-      aim.position.x += d.compensation.x();
-      aim.position.y += d.compensation.y();
-      aim.position.z += d.compensation.z();
-      ROS_INFO("reach_target_pose: correction %d/%d, error %.4f m, total compensation (%.4f, %.4f, %.4f) m",
-               steps_done + 1, correction_.max_steps, measured.position_error, d.compensation.x(),
-               d.compensation.y(), d.compensation.z());
+      // Each component that does not need a step keeps its current compensation.
+      const Eigen::Vector3d next_compensation = d.apply ? d.compensation : compensation;
+      const double next_pitch_compensation = dp.apply ? dp.compensation : pitch_compensation;
+      geometry_msgs::Pose aim =
+          tf2::toMsg(arm_trajectory::AimPose(target_pose, next_compensation, next_pitch_compensation));
+      ROS_INFO("reach_target_pose: correction %d/%d, error %.4f m / pitch %+.4f rad, total compensation "
+               "(%.4f, %.4f, %.4f) m / pitch %+.4f rad",
+               steps_done + 1, correction_.max_steps, measured.position_error, measured.pitch_error,
+               next_compensation.x(), next_compensation.y(), next_compensation.z(), next_pitch_compensation);
       bool executed = GenerateAndExecute(aim, req.cartesian_path, req.sample_rate, &error);
       ros::Duration(correction_settle_).sleep();
       if (executed) {
         ++steps_done;
-        compensation = d.compensation;
+        compensation = next_compensation;
+        pitch_compensation = next_pitch_compensation;
       } else {
         correction_note = " (correction step failed and stopped: " + error + ")";
       }
