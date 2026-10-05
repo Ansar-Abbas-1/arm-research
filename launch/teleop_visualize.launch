@@ -32,6 +32,14 @@
   <arg name="joystick_dev" default="/dev/input/js0"/>
   <arg name="mode_toggle_button" default="6"/>
   <arg name="commit_button" default="7"/>
+  <!-- Speed settings. max_joint_velocity: per-joint cap in rad/s applied as
+       min(URDF limit, cap), 0 = URDF limits. linear_gain: end-effector speed
+       in m/s at full stick. pitch_gain: pitch rate in rad/s at full stick.
+       gripper_rate: gripper speed in rad/s while the button is held. -->
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="linear_gain" default="0.1"/>
+  <arg name="pitch_gain" default="0.5"/>
+  <arg name="gripper_rate" default="0.5"/>
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
@@ -78,6 +86,10 @@
   <node name="teleop_node" pkg="arm_teleop" type="teleop_node" output="screen">
     <param name="mode_toggle_button" type="int" value="$(arg mode_toggle_button)"/>
     <param name="commit_button" type="int" value="$(arg commit_button)"/>
+    <param name="max_joint_velocity" type="double" value="$(arg max_joint_velocity)"/>
+    <param name="linear_gain" type="double" value="$(arg linear_gain)"/>
+    <param name="pitch_gain" type="double" value="$(arg pitch_gain)"/>
+    <param name="gripper_rate" type="double" value="$(arg gripper_rate)"/>
   </node>
 
   <group if="$(arg use_rviz)">
