@@ -4,11 +4,13 @@
 
 #include <gtest/gtest.h>
 
-#include <cmath>
+#include <cmath>\n#include <algorithm>\n#include <stdexcept>
 
 #include "arm_trajectory/quintic_time_scaling.h"
 
+using arm_trajectory::MinDurationForAccelerationLimit;
 using arm_trajectory::MinDurationForVelocityLimit;
+using arm_trajectory::kQuinticPeakAccelerationFraction;
 using arm_trajectory::QuinticAcceleration;
 using arm_trajectory::QuinticPosition;
 using arm_trajectory::QuinticVelocity;
@@ -102,6 +104,34 @@ TEST(MinDurationForVelocityLimitTest, GeneratedMotionRespectsLimitExactly) {
     peak = std::max(peak, delta * QuinticVelocity(tau) / T);
   }
   EXPECT_NEAR(peak, v_max, 1e-3);
+}
+
+TEST(QuinticTimeScaling, PeakAccelerationFractionMatchesNumericMaximum) {
+  double peak = 0.0;
+  for (double tau = 0.0; tau <= 1.0; tau += 1e-5) {
+    peak = std::max(peak, std::fabs(QuinticAcceleration(tau)));
+  }
+  EXPECT_NEAR(peak, kQuinticPeakAccelerationFraction, 1e-4);
+  EXPECT_NEAR(kQuinticPeakAccelerationFraction, 10.0 / std::sqrt(3.0), 1e-12);
+}
+
+TEST(MinDurationForAccelerationLimitTest, GeneratedMotionPeaksExactlyAtLimit) {
+  double delta = 0.3;
+  double a_max = 2.0;
+  double T = MinDurationForAccelerationLimit(delta, a_max);
+  double peak = 0.0;
+  for (double tau = 0.0; tau <= 1.0; tau += 1e-5) {
+    peak = std::max(peak, std::fabs(delta * QuinticAcceleration(tau) / (T * T)));
+  }
+  EXPECT_NEAR(peak, a_max, 1e-3);
+}
+
+TEST(MinDurationForAccelerationLimitTest, ScalesWithSquareRootOfDelta) {
+  EXPECT_NEAR(MinDurationForAccelerationLimit(4.0, 1.0) / MinDurationForAccelerationLimit(1.0, 1.0), 2.0, 1e-12);
+  EXPECT_DOUBLE_EQ(MinDurationForAccelerationLimit(-0.5, 1.0), MinDurationForAccelerationLimit(0.5, 1.0));
+  EXPECT_DOUBLE_EQ(MinDurationForAccelerationLimit(0.0, 1.0), 0.0);
+  EXPECT_THROW(MinDurationForAccelerationLimit(1.0, 0.0), std::invalid_argument);
+  EXPECT_THROW(MinDurationForAccelerationLimit(1.0, -1.0), std::invalid_argument);
 }
 
 int main(int argc, char** argv) {

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <stdexcept>
 #include <sstream>
 
 #include <ros/duration.h>
@@ -38,7 +39,7 @@ Eigen::Isometry3d InterpolatePose(const Eigen::Isometry3d& start, const Eigen::I
 // docs/trajectory_generation.md.
 //
 // Copies the null-space secondary-task fields (nullspace_secondary_link_solver
-// /nullspace_gain/nullspace_tolerance/damping/max_step) from `base` unchanged
+// /nullspace_gain/nullspace_tolerance/nullspace_max_rate/damping/max_step) from `base` unchanged
 // -- so a configured bias applies at every interior sample too, riding
 // along "for free" the same way it does within a single Solve() call (the
 // primary task's own contribution is near-zero once warm-started close to
@@ -99,7 +100,17 @@ SampleAttempt GenerateSamplesAtDuration(const arm_kinematics::ForwardKinematicsS
                                          const Eigen::Isometry3d& pose_goal, double duration,
                                          int num_samples) {
   // Own solver, looser tolerances -- see PathTrackingIkOptions().
-  arm_kinematics::PositionPitchIkSolver path_ik_solver(fk_solver, PathTrackingIkOptions(ik_options));
+  arm_kinematics::PositionPitchIkOptions path_options = PathTrackingIkOptions(ik_options);
+  // The null-space bias is a per-iteration step, not a rate, so on its own
+  // it adds the same joint motion per sample at any sample spacing and
+  // defeats the duration search at low velocity limits (Finding 7). Convert
+  // the caller's rate cap into a per-sample budget using the actual spacing
+  // of this attempt.
+  if (ik_options.nullspace_max_rate > 0.0 && num_samples > 1) {
+    path_options.nullspace_max_displacement =
+        ik_options.nullspace_max_rate * duration / static_cast<double>(num_samples - 1);
+  }
+  arm_kinematics::PositionPitchIkSolver path_ik_solver(fk_solver, path_options);
 
   SampleAttempt attempt;
   attempt.q_samples.reserve(num_samples);
@@ -169,6 +180,22 @@ double WorstVelocityRatio(const std::vector<std::vector<double>>& q_samples,
   return worst;
 }
 
+// Minimum duration for which a quintic-scaled motion over the given sampled
+// joint path stays within `acceleration_limits`, using each joint's travel
+// (sum of |dq| between consecutive samples) as its effective delta.
+double MinDurationForAccelerationLimits(const std::vector<std::vector<double>>& q_samples,
+                                         const std::vector<double>& acceleration_limits) {
+  double required = 0.0;
+  for (size_t i = 0; i < acceleration_limits.size(); ++i) {
+    double travel = 0.0;
+    for (size_t k = 1; k < q_samples.size(); ++k) {
+      travel += std::fabs(q_samples[k][i] - q_samples[k - 1][i]);
+    }
+    required = std::max(required, MinDurationForAccelerationLimit(travel, acceleration_limits[i]));
+  }
+  return required;
+}
+
 }  // namespace
 
 CartesianTrajectoryResult GenerateCartesianTrajectory(
@@ -176,8 +203,12 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
     const arm_kinematics::PositionPitchIkOptions& ik_options, const std::vector<double>& q_start,
     const Eigen::Isometry3d& pose_goal, const std::vector<double>& velocity_limits,
     const std::vector<std::string>& joint_names, double sample_rate_hz,
-    int max_duration_iterations) {
+    int max_duration_iterations, const std::vector<double>& acceleration_limits) {
   CartesianTrajectoryResult result;
+  if (!acceleration_limits.empty() && acceleration_limits.size() != q_start.size()) {
+    throw std::invalid_argument(
+        "GenerateCartesianTrajectory: acceleration_limits must be empty or one per joint");
+  }
   Eigen::Isometry3d pose_start = fk_solver.ComputePose(q_start);
 
   // Seed the joint-space delta (and hence duration) with a single IK
@@ -185,7 +216,14 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
   // before any sampling work. Own solver at ik_options' own (strict)
   // tolerances -- interior samples get their own, looser one, see
   // GenerateSamplesAtDuration/PathTrackingIkOptions().
-  arm_kinematics::PositionPitchIkSolver goal_ik_solver(fk_solver, ik_options);
+  // The goal solve only validates reachability and seeds the duration, so it
+  // runs WITHOUT the posture task: a fully posture-optimised goal can sit far
+  // from the start in joint space (tens of degrees of link tilt), but the path
+  // itself only drifts posture at the capped nullspace_max_rate, so seeding the
+  // duration from that goal would over-estimate it several-fold.
+  arm_kinematics::PositionPitchIkOptions goal_options = ik_options;
+  goal_options.nullspace_gain = 0.0;
+  arm_kinematics::PositionPitchIkSolver goal_ik_solver(fk_solver, goal_options);
   arm_kinematics::PositionPitchIkResult goal_ik = goal_ik_solver.Solve(pose_goal, q_start);
   if (!goal_ik.converged) {
     result.success = false;
@@ -212,6 +250,10 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
   for (size_t i = 0; i < q_start.size(); ++i) {
     duration = std::max(
         duration, MinDurationForVelocityLimit(goal_ik.joint_positions[i] - q_start[i], velocity_limits[i]));
+    if (!acceleration_limits.empty()) {
+      duration = std::max(duration, MinDurationForAccelerationLimit(goal_ik.joint_positions[i] - q_start[i],
+                                                                      acceleration_limits[i]));
+    }
   }
 
   if (duration == 0.0) {
@@ -276,6 +318,22 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
       result.message = "interior path sample collides with the base obstacle at t=" +
                         std::to_string(coarse.collision_time) + "s (coarse duration search)";
       return result;
+    }
+    // Acceleration bound from the joint travel actually needed along this
+    // path (see the header): raise the duration and re-sample if it is
+    // too short, before the velocity check below.
+    if (!acceleration_limits.empty()) {
+      double required = MinDurationForAccelerationLimits(coarse.q_samples, acceleration_limits);
+      if (required > duration) {
+        if (iter == max_duration_iterations - 1) {
+          result.success = false;
+          result.message = "could not satisfy acceleration limits within " +
+                            std::to_string(max_duration_iterations) + " coarse duration-scaling iterations";
+          return result;
+        }
+        duration = required * 1.01;
+        continue;
+      }
     }
     double worst_ratio = WorstVelocityRatio(coarse.q_samples, coarse.t_samples, velocity_limits);
     if (worst_ratio <= 1.0) {

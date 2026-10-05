@@ -36,4 +36,14 @@ double MinDurationForVelocityLimit(double delta, double velocity_limit) {
   return kQuinticPeakVelocityFraction * std::fabs(delta) / velocity_limit;
 }
 
+double MinDurationForAccelerationLimit(double delta, double accel_limit) {
+  if (accel_limit <= 0.0) {
+    throw std::invalid_argument("MinDurationForAccelerationLimit: accel_limit must be > 0");
+  }
+  if (delta == 0.0) {
+    return 0.0;
+  }
+  return std::sqrt(kQuinticPeakAccelerationFraction * std::fabs(delta) / accel_limit);
+}
+
 }  // namespace arm_trajectory

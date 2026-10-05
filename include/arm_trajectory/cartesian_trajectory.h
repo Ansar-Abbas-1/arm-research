@@ -80,6 +80,14 @@ struct CartesianTrajectoryResult {
 // every iteration (M3 Finding 4: that was the dominant cost for a large
 // Cartesian move).
 //
+// `acceleration_limits` [rad/s^2], optional (empty = no bound): the
+// duration is also kept at or above MinDurationForAccelerationLimit applied
+// to each joint's TRAVEL along the sampled path (sum of |dq| between samples;
+// equals |q_goal - q_start| for a monotone joint path). This is a
+// conservative approximation of the quintic profile's peak acceleration, used
+// instead of second-differencing the IK samples, which amplifies their noise
+// by 1/dt^2. It ignores the curvature term of a bent joint path.
+//
 // Unlike GenerateJointSpaceTrajectory, per-joint velocities in the
 // returned trajectory are finite-differenced approximations (there's no
 // closed form for them along a Cartesian-interpolated path), and
@@ -90,6 +98,6 @@ CartesianTrajectoryResult GenerateCartesianTrajectory(
     const arm_kinematics::PositionPitchIkOptions& ik_options, const std::vector<double>& q_start,
     const Eigen::Isometry3d& pose_goal, const std::vector<double>& velocity_limits,
     const std::vector<std::string>& joint_names, double sample_rate_hz,
-    int max_duration_iterations = 8);
+    int max_duration_iterations = 8, const std::vector<double>& acceleration_limits = {});
 
 }  // namespace arm_trajectory

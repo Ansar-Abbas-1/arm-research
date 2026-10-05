@@ -85,7 +85,29 @@ M4 (redefined — see `ROADMAP.md`) adds an optional check that the arm's own li
 
 Found preparing the first hardware Cartesian reach (`velocity_scale` 0.1): a 3 cm move failed with "projected sample count (5030) exceeds sanity limit (5000) at duration=100 s", while the same move passes at scale 1.0, and at scale 0.1 with the bias off (1.6 s, peak 0.198 rad/s against the 0.2 rad/s limit). Cause: `nullspace_gain` is applied as a joint step per Newton iteration (see `position_pitch_ik.h`'s own warning that it is a per-step quantity, not a rate), so each interior sample carries roughly the same bias motion regardless of the sample spacing. Stretching the duration adds samples but does not shrink that per-sample motion, so the finite-differenced velocity stays above a low limit and the duration search chases it until the runaway guard trips. The 2 rad/s URDF limit at full speed hides it.
 
-Operational fix: `interactive_reach.launch` defaults `nullspace_gain` to 0 when `use_hardware` is true (override with `nullspace_gain:=0.05`; it then needs a higher `velocity_scale`). Not fixed: making the bias dt-aware (scaling its step by the sample period) is a change to the IK solver's semantics and belongs with the velocity-mode work.
+Interim fix (2026-10-02, superseded): `interactive_reach.launch` defaulted `nullspace_gain` to 0 on hardware. That removed the link_4-vertical bias, which exists to reduce the gravity torque on motor 4 (it overloaded and dropped power when held for long in a high-torque posture; observed 2026-10-05).
+
+**Update (2026-10-05, later)**: the bias itself was replaced by a posture optimiser along the self-motion manifold (see `arm_kinematics/docs/position_pitch_ik.md`, "Posture optimisation"); the old one was no better than no bias on average. The rate cap below still applies to it along Cartesian paths, the Cartesian goal solve no longer uses it, and interior samples refine below the path tolerance, which removed the stair-step failures that also appeared with the bias off.
+
+**Fix (2026-10-05)**: the bias is now rate-capped along Cartesian paths. `PositionPitchIkOptions::nullspace_max_displacement` is a budget, in joint radians per `Solve()` call, on the null-space part of the step (dq with the bias minus dq without it, infinity norm, summed over Newton iterations); once spent the bias is off for the rest of the call. `GenerateCartesianTrajectory` converts `nullspace_max_rate` [rad/s] into that budget as `rate * duration / (num_samples - 1)` for its interior samples, so the bias becomes a bounded joint rate that stretching the duration can accommodate. `trajectory_service_node` sets the rate to `~nullspace_rate_fraction` (0.25, a heuristic) times the slowest scaled velocity limit. The joint-space goal IK keeps the full, uncapped bias, so a joint-space reach still ends in the biased posture. `nullspace_gain` defaults to 0.05 on hardware again. Sim, bias on, gain 0.05, five moves from the rest-pose neighbourhood: at `velocity_scale` 0.3/0.5 all pass; at 0.2 the 8 cm Cartesian move now passes (it failed before, as did 0.15); at 0.1 it still fails with 7648 projected samples, but with the bias OFF it fails the same way (5003 samples), so that residual failure is not the bias. Probable cause, not yet confirmed: interior IK samples stop as soon as they are within the 1 mm path tolerance, so joint motion arrives in steps of order 1 mm / |J| regardless of the sample spacing, and the finite-differenced velocity of those steps does not shrink as the duration grows. Joint-space reaches (the marker and CLI default) are unaffected. Tests: `NullspaceDisplacementBudgetBoundsTheBiasMotionPerSolve`, `ZeroBudgetIsIdenticalToUnlimited`, `NullspaceRateCapKeepsLowVelocityLimitPlannable`.
+
+### Joint acceleration limit (2026-10-05)
+
+A quintic move peaks at `10/sqrt(3) * |delta| / T^2` (about 5.77, where `s'''` = 0) and the duration was bounded by velocity only, so small moves got very short durations: a 1 cm joint move at 0.2 rad/s gives T = 0.094 s and a peak near 6.5 rad/s^2. `MinDurationForAccelerationLimit(delta, a_max) = sqrt(5.7735 |delta| / a_max)` now lower-bounds the duration in `GenerateJointSpaceTrajectory` (exact, tight) and `GenerateCartesianTrajectory`. For Cartesian paths it uses each joint's travel along the sampled path as its delta (conservative, ignores curvature of a bent joint path); second-differencing IK samples was rejected because it amplifies their noise by 1/dt^2. Parameter `~max_joint_acceleration` [rad/s^2] (scalar or per-joint list; unset or 0 = unbounded; absolute, not scaled by `velocity_scale`). Launch default: 1.0 on hardware (a heuristic starting value, not derived from the motor specification), unbounded in simulation.
+
+### Speed and limit parameters (launch arguments)
+
+| Setting | Where | Launch arg | Default |
+|---|---|---|---|
+| per-joint speed cap [rad/s], applied as min(URDF, cap) | trajectory_service_node, teleop_node, resolved_rate_demo_node (`~max_joint_velocity`) | `max_joint_velocity` | 0 = URDF limits |
+| uniform slow-down | trajectory_service_node | `velocity_scale` | 0.1 hardware, 1.0 sim |
+| joint acceleration cap [rad/s^2] | trajectory_service_node | `max_joint_acceleration` | 1.0 hardware, unbounded sim |
+| null-space bias rate | trajectory_service_node | `nullspace_rate_fraction` | 0.25 |
+| goal slew [rad/s] | robot_interface | `max_goal_slew_rad_s` (interactive_reach, arm_interface) | 0 = yaml (0.5) |
+| velocity-mode clamp [rad/s] | robot_interface_velocity | `max_velocity_rad_s` (arm_interface) | 0 = yaml (0.1) |
+| stick gains (m/s, rad/s) and gripper rate | teleop_node | `linear_gain`, `pitch_gain`, `gripper_rate` | 0.1, 0.5, 0.5 |
+
+Keep the planned joint speed below the goal slew (0.5 rad/s) or the written goal lags the plan. There is no end-effector speed limit in the code apart from the teleop stick gains.
 
 ### Finding 8: optional steady-state correction for real hardware (2026-10-02)
 

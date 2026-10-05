@@ -16,11 +16,17 @@ namespace arm_trajectory {
 // accelerations populated at every point; the first point is `q_start`
 // at time 0, the last is `q_goal` at time T).
 //
+// `acceleration_limits` [rad/s^2], optional (empty = no acceleration bound):
+// when given, T is also at least MinDurationForAccelerationLimit per joint,
+// so the quintic's peak acceleration never exceeds the limit. It binds on
+// small moves, where the velocity bound alone would allow a very short T.
+//
 // Throws std::invalid_argument if q_start/q_goal/velocity_limits/
-// joint_names sizes don't all match, or if sample_rate_hz <= 0.
+// joint_names sizes don't all match (acceleration_limits: empty or the same
+// size), if any acceleration limit is <= 0, or if sample_rate_hz <= 0.
 trajectory_msgs::JointTrajectory GenerateJointSpaceTrajectory(
     const std::vector<double>& q_start, const std::vector<double>& q_goal,
     const std::vector<double>& velocity_limits, const std::vector<std::string>& joint_names,
-    double sample_rate_hz);
+    double sample_rate_hz, const std::vector<double>& acceleration_limits = {});
 
 }  // namespace arm_trajectory

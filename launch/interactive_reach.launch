@@ -30,15 +30,15 @@
        subscribe interface either way, so nothing else in this file needs
        to change. Every reach committed through the marker/CLI would then
        move the real arm. -->
-  <!-- velocity_scale: uniform slow-down of every generated trajectory
-       (M5 Stage 3, reduced speed on first real-hardware runs). Defaults
-       to 0.1 whenever use_hardware is true, 1.0 in simulation, so
-       forgetting this arg can never give full speed on the real arm.
-       Override explicitly with velocity_scale:=0.25 etc. Note: inside
-       $(eval), arg() returns Python-typed values (true becomes the boolean
-       True), so this tests truthiness, not the string 'true'. -->
-  <arg name="velocity_scale"
-       default="$(eval 0.1 if arg('use_hardware') else 1.0)"/>
+  <!-- velocity_scale: uniform scale on the URDF joint velocity limits (2 rad/s)
+       used to time every generated trajectory. Default 1.0, hardware included
+       (operator decision 2026-10-05). It was 0.1 on hardware during
+       commissioning: pass velocity_scale:=0.1 for that, which the e-stop
+       checks in arm_interface/docs/sim_to_real.md section 16 were verified at
+       (their fixed 2.5 s trigger delay assumes the 6 s plan at 0.1). Keep
+       robot_interface max_goal_slew_rad_s at or above the planned peak speed,
+       and max_joint_acceleration limits small moves independently. -->
+  <arg name="velocity_scale" default="1.0"/>
   <!-- Steady-state correction for reach_target_pose_node, OFF by default.
        correction_steps:=N (N > 0) makes the node re-aim up to N times after
        a reach, adding the measured end-effector error to a running
@@ -57,14 +57,32 @@
   <arg name="correction_pitch_trigger" default="0.01"/>
   <arg name="correction_pitch_max_total" default="0.2"/>
   <arg name="nullspace_tip_link" default="link_4"/>
-  <!-- nullspace_gain: defaults to 0 (bias off) on hardware. The bias is a
-       per-sample STEP, not a rate: at a low velocity_scale the duration
-       search adds samples without shrinking the bias motion per sample, so
-       it never converges and trips the runaway-duration guard (reproduced
-       in simulation at velocity_scale 0.1, gain 0.05; see
-       docs/trajectory_generation.md Finding 7). Same truthiness note as
-       velocity_scale above. -->
-  <arg name="nullspace_gain" default="$(eval 0.0 if arg('use_hardware') else 0.05)"/>
+  <!-- nullspace_gain: ON by default (0.05) everywhere, hardware included. It
+       keeps nullspace_tip_link near vertical, which lowers the gravity
+       torque on motor 4 (it overloaded and dropped power when held for long
+       in a high-torque posture). The bias is a per-iteration step, so along
+       a Cartesian path it is rate-capped to nullspace_rate_fraction of the
+       slowest (scaled) joint velocity limit; without the cap it broke the
+       duration search at low velocity_scale (docs/trajectory_generation.md
+       Finding 7). nullspace_rate_fraction:=0 removes the cap. -->
+  <arg name="nullspace_gain" default="0.05"/>
+  <arg name="nullspace_rate_fraction" default="0.25"/>
+  <!-- max_joint_velocity: absolute per-joint speed cap in rad/s, applied as
+       min(URDF limit, cap) before velocity_scale. 0 = unset (URDF limits).
+       A per-joint list can be set with rosparam instead. Keep it below
+       robot_interface max_goal_slew_rad_s (2.0) or the goal will lag. -->
+  <arg name="max_joint_velocity" default="0.0"/>
+  <!-- max_joint_acceleration: absolute per-joint acceleration cap in rad/s^2
+       (scalar here, or a per-joint list through rosparam); 0 = no bound.
+       A quintic move peaks at 5.77 * delta / T^2, so this lengthens SMALL
+       moves (a 1 cm correction at 0.2 rad/s would otherwise take about
+       0.09 s and peak near 6 rad/s^2). Defaults to 1.0 on hardware, which
+       is a heuristic starting value, not derived from the motor spec, and
+       to unbounded in simulation. Truthiness note as for velocity_scale. -->
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+  <!-- max_goal_slew_rad_s: robot_interface goal slew limit (0 = yaml value,
+       2.0 rad/s per joint). Passed to the real driver only. -->
+  <arg name="max_goal_slew_rad_s" default="0.0"/>
 
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
@@ -85,6 +103,7 @@
   <group if="$(arg use_hardware)">
     <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
       <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+      <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
     </node>
   </group>
 
@@ -92,6 +111,9 @@
     <param name="nullspace_tip_link" value="$(arg nullspace_tip_link)" />
     <param name="nullspace_gain" value="$(arg nullspace_gain)" />
     <param name="velocity_scale" value="$(arg velocity_scale)" />
+    <param name="nullspace_rate_fraction" value="$(arg nullspace_rate_fraction)" />
+    <param name="max_joint_velocity" value="$(arg max_joint_velocity)" />
+    <param name="max_joint_acceleration" value="$(arg max_joint_acceleration)" />
   </node>
   <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
   <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node">

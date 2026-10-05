@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -9,6 +10,7 @@
 #include <visualization_msgs/Marker.h>
 
 #include <arm_kinematics/base_collision.h>
+#include <arm_kinematics/joint_velocity_cap.h>
 #include <arm_kinematics/forward_kinematics.h>
 #include <arm_kinematics/joint_state_utils.h>
 #include <arm_kinematics/position_pitch_ik.h>
@@ -107,9 +109,33 @@ class TrajectoryServiceNode {
       throw std::runtime_error("trajectory_service_node: ~velocity_scale must be in (0, 1], got " +
                                 std::to_string(velocity_scale));
     }
+    // ~max_joint_velocity [rad/s]: absolute per-joint cap, a scalar (all
+    // joints) or a list with one entry per actuated joint. Applied as
+    // min(URDF limit, cap), so it can only lower a limit, never raise it past
+    // the URDF. Unset (or a scalar <= 0) leaves the URDF limits as they are.
+    // ~velocity_scale then multiplies the result.
+    velocity_limits_ = arm_kinematics::ApplyMaxJointVelocityParam(pnh, velocity_limits_);
+    // ~max_joint_acceleration [rad/s^2]: scalar or per-joint list; unset or
+    // <= 0 means no acceleration bound. Not scaled by ~velocity_scale: it is
+    // an absolute limit. The quintic's peak acceleration is
+    // 5.77 * delta / T^2, so it binds on small moves.
+    acceleration_limits_ =
+        arm_kinematics::ReadJointLimitParam(pnh, "max_joint_acceleration", velocity_limits_.size());
     for (double& v : velocity_limits_) {
       v *= velocity_scale;
     }
+    // Rate cap on the null-space bias along Cartesian paths, as a fraction of
+    // the slowest (scaled) velocity limit, so the bias stays a bounded
+    // fraction of the plan at any ~velocity_scale (Finding 7). 0.25 is a
+    // heuristic choice, not derived; 0 disables the cap.
+    double nullspace_rate_fraction;
+    pnh.param("nullspace_rate_fraction", nullspace_rate_fraction, 0.25);
+    if (!(nullspace_rate_fraction >= 0.0)) {
+      throw std::runtime_error("trajectory_service_node: ~nullspace_rate_fraction must be >= 0, got " +
+                                std::to_string(nullspace_rate_fraction));
+    }
+    ik_options_.nullspace_max_rate =
+        nullspace_rate_fraction * *std::min_element(velocity_limits_.begin(), velocity_limits_.end());
     latest_joint_positions_.assign(joint_names_.size(), 0.0);
     have_joint_state_ = false;
 
@@ -203,7 +229,8 @@ class TrajectoryServiceNode {
       }
       try {
         res.trajectory = arm_trajectory::GenerateJointSpaceTrajectory(start, goal, velocity_limits_,
-                                                                       joint_names_, sample_rate);
+                                                                       joint_names_, sample_rate,
+                                                                       acceleration_limits_);
         res.success = true;
       } catch (const std::exception& e) {
         res.success = false;
@@ -232,7 +259,7 @@ class TrajectoryServiceNode {
       }
       try {
         res.trajectory = arm_trajectory::GenerateJointSpaceTrajectory(
-            start, ik.joint_positions, velocity_limits_, joint_names_, sample_rate);
+            start, ik.joint_positions, velocity_limits_, joint_names_, sample_rate, acceleration_limits_);
         res.success = true;
       } catch (const std::exception& e) {
         res.success = false;
@@ -245,7 +272,7 @@ class TrajectoryServiceNode {
     try {
       result = arm_trajectory::GenerateCartesianTrajectory(*fk_solver_, ik_options_, start, goal_pose,
                                                             velocity_limits_, joint_names_,
-                                                            sample_rate);
+                                                            sample_rate, 8, acceleration_limits_);
     } catch (const std::exception& e) {
       res.success = false;
       res.message = e.what();
@@ -269,6 +296,7 @@ class TrajectoryServiceNode {
   std::unique_ptr<arm_kinematics::PositionPitchIkSolver> ik_solver_;
   std::vector<std::string> joint_names_;
   std::vector<double> velocity_limits_;
+  std::vector<double> acceleration_limits_;  // empty = unbounded
   double default_sample_rate_;
 
   ros::Subscriber joint_sub_;

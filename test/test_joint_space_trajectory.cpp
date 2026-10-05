@@ -22,6 +22,45 @@ TEST(JointSpaceTrajectory, StartsAndEndsAtRequestedPositions) {
   EXPECT_NEAR(traj.points.front().time_from_start.toSec(), 0.0, 1e-9);
 }
 
+TEST(JointSpaceTrajectory, AccelerationLimitBindsOnSmallMovesAndIsRespected) {
+  // 1 cm-scale move at a 0.2 rad/s velocity limit: velocity alone allows
+  // T = 1.875*0.01/0.2 = 0.094 s (peak accel ~6.5 rad/s^2).
+  std::vector<double> q_start = {0.0, 0.0, 0.0};
+  std::vector<double> q_goal = {0.01, -0.005, 0.0};
+  std::vector<double> v_limits = {0.2, 0.2, 0.2};
+  std::vector<double> a_limits = {0.5, 0.5, 0.5};
+
+  auto free_traj = GenerateJointSpaceTrajectory(q_start, q_goal, v_limits, kJointNames, 200.0);
+  auto limited = GenerateJointSpaceTrajectory(q_start, q_goal, v_limits, kJointNames, 200.0, a_limits);
+  double t_free = free_traj.points.back().time_from_start.toSec();
+  double t_limited = limited.points.back().time_from_start.toSec();
+  EXPECT_GT(t_limited, 3.0 * t_free);
+  for (const auto& point : limited.points) {
+    for (size_t i = 0; i < a_limits.size(); ++i) {
+      EXPECT_LE(std::fabs(point.accelerations[i]), a_limits[i] + 1e-6) << "joint " << i;
+      EXPECT_LE(std::fabs(point.velocities[i]), v_limits[i] + 1e-6);
+    }
+  }
+}
+
+TEST(JointSpaceTrajectory, EmptyAccelerationLimitsLeaveDurationUnchanged) {
+  std::vector<double> q_start = {0.0, 0.0, 0.0};
+  std::vector<double> q_goal = {0.5, 0.2, -0.1};
+  std::vector<double> v_limits = {1.0, 1.0, 1.0};
+  auto a = GenerateJointSpaceTrajectory(q_start, q_goal, v_limits, kJointNames, 50.0);
+  auto b = GenerateJointSpaceTrajectory(q_start, q_goal, v_limits, kJointNames, 50.0, {});
+  EXPECT_EQ(a.points.size(), b.points.size());
+  EXPECT_DOUBLE_EQ(a.points.back().time_from_start.toSec(), b.points.back().time_from_start.toSec());
+}
+
+TEST(JointSpaceTrajectory, RejectsBadAccelerationLimits) {
+  std::vector<double> q = {0.0, 0.0, 0.0};
+  std::vector<double> q_goal = {0.1, 0.1, 0.1};
+  std::vector<double> v = {1.0, 1.0, 1.0};
+  EXPECT_THROW(GenerateJointSpaceTrajectory(q, q_goal, v, kJointNames, 50.0, {1.0, 1.0}), std::invalid_argument);
+  EXPECT_THROW(GenerateJointSpaceTrajectory(q, q_goal, v, kJointNames, 50.0, {1.0, 0.0, 1.0}), std::invalid_argument);
+}
+
 TEST(JointSpaceTrajectory, SynchronizedArrivalAllJointsSameDuration) {
   // joint 0 needs much more time than joints 1/2 given its velocity limit;
   // all three must still arrive at the SAME final time_from_start.

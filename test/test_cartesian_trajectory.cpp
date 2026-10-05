@@ -11,6 +11,7 @@
 #include <arm_kinematics/position_pitch_ik.h>
 
 #include "arm_trajectory/cartesian_trajectory.h"
+#include "arm_trajectory/quintic_time_scaling.h"
 
 using arm_kinematics::ArmIntersectsBase;
 using arm_kinematics::BoxObstacle;
@@ -228,7 +229,7 @@ TEST_F(CartesianTrajectoryTest, NullspaceOptionsThreadedThroughWholeTrajectory) 
   auto VerticalAlignment = [&](const std::vector<double>& q) {
     std::vector<double> q_prefix(q.begin(), q.begin() + m);
     Eigen::Vector3d z = nullspace_fk_->ComputePose(q_prefix).rotation() * Eigen::Vector3d::UnitZ();
-    return Eigen::Vector3d::UnitZ().dot(z);
+    return std::abs(Eigen::Vector3d::UnitZ().dot(z));  // vertical LINE: up or down both count
   };
 
   double alignment_without = VerticalAlignment(without_bias.trajectory.points.back().positions);
@@ -236,6 +237,64 @@ TEST_F(CartesianTrajectoryTest, NullspaceOptionsThreadedThroughWholeTrajectory) 
   EXPECT_GT(alignment_with, alignment_without)
       << "nullspace_gain configured via GenerateCartesianTrajectory's ik_options should measurably "
          "improve link_4's vertical alignment at the trajectory's end relative to no bias";
+}
+
+TEST_F(CartesianTrajectoryTest, NullspaceRateCapKeepsLowVelocityLimitPlannable) {
+  // Regression for Finding 7: with the bias on and no rate cap, the bias
+  // adds roughly the same joint motion per sample at any sample spacing, so
+  // at a low velocity limit the duration search chases it. With
+  // nullspace_max_rate the bias is a bounded joint rate and the plan completes.
+  std::vector<double> q_start = {-1.5747, 2.7009, -0.4995, 2.8188, -3.5092};
+  std::vector<double> q_goal_config = {-1.2, 2.4, -0.3, 2.5, -3.0};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+  std::vector<double> slow_limits(velocity_limits_.size(), 0.1);
+
+  arm_kinematics::PositionPitchIkOptions options = ik_options_;
+  options.rng_seed = 1;
+  options.nullspace_secondary_link_solver = nullspace_fk_.get();
+  options.nullspace_gain = 0.05;
+  options.nullspace_max_rate = 0.25 * 0.1;
+
+  auto result = GenerateCartesianTrajectory(*fk_, options, q_start, goal_pose, slow_limits,
+                                             joint_names_, 50.0);
+  ASSERT_TRUE(result.success) << result.message;
+  const auto& points = result.trajectory.points;
+  for (size_t k = 1; k < points.size(); ++k) {
+    double dt = (points[k].time_from_start - points[k - 1].time_from_start).toSec();
+    for (size_t i = 0; i < joint_names_.size(); ++i) {
+      EXPECT_LE(std::fabs(points[k].positions[i] - points[k - 1].positions[i]) / dt,
+                slow_limits[i] * 1.02);
+    }
+  }
+}
+
+TEST_F(CartesianTrajectoryTest, AccelerationLimitLengthensSmallMoves) {
+  std::vector<double> q_start = {0.1, 0.5, -0.5, 0.5, -0.5};
+  std::vector<double> q_goal_config = {0.12, 0.51, -0.5, 0.5, -0.49};
+  Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);
+
+  auto free_result = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
+                                                  joint_names_, 100.0);
+  ASSERT_TRUE(free_result.success) << free_result.message;
+
+  std::vector<double> a_limits(velocity_limits_.size(), 0.2);
+  auto limited = GenerateCartesianTrajectory(*fk_, ik_options_, q_start, goal_pose, velocity_limits_,
+                                              joint_names_, 100.0, 8, a_limits);
+  ASSERT_TRUE(limited.success) << limited.message;
+
+  double t_free = free_result.trajectory.points.back().time_from_start.toSec();
+  double t_limited = limited.trajectory.points.back().time_from_start.toSec();
+  EXPECT_GT(t_limited, 2.0 * t_free);
+
+  // Joint travel along the final path bounds the achievable peak
+  // acceleration: duration must be at least the closed-form minimum for it.
+  const auto& pts = limited.trajectory.points;
+  for (size_t i = 0; i < joint_names_.size(); ++i) {
+    double travel = 0.0;
+    for (size_t k = 1; k < pts.size(); ++k) travel += std::fabs(pts[k].positions[i] - pts[k - 1].positions[i]);
+    EXPECT_GE(t_limited, arm_trajectory::MinDurationForAccelerationLimit(travel, a_limits[i]) * 0.97)
+        << "joint " << i;
+  }
 }
 
 // Both endpoints individually verified collision-free (ArmIntersectsBase

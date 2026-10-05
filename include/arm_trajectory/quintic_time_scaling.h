@@ -38,4 +38,18 @@ constexpr double kQuinticPeakVelocityFraction = 15.0 / 8.0;
 // std::invalid_argument if velocity_limit <= 0.
 double MinDurationForVelocityLimit(double delta, double velocity_limit);
 
+// |s''(tau)| is maximized where s'''(tau) = 60 - 360*tau + 360*tau^2 = 0,
+// i.e. tau = (1 -/+ 1/sqrt(3))/2, where it equals exactly 10/sqrt(3)
+// (about 5.7735). Actual peak joint acceleration of a quintic-scaled
+// motion is kQuinticPeakAccelerationFraction * |delta| / T^2.
+constexpr double kQuinticPeakAccelerationFraction = 5.773502691896258;
+
+// Minimum duration T (seconds) such that a quintic-scaled motion from 0 to
+// `delta` (radians) never exceeds `accel_limit` (rad/s^2, must be > 0):
+// T_min = sqrt(kQuinticPeakAccelerationFraction * |delta| / accel_limit).
+// Returns 0.0 if delta == 0. Throws std::invalid_argument if accel_limit <= 0.
+// Note it scales as sqrt(delta), unlike the velocity bound (linear in delta):
+// small moves are acceleration-limited, large ones velocity-limited.
+double MinDurationForAccelerationLimit(double delta, double accel_limit);
+
 }  // namespace arm_trajectory

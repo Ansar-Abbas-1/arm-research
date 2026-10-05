@@ -13,11 +13,14 @@ namespace arm_trajectory {
 trajectory_msgs::JointTrajectory GenerateJointSpaceTrajectory(
     const std::vector<double>& q_start, const std::vector<double>& q_goal,
     const std::vector<double>& velocity_limits, const std::vector<std::string>& joint_names,
-    double sample_rate_hz) {
+    double sample_rate_hz, const std::vector<double>& acceleration_limits) {
   const size_t n = q_start.size();
   if (q_goal.size() != n || velocity_limits.size() != n || joint_names.size() != n) {
     throw std::invalid_argument(
         "GenerateJointSpaceTrajectory: q_start/q_goal/velocity_limits/joint_names size mismatch");
+  }
+  if (!acceleration_limits.empty() && acceleration_limits.size() != n) {
+    throw std::invalid_argument("GenerateJointSpaceTrajectory: acceleration_limits must be empty or one per joint");
   }
   if (sample_rate_hz <= 0.0) {
     throw std::invalid_argument("GenerateJointSpaceTrajectory: sample_rate_hz must be > 0");
@@ -28,6 +31,9 @@ trajectory_msgs::JointTrajectory GenerateJointSpaceTrajectory(
   for (size_t i = 0; i < n; ++i) {
     delta[i] = q_goal[i] - q_start[i];
     duration = std::max(duration, MinDurationForVelocityLimit(delta[i], velocity_limits[i]));
+    if (!acceleration_limits.empty()) {
+      duration = std::max(duration, MinDurationForAccelerationLimit(delta[i], acceleration_limits[i]));
+    }
   }
 
   trajectory_msgs::JointTrajectory traj;
