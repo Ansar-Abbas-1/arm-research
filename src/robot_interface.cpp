@@ -5,6 +5,7 @@
 #include <std_msgs/Empty.h>
 #include <std_msgs/Float64.h>
 #include <sensor_msgs/JointState.h>
+#include <diagnostic_msgs/DiagnosticArray.h>
 #include <dynamixel_sdk/dynamixel_sdk.h>
 #include <algorithm>
 #include <cmath>
@@ -24,6 +25,7 @@
 #include "arm_interface/estop.h"
 #include "arm_interface/drive_state.h"
 #include "arm_interface/goal_slew.h"
+#include "arm_interface/motor_health.h"
 
 
 class DynamixelArmInterface {
@@ -34,6 +36,7 @@ public:
           portHandler_(dynamixel::PortHandler::getPortHandler(getDeviceName().c_str())),
           packetHandler_(dynamixel::PacketHandler::getPacketHandler(getProtocolVersion())),
           bulkRead_(portHandler_, packetHandler_),
+          errorRead_(portHandler_, packetHandler_),
           bulkWrite_(portHandler_, packetHandler_),
           last_cmd_time_(0)
     {
@@ -62,6 +65,11 @@ public:
         // Latched: the drive state (TORQUE_OFF / HOLDING / TRACKING / ESTOPPED)
         // for operators and tools; docs/sim_to_real.md section 16.
         drive_state_pub_ = nh_.advertise<std_msgs::String>("/arm_interface/drive_state", 1, true);
+        // Motor health (motor_health.h): per-motor DiagnosticStatus, and the
+        // signed present load per joint as `effort` [% of max torque] for
+        // logging/calibration (sign follows the motor, not the joint convention).
+        status_pub_ = nh_.advertise<diagnostic_msgs::DiagnosticArray>("/arm_interface/motor_status", 5);
+        load_pub_ = nh_.advertise<sensor_msgs::JointState>("/arm_interface/motor_load", 5);
 
         // Dynamixel SDK setup
         if (!portHandler_->openPort()) {
@@ -76,9 +84,25 @@ public:
         // enableTorque() (was after it) because seedGoalPositionToCurrentPosition()
         // below needs a working bulk-read before torque ever enables.
         for (size_t i = 0; i < num_joints_; ++i) {
-            bulkRead_.addParam(dxl_ids_[i], addr_present_position_, len_present_position_);
-            bulkRead_.addParam(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_);
+            // One address range per ID (the SDK's addParam returns false for
+            // a second one on the same ID, which is how the hardware-error
+            // register used to be silently never read). The range is widened
+            // from the 4-byte position to 126..146 so that load, voltage and
+            // temperature arrive with every position read: 17 more bytes per
+            // motor (about 1 ms on the wire), and NO extra bus transaction,
+            // each of which costs a full USB latency period (16 ms with the
+            // default FTDI latency timer). Position stays addressable by its
+            // absolute address inside the block.
+            bulkRead_.addParam(dxl_ids_[i], addr_bulk_block_, len_bulk_block_);
+            // The error register (70) is not contiguous with that block, so it
+            // gets its own tiny group, read only on a Hardware Alert and as a
+            // slow safety net.
+            errorRead_.addParam(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_);
         }
+
+        // Before torque is ever enabled: each motor's own temperature limit and
+        // any hardware error latched from a previous session.
+        startupHealthCheck();
 
         // Dynamixel servos in Position Control Mode actively drive toward
         // whatever is already in their Goal Position register the INSTANT
@@ -209,13 +233,48 @@ public:
         return true;
     }
 
+    // Seeds ONE motor's Goal Position to its own present position and enables its
+    // torque. The goal register is volatile (a reboot or power cycle resets it),
+    // so enabling torque without this could drive the joint to a stale value.
+    // Takes the port mutex itself. Updates goal_written_ so the slew limiter
+    // continues from the held pose. Returns false (torque NOT enabled) on failure.
+    bool seedAndEnableMotor(size_t i) {
+        if (debug_) {
+            return true;
+        }
+        const int dxl_id = dxl_ids_[i];
+        uint8_t dxl_error = 0;
+        std::lock_guard<std::mutex> lock(port_mutex_);
+        uint32_t present = 0;
+        int result = packetHandler_->read4ByteTxRx(portHandler_, dxl_id, addr_present_position_, &present, &dxl_error);
+        if (result != COMM_SUCCESS || dxl_error != 0) {
+            return false;
+        }
+        result = packetHandler_->write4ByteTxRx(portHandler_, dxl_id, addr_goal_position_, present, &dxl_error);
+        if (result != COMM_SUCCESS || dxl_error != 0) {
+            return false;
+        }
+        if (goal_written_valid_) {
+            goal_written_[i] = dxl_sign_[i] * (static_cast<int32_t>(present) - dxl_bias_[i]) * dxl_rad_per_tick_;
+        }
+        result = packetHandler_->write1ByteTxRx(portHandler_, dxl_id, addr_torque_enable_, torque_enable_, &dxl_error);
+        return result == COMM_SUCCESS && dxl_error == 0;
+    }
+
     void enableTorque() {
         if (debug_) {
             ROS_INFO("Debugging, don't enable torque for all joints...");
             return;
         }
         std::lock_guard<std::mutex> lock(port_mutex_);
+        const uint32_t faulted = faulted_mask_.load();
         for (size_t i = 0; i < num_joints_; ++i) {
+            if (faulted & (1u << i)) {
+                // A motor with a latched hardware error cannot hold; the write
+                // is pointless, and a failed write below ends the process.
+                ROS_ERROR("Not enabling torque on joint_%zu (ID %d): hardware error latched, reboot the motor.", i + 1, dxl_ids_[i]);
+                continue;
+            }
             int dxl_comm_result = packetHandler_->write1ByteTxRx(
                 portHandler_, dxl_ids_[i], addr_torque_enable_, torque_enable_, nullptr);
             if (dxl_comm_result != COMM_SUCCESS) {
@@ -224,7 +283,7 @@ public:
                 ros::shutdown();
             }
         }
-        ROS_INFO("Torque enabled for all joints.");
+        ROS_INFO(faulted ? "Torque enabled for the healthy joints." : "Torque enabled for all joints.");
     }
 
     void disableTorque() {
@@ -324,6 +383,9 @@ private:
                 return;
             }
         } else {
+            // Reads resumed after a failure (cable, power cycle): the cached
+            // error flags may be stale, so poll the error register right away.
+            bool alert_now = consecutive_read_failures_ > 0;
             consecutive_read_failures_ = 0;
             for (size_t i = 0; i < num_joints_; ++i) {
                 if (bulkRead_.isAvailable(dxl_ids_[i], addr_present_position_, len_present_position_)) {
@@ -332,22 +394,16 @@ private:
                     ROS_WARN_THROTTLE(2.0, "Data not available for ID %d", dxl_ids_[i]);
                 }
 
-                if (bulkRead_.isAvailable(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_)) {
-                    uint8_t error_status = bulkRead_.getData(dxl_ids_[i], addr_hardware_error_status_, len_hardware_error_status_);
-                    motor_errors_[i] = error_status;
-                    if (error_status != 0) {
-                        std::string err_msg = "";
-                        if (error_status & 0x01) err_msg += "Input Voltage, ";
-                        if (error_status & 0x04) err_msg += "Electrical Shock (Overload Shutdown), ";
-                        if (error_status & 0x08) err_msg += "Encoder, ";
-                        if (error_status & 0x10) err_msg += "Overheating, ";
-                        if (error_status & 0x20) err_msg += "Overload, ";
-
-                        ROS_ERROR_THROTTLE(1.0, "Motor ID %d (joint_%zu) hardware error: 0x%02X (%s)",
-                                           dxl_ids_[i], i + 1, error_status, err_msg.c_str());
-                    }
-                }
+                // The status packet's ERR byte carries the Hardware Alert bit
+                // (0x80) whenever the motor's Hardware Error Status is non-zero:
+                // a free every-cycle detector. It only triggers an immediate
+                // read of the detailed registers (monitorMotorHealth).
+                uint8_t packet_error = 0;
+                bulkRead_.getError(dxl_ids_[i], &packet_error);
+                alert_[i] = (packet_error & 0x80) ? 1 : 0;
+                alert_now = alert_now || alert_[i];
             }
+            monitorMotorHealth(alert_now);
         }
 
         // Publish data read
@@ -566,6 +622,179 @@ private:
         return v;
     }
 
+
+    // ---- Motor health (pure policy in motor_health.h). Control-loop thread
+    // only, except health_ which the reset service reads under health_mutex_.
+
+    // Reads each motor's own Temperature Limit and one health sample before
+    // torque is enabled. Latched errors from a previous session are reported
+    // and exclude the motor from torque writes; the e-stop is raised so
+    // senders fail closed.
+    void startupHealthCheck() {
+        temp_limits_.assign(num_joints_, temperature_limit_default_c_);
+        {
+            std::lock_guard<std::mutex> lock(port_mutex_);
+            for (size_t i = 0; i < num_joints_; ++i) {
+                uint8_t limit = 0;
+                if (packetHandler_->read1ByteTxRx(portHandler_, dxl_ids_[i], addr_temperature_limit_, &limit, nullptr) == COMM_SUCCESS && limit > 0) {
+                    temp_limits_[i] = limit;
+                } else {
+                    ROS_WARN("Could not read the temperature limit of joint_%zu (ID %d); assuming %.0f C.", i + 1, dxl_ids_[i], temperature_limit_default_c_);
+                }
+            }
+        }
+        monitor_ = std::make_unique<arm_interface::MotorHealthMonitor>(num_joints_, health_config_);
+        health_.assign(num_joints_, arm_interface::MotorHealth{});
+        hw_error_cache_.assign(num_joints_, 0);
+        last_status_time_ = -1e9;
+        last_error_poll_ = -1e9;
+        {
+            std::lock_guard<std::mutex> lock(port_mutex_);
+            bulkRead_.txRxPacket();  // fills the load/voltage/temperature block
+        }
+        monitorMotorHealth(true);
+    }
+
+    // Called every control cycle after a successful bulk read. Load, voltage
+    // and temperature come from that read (no extra bus traffic); the hardware
+    // error register is read only on a Hardware Alert, at startup and every
+    // error_poll_period_s_ as a safety net. Evaluation is cheap and runs every
+    // cycle; diagnostics are published at status_rate_hz.
+    void monitorMotorHealth(bool alert_now) {
+        const double now = ros::Time::now().toSec();
+        if (alert_now || now - last_error_poll_ >= error_poll_period_s_) {
+            last_error_poll_ = now;
+            bool ok = false;
+            {
+                std::lock_guard<std::mutex> lock(port_mutex_);
+                ok = (errorRead_.txRxPacket() == COMM_SUCCESS);
+            }
+            if (ok) {
+                for (size_t i = 0; i < num_joints_; ++i) {
+                    const uint8_t id = static_cast<uint8_t>(dxl_ids_[i]);
+                    if (errorRead_.isAvailable(id, addr_hardware_error_status_, len_hardware_error_status_)) {
+                        hw_error_cache_[i] = static_cast<uint8_t>(
+                            errorRead_.getData(id, addr_hardware_error_status_, len_hardware_error_status_));
+                    }
+                }
+            }
+        }
+
+        std::vector<arm_interface::MotorHealth> healths(num_joints_);
+        std::vector<arm_interface::MotorSample> samples(num_joints_);
+        for (size_t i = 0; i < num_joints_; ++i) {
+            arm_interface::MotorSample& sample = samples[i];
+            const uint8_t id = static_cast<uint8_t>(dxl_ids_[i]);
+            if (bulkRead_.isAvailable(id, addr_bulk_block_, len_bulk_block_)) {
+                sample.valid = true;
+                sample.load_raw = static_cast<int16_t>(bulkRead_.getData(id, addr_present_load_, 2));
+                sample.voltage_raw = static_cast<uint16_t>(bulkRead_.getData(id, addr_present_voltage_, 2));
+                sample.temperature_c = static_cast<uint8_t>(bulkRead_.getData(id, addr_present_temperature_, 1));
+            }
+            sample.hardware_error = hw_error_cache_[i];
+            if (alert_[i] && hw_error_cache_[i] == 0) {
+                // Alert set but the register has not been read since: flag it
+                // now, the register read above (alert_now) settles it.
+                sample.valid = true;
+                sample.alert = true;
+            }
+            healths[i] = monitor_->Evaluate(i, sample, temp_limits_[i], now);
+
+            // Log transitions, not every sample.
+            if (healths[i].level != health_[i].level || healths[i].hardware_error != health_[i].hardware_error) {
+                if (healths[i].level == arm_interface::HealthLevel::kFault) {
+                    ROS_ERROR("Motor ID %d (joint_%zu): %s", dxl_ids_[i], i + 1, healths[i].text.c_str());
+                } else if (healths[i].level == arm_interface::HealthLevel::kWarn) {
+                    ROS_WARN("Motor ID %d (joint_%zu): %s", dxl_ids_[i], i + 1, healths[i].text.c_str());
+                } else if (health_[i].level != arm_interface::HealthLevel::kOk) {
+                    ROS_INFO("Motor ID %d (joint_%zu) is healthy again.", dxl_ids_[i], i + 1);
+                }
+            } else if (healths[i].level == arm_interface::HealthLevel::kWarn) {
+                ROS_WARN_THROTTLE(10.0, "Motor ID %d (joint_%zu): %s", dxl_ids_[i], i + 1, healths[i].text.c_str());
+            }
+        }
+        for (size_t i = 0; i < num_joints_; ++i) {
+            motor_errors_[i] = hw_error_cache_[i];  // feeds the reenable_failed_motors service
+            if (health_[i].level == arm_interface::HealthLevel::kFault &&
+                healths[i].level != arm_interface::HealthLevel::kFault) {
+                recover_mask_ |= (1u << i);  // left fault: torque must come back on (below)
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(health_mutex_);
+            health_ = healths;
+        }
+        faulted_mask_.store(arm_interface::FaultedMask(healths));
+
+        // A motor that has just recovered (rebooted or power-cycled) is not
+        // holding: the e-stop hold or the last torque-enable skipped it while it
+        // was faulted. If torque is supposed to be on, seed its goal and enable it.
+        if (recover_mask_ != 0) {
+            if (drive_state_ == arm_interface::DriveState::kTorqueOff) {
+                recover_mask_ = 0;  // the next torque enable covers every healthy motor
+            } else {
+                for (size_t i = 0; i < num_joints_; ++i) {
+                    if (!(recover_mask_ & (1u << i))) continue;
+                    if (seedAndEnableMotor(i)) {
+                        ROS_WARN("Motor ID %d (joint_%zu) recovered: goal re-seeded to its present position, torque re-enabled.", dxl_ids_[i], i + 1);
+                        recover_mask_ &= ~(1u << i);
+                    } else {
+                        ROS_ERROR_THROTTLE(2.0, "Motor ID %d (joint_%zu) recovered but re-enabling its torque failed; retrying.", dxl_ids_[i], i + 1);
+                    }
+                }
+            }
+        }
+
+        if (arm_interface::ShouldTriggerEStop(healths, estop_on_hardware_error_) && estop_.Trigger()) {
+            ROS_ERROR("Software e-stop engaged: a motor has a latched hardware error. The other joints hold; "
+                      "reboot the faulted motor, then call /arm_interface/estop_reset.");
+            publishEStopState();
+        }
+
+        if (now - last_status_time_ >= status_period_s_) {
+            last_status_time_ = now;
+            publishMotorHealth(samples, healths);
+        }
+    }
+
+    void publishMotorHealth(const std::vector<arm_interface::MotorSample>& samples,
+                            const std::vector<arm_interface::MotorHealth>& healths) {
+        diagnostic_msgs::DiagnosticArray diag;
+        diag.header.stamp = ros::Time::now();
+        sensor_msgs::JointState load_msg;
+        load_msg.header.stamp = diag.header.stamp;
+        for (size_t i = 0; i < num_joints_; ++i) {
+            const arm_interface::MotorSample& sample = samples[i];
+            diagnostic_msgs::DiagnosticStatus st;
+            st.name = "arm_interface/joint_" + std::to_string(i + 1);
+            st.hardware_id = "dynamixel_" + std::to_string(dxl_ids_[i]);
+            st.level = healths[i].level == arm_interface::HealthLevel::kFault ? diagnostic_msgs::DiagnosticStatus::ERROR
+                     : healths[i].level == arm_interface::HealthLevel::kWarn  ? diagnostic_msgs::DiagnosticStatus::WARN
+                                                                              : diagnostic_msgs::DiagnosticStatus::OK;
+            st.message = healths[i].text;
+            auto kv = [&st](const std::string& k, const std::string& v) {
+                diagnostic_msgs::KeyValue e;
+                e.key = k;
+                e.value = v;
+                st.values.push_back(e);
+            };
+            if (sample.valid) {
+                kv("temperature_c", std::to_string(sample.temperature_c));
+                kv("temperature_limit_c", std::to_string(static_cast<int>(temp_limits_[i])));
+                kv("load_percent", std::to_string(0.1 * sample.load_raw));
+                kv("input_voltage_v", std::to_string(0.1 * sample.voltage_raw));
+                kv("hardware_error", std::to_string(sample.hardware_error));
+                load_msg.name.push_back("joint_" + std::to_string(i + 1));
+                load_msg.effort.push_back(0.1 * sample.load_raw);
+            }
+            diag.status.push_back(st);
+        }
+        status_pub_.publish(diag);
+        if (!load_msg.name.empty()) {
+            load_pub_.publish(load_msg);
+        }
+    }
+
     void loadParams() {
         ros::NodeHandle pnh("~");
 
@@ -585,6 +814,24 @@ private:
         pnh.param("len_present_position", len_present_position_, len_present_position_);
         pnh.param("addr_hardware_error_status", addr_hardware_error_status_, 70);
         pnh.param("len_hardware_error_status", len_hardware_error_status_, 1);
+        pnh.param("addr_temperature_limit", addr_temperature_limit_, addr_temperature_limit_);
+        pnh.param("addr_present_load", addr_present_load_, addr_present_load_);
+        pnh.param("addr_present_voltage", addr_present_voltage_, addr_present_voltage_);
+        pnh.param("addr_present_temperature", addr_present_temperature_, addr_present_temperature_);
+        pnh.param("addr_bulk_block", addr_bulk_block_, addr_bulk_block_);
+        pnh.param("len_bulk_block", len_bulk_block_, len_bulk_block_);
+        pnh.param("error_poll_period_s", error_poll_period_s_, error_poll_period_s_);
+        double status_rate_hz = 2.0;
+        pnh.param("status_rate_hz", status_rate_hz, status_rate_hz);
+        status_period_s_ = status_rate_hz > 0.0 ? 1.0 / status_rate_hz : 0.5;
+        pnh.param("estop_on_hardware_error", estop_on_hardware_error_, estop_on_hardware_error_);
+        pnh.param("temperature_limit_default_c", temperature_limit_default_c_, temperature_limit_default_c_);
+        pnh.param("temp_warn_margin_c", health_config_.temp_warn_margin_c, health_config_.temp_warn_margin_c);
+        pnh.param("load_full_scale_raw", health_config_.load_full_scale_raw, health_config_.load_full_scale_raw);
+        pnh.param("load_warn_fraction", health_config_.load_warn_fraction, health_config_.load_warn_fraction);
+        pnh.param("load_sustain_s", health_config_.load_sustain_s, health_config_.load_sustain_s);
+        pnh.param("voltage_min_v", health_config_.voltage_min_v, health_config_.voltage_min_v);
+        pnh.param("voltage_max_v", health_config_.voltage_max_v, health_config_.voltage_max_v);
         pnh.param("dxl_resolution", dxl_resolution_, dxl_resolution_);
         dxl_rad_per_tick_ = 2.0 * M_PI / dxl_resolution_;
 
@@ -638,6 +885,7 @@ private:
         positions_rad_.assign(num_joints_, 0.0);
         joint_cmds_.assign(num_joints_, 0.0);
         cmd_seen_.assign(num_joints_, 0);
+        alert_.assign(num_joints_, 0);
         motor_errors_.assign(num_joints_, 0);
     }
 
@@ -778,26 +1026,11 @@ private:
                 // Wait 0.5s for bootloader without holding the port mutex
                 ros::Duration(0.5).sleep();
 
-                {
-                    std::lock_guard<std::mutex> lock(port_mutex_);
-                    // A reboot resets the motor's RAM registers, so its
-                    // Goal Position is NOT the pose it was last holding:
-                    // seed it from this motor's present position first,
-                    // same hazard as the startup/re-enable seeding.
-                    uint32_t present = 0;
-                    dxl_comm_result = packetHandler_->read4ByteTxRx(
-                        portHandler_, dxl_id, addr_present_position_, &present, &dxl_error);
-                    if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-                        dxl_comm_result = packetHandler_->write4ByteTxRx(
-                            portHandler_, dxl_id, addr_goal_position_, present, &dxl_error);
-                        if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0 && goal_written_valid_) {
-                            goal_written_[i] = dxl_sign_[i] * (static_cast<int32_t>(present) - dxl_bias_[i]) * dxl_rad_per_tick_;
-                        }
-                    }
-                    if (dxl_comm_result == COMM_SUCCESS && dxl_error == 0) {
-                        dxl_comm_result = packetHandler_->write1ByteTxRx(
-                            portHandler_, dxl_id, addr_torque_enable_, torque_enable_, &dxl_error);
-                    }
+                // A reboot resets the motor's RAM registers, so its Goal Position
+                // is NOT the pose it was last holding: seed it, then enable.
+                const bool seeded = seedAndEnableMotor(i);
+                if (!seeded) {
+                    dxl_comm_result = COMM_TX_FAIL;
                 }
 
                 if (dxl_comm_result != COMM_SUCCESS || dxl_error != 0) {
@@ -872,6 +1105,17 @@ private:
     // (the watchdog is only armed while writing), until the next command
     // re-enters the normal path or set_torque(false) is called.
     bool handleEStopReset(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        std::string refusal;
+        {
+            std::lock_guard<std::mutex> lock(health_mutex_);
+            refusal = arm_interface::ResetRefusalReason(health_, dxl_ids_);
+        }
+        if (!refusal.empty()) {
+            ROS_ERROR("E-stop reset refused: %s", refusal.c_str());
+            res.success = false;
+            res.message = "Reset refused, a motor has a latched hardware error: " + refusal;
+            return true;
+        }
         if (estop_.Reset()) {
             ROS_WARN("E-stop released. The arm is still holding; the next command or set_torque(false) takes over.");
             publishEStopState();
@@ -940,6 +1184,7 @@ private:
     dynamixel::PortHandler *portHandler_;
     dynamixel::PacketHandler *packetHandler_;
     dynamixel::GroupBulkRead bulkRead_;
+    dynamixel::GroupBulkRead errorRead_;   // Hardware Error Status only (address 70), read rarely
     dynamixel::GroupBulkWrite bulkWrite_;
     std::vector<int> dxl_ids_ = {1, 2, 3, 4, 5};
     std::vector<int32_t> positions_;
@@ -1001,6 +1246,33 @@ private:
     int num_joints_ = 5;
 
     std::vector<uint8_t> motor_errors_;
+
+    // Motor health (see monitorMotorHealth).
+    ros::Publisher status_pub_;
+    ros::Publisher load_pub_;
+    arm_interface::MotorHealthConfig health_config_;
+    std::unique_ptr<arm_interface::MotorHealthMonitor> monitor_;
+    std::vector<arm_interface::MotorHealth> health_;
+    std::mutex health_mutex_;                  // guards health_ (control loop writes, reset service reads)
+    std::atomic<uint32_t> faulted_mask_{0};    // bit i = motor index i has a latched hardware error
+    std::vector<char> alert_;                  // Hardware Alert bit seen on the last position read
+    std::vector<double> temp_limits_;
+    double temperature_limit_default_c_ = 80.0;
+    double last_status_time_ = -1e9;
+    double status_period_s_ = 0.5;
+    bool estop_on_hardware_error_ = true;
+    int addr_temperature_limit_ = 31;
+    int addr_present_load_ = 126;
+    int addr_present_voltage_ = 144;
+    int addr_present_temperature_ = 146;
+    // Bulk-read block per motor: 126..146 covers present load (126), velocity,
+    // position (132), voltage (144) and temperature (146) in 21 bytes.
+    int addr_bulk_block_ = 126;
+    int len_bulk_block_ = 21;
+    double error_poll_period_s_ = 2.0;  // hardware-error register safety-net poll
+    double last_error_poll_ = -1e9;
+    std::vector<uint8_t> hw_error_cache_;
+    uint32_t recover_mask_ = 0;  // motors that left a fault and still need torque re-enabled
     std::mutex port_mutex_;
 
     int gripper_joint_index_ = 5;  // 0-based; joint_6

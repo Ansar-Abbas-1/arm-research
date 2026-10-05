@@ -24,6 +24,15 @@
          param below is placed AFTER that file's <rosparam> load. -->
     <arg name="debug" default="false"/>
 
+    <!-- Speed limits on the motor side, overriding config/ArmInterface.yaml
+         (0 = keep the yaml values; a positive value applies to every joint).
+         max_goal_slew_rad_s: how fast the written goal may move toward the
+         commanded one (position mode). Keep it above the planned joint
+         speed or the goal lags the plan.
+         max_velocity_rad_s: velocity-mode command clamp. -->
+    <arg name="max_goal_slew_rad_s" default="0.0"/>
+    <arg name="max_velocity_rad_s" default="0.0"/>
+
     <!-- Launch the robot_state_publisher with the URDF file -->
     <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
 
@@ -38,12 +47,14 @@
             <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
                 <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
                 <param name="debug" value="$(arg debug)" />
+                <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
             </node>
         </group>
         <group if="$(eval control_mode == 'velocity')">
             <node name="arm_interface" pkg="arm_interface" type="robot_interface_velocity" output="screen">
                 <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
                 <param name="debug" value="$(arg debug)" />
+                <rosparam if="$(eval arg('max_velocity_rad_s') > 0)" param="max_velocity_rad_s">[$(arg max_velocity_rad_s), $(arg max_velocity_rad_s), $(arg max_velocity_rad_s), $(arg max_velocity_rad_s), $(arg max_velocity_rad_s), $(arg max_velocity_rad_s)]</rosparam>
             </node>
         </group>
     </group>

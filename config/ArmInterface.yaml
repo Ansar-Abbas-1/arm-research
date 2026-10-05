@@ -57,8 +57,31 @@ max_velocity_rad_s: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
 
 # Position-mode goal rate limit, rad/s per joint (goal_slew.h). The goal
 # written to a motor never moves faster than this from the goal last written,
-# which removes steps/jumps on resume-from-hold and torque re-enable, and is
-# also a hard speed cap on whatever a sender commands (commissioning rule:
-# reduced speed). 0.5 sits above the 0.2 rad/s trajectories at
-# velocity_scale 0.1; raise it together with velocity_scale.
-max_goal_slew_rad_s: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+# which removes steps/jumps on resume-from-hold and torque re-enable. It is
+# also a hard speed cap on whatever a sender commands. 2.0 equals the URDF
+# velocity limit, so at velocity_scale 1.0 it no longer throttles normal
+# tracking (operator decision 2026-10-05: full speed as before the
+# restructure); it still catches steps. If velocity_scale is lowered nothing
+# else needs to change. Setting it BELOW the planned peak speed makes the goal
+# lag the plan, and the reach node's correction loop then integrates that
+# transient (seen 2026-10-05 at scale 1.0 with a 0.5 slew).
+max_goal_slew_rad_s: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+
+# Motor health monitoring (motor_health.h, docs/sim_to_real.md section 17).
+# Load, voltage and temperature (126..146) ride along with every position read
+# (one widened bulk-read block, no extra bus transaction). The hardware error
+# register (70) is read when a position read reports the Hardware Alert bit and
+# every error_poll_period_s as a safety net. status_rate_hz is only the
+# publishing rate of /arm_interface/motor_status. A latched hardware error raises the software e-stop
+# (estop_on_hardware_error) and excludes that motor from torque writes.
+# Thresholds below are heuristic starting values, not from the datasheets.
+status_rate_hz: 2.0
+error_poll_period_s: 2.0
+estop_on_hardware_error: true
+temperature_limit_default_c: 80.0   # used only if a motor's own limit cannot be read
+temp_warn_margin_c: 3.0             # warn when within this of the motor's own limit
+load_full_scale_raw: 1000.0         # MX series: 0.1 % of max torque per count
+load_warn_fraction: 0.8
+load_sustain_s: 5.0
+voltage_min_v: 10.0
+voltage_max_v: 14.5

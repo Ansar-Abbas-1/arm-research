@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   rosbag
   urdf
   dynamic_reconfigure
+  diagnostic_msgs
 )
 
 roslaunch_add_file_check(launch)
@@ -138,6 +139,11 @@ add_executable(bulk_read src/bulk_read.cpp)
 add_dependencies(bulk_read ${catkin_EXPORTED_TARGETS} dynamixel_sdk)
 target_link_libraries(bulk_read ${catkin_LIBRARIES} dynamixel_sdk)
 
+add_executable(motor_diag src/motor_diag.cpp)
+add_dependencies(motor_diag ${catkin_EXPORTED_TARGETS} dynamixel_sdk)
+target_link_libraries(motor_diag ${catkin_LIBRARIES} dynamixel_sdk)
+target_include_directories(motor_diag PRIVATE include)
+
 add_executable(find_limits src/find_limits.cpp)
 add_dependencies(find_limits ${catkin_EXPORTED_TARGETS} dynamixel_sdk)
 target_link_libraries(find_limits ${catkin_LIBRARIES} dynamixel_sdk)
@@ -236,6 +242,8 @@ catkin_add_gtest(${PROJECT_NAME}-test-watchdog test/test_watchdog.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-gripper-conversion test/test_gripper_conversion.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-estop test/test_estop.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-drive-state test/test_drive_state.cpp)
+catkin_add_gtest(${PROJECT_NAME}-test-motor-status test/test_motor_status.cpp)
+catkin_add_gtest(${PROJECT_NAME}-test-motor-health test/test_motor_health.cpp)
 
 ## Python tests (URDF vs. hardware encoder limits)
 catkin_add_nosetests(test/test_limits_consistent.py)
