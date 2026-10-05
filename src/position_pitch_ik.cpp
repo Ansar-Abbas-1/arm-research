@@ -1,6 +1,7 @@
 #include "arm_kinematics/position_pitch_ik.h"
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <stdexcept>
 
@@ -53,6 +54,12 @@ TaskError ComputeTaskError(const ForwardKinematicsSolver& solver, const Eigen::I
 // is actually needed in practice.
 constexpr double kDriftCapMultiplier = 10.0;
 
+// After the primary task is inside its tolerance, SolveFromSeed refines for at
+// most kRefineIterations more Newton steps, until the error is below
+// kRefineFraction of the tolerance. Heuristic values, not derived.
+constexpr int kRefineIterations = 6;
+constexpr double kRefineFraction = 0.1;
+
 // Shared mechanics behind SolveFromSeed's two backtracking regimes (the
 // drift cap once primary has converged, and the primary-task line search
 // before it has) -- both are "try dq, and if the resulting TaskError
@@ -83,6 +90,144 @@ bool TryBacktrackingStep(const ForwardKinematicsSolver& solver, const Eigen::Iso
     trial_dq *= 0.5;
   }
   return false;
+}
+
+
+// Signed alignment a = up . (link axis z) of the secondary link, from the
+// chain configuration q (only the first `m` joints affect that link).
+double LinkAlignment(const ForwardKinematicsSolver& link_solver, const std::vector<double>& q) {
+  const size_t m = link_solver.GetActuatedJointNames().size();
+  std::vector<double> q_prefix(q.begin(), q.begin() + m);
+  return (link_solver.ComputePose(q_prefix).rotation() * Eigen::Vector3d::UnitZ()).z();
+}
+
+// 4 x n task Jacobian (position rows + the pitch row) and the matching task
+// error, the same quantities SolveFromSeed's main loop uses.
+void BuildTask(const ForwardKinematicsSolver& chain, const Eigen::Isometry3d& target,
+               const std::vector<double>& q, Eigen::Matrix<double, 6, Eigen::Dynamic>* J_full,
+               Eigen::Matrix<double, 4, Eigen::Dynamic>* J_task, Eigen::Vector4d* e_task,
+               TaskError* e) {
+  *e = ComputeTaskError(chain, target, q);
+  *J_full = ComputeGeometricJacobian(chain, q);
+  J_task->resize(4, q.size());
+  J_task->topRows<3>() = J_full->topRows<3>();
+  J_task->row(3) = e->pitch_axis.transpose() * J_full->bottomRows<3>();
+  *e_task = Eigen::Vector4d(e->position_error.x(), e->position_error.y(), e->position_error.z(),
+                            e->pitch_error);
+}
+
+// Moves q along the self-motion manifold of the primary task (position +
+// pitch fixed) toward the most vertical secondary link, maximising |a| with
+// a = up . z_link. Projected-gradient ascent with a Newton retraction onto
+// the manifold; see docs/position_pitch_ik.md "Posture optimisation".
+//   g   = s * grad(a),  grad(a)_i = up . (w_i x z_link) for the joints upstream
+//         of the link (w_i = world joint axis), s = sign(a) with s(0) = +1
+//   g_N = g projected onto ker(J_task)
+//   step: lambda = min(max_step, (1 - |a|) / |g_N|) along g_N / |g_N|, halved
+//         until the retracted point keeps the primary task within tolerance
+//         and strictly raises |a|.
+// Total joint motion (sum of the infinity norms of accepted steps) is bounded by
+// options.nullspace_max_displacement when that is > 0. Leaves *q unchanged if no
+// step is accepted. Never worsens the primary task: every accepted point passes
+// the strict tolerances.
+void OptimizePosture(const ForwardKinematicsSolver& chain, const PositionPitchIkOptions& o,
+                     const Eigen::Isometry3d& target, std::vector<double>* q) {
+  const auto& limits = chain.GetActuatedJointLimits();
+  const size_t n = q->size();
+  const ForwardKinematicsSolver& link = *o.nullspace_secondary_link_solver;
+  const size_t m = link.GetActuatedJointNames().size();
+  const Eigen::Vector3d up = Eigen::Vector3d::UnitZ();
+  const bool budgeted = o.nullspace_max_displacement > 0.0;
+  double used = 0.0;
+
+  auto within_tolerance = [&](const TaskError& e) {
+    return e.position_error.norm() < o.position_tolerance && std::abs(e.pitch_error) < o.pitch_tolerance;
+  };
+
+  for (int it = 0; it < o.nullspace_max_iterations; ++it) {
+    Eigen::Matrix<double, 6, Eigen::Dynamic> J;
+    Eigen::Matrix<double, 4, Eigen::Dynamic> J_task;
+    Eigen::Vector4d e_task;
+    TaskError e;
+    BuildTask(chain, target, *q, &J, &J_task, &e_task, &e);
+
+    std::vector<double> q_prefix(q->begin(), q->begin() + m);
+    const Eigen::Vector3d axis = link.ComputePose(q_prefix).rotation() * Eigen::Vector3d::UnitZ();
+    const double a = up.dot(axis);
+    const double s = a >= 0.0 ? 1.0 : -1.0;
+    Eigen::VectorXd g = Eigen::VectorXd::Zero(n);
+    for (size_t i = 0; i < m; ++i) {
+      g(i) = s * up.dot(J.block<3, 1>(3, i).cross(axis));
+    }
+
+    // Projector onto ker(J_task) from the SVD (rank decided relative to sigma_max).
+    Eigen::JacobiSVD<Eigen::MatrixXd> svd(J_task, Eigen::ComputeFullV);
+    const Eigen::VectorXd sv = svd.singularValues();
+    int rank = 0;
+    for (int k = 0; k < sv.size(); ++k) {
+      if (sv(k) > 1e-6 * sv(0) && sv(k) > 1e-9) ++rank;
+    }
+    Eigen::VectorXd gN = g;
+    for (int k = 0; k < rank; ++k) {
+      gN -= svd.matrixV().col(k) * svd.matrixV().col(k).dot(g);
+    }
+    const double gnorm = gN.norm();
+    if (gnorm < o.nullspace_tolerance) {
+      break;  // at a constrained optimum (or exactly vertical)
+    }
+
+    const double h0 = std::abs(a);
+    double lambda = std::min(o.nullspace_max_step, (1.0 - h0) / gnorm);
+    bool accepted = false;
+    double h_new = h0;
+    for (int bt = 0; bt < 14 && lambda > 1e-7; ++bt) {
+      std::vector<double> trial = *q;
+      for (size_t i = 0; i < n; ++i) {
+        trial[i] = std::min(std::max(trial[i] + lambda * gN(i) / gnorm, limits[i].first), limits[i].second);
+      }
+      // Newton retraction onto the primary-task manifold (half the tolerance
+      // as the target so the accept test below has margin).
+      for (int r = 0; r < 8; ++r) {
+        Eigen::Matrix<double, 6, Eigen::Dynamic> Jr;
+        Eigen::Matrix<double, 4, Eigen::Dynamic> Jt;
+        Eigen::Vector4d et;
+        TaskError er;
+        BuildTask(chain, target, trial, &Jr, &Jt, &et, &er);
+        if (er.position_error.norm() < 0.5 * o.position_tolerance &&
+            std::abs(er.pitch_error) < 0.5 * o.pitch_tolerance) {
+          break;
+        }
+        Eigen::VectorXd dq = detail::SolveDampedRightPseudoInverse(Jt, et, o.damping, nullptr);
+        for (size_t i = 0; i < n; ++i) {
+          trial[i] = std::min(std::max(trial[i] + dq(i), limits[i].first), limits[i].second);
+        }
+      }
+      TaskError ef = ComputeTaskError(chain, target, trial);
+      const double h = std::abs(LinkAlignment(link, trial));
+      double step_inf = 0.0;
+      for (size_t i = 0; i < n; ++i) step_inf = std::max(step_inf, std::abs(trial[i] - (*q)[i]));
+
+      if (budgeted && used + step_inf > o.nullspace_max_displacement) {
+        const double remaining = o.nullspace_max_displacement - used;
+        if (remaining <= 1e-9 || step_inf <= 0.0) {
+          return;  // budget spent
+        }
+        lambda *= 0.95 * remaining / step_inf;
+        continue;
+      }
+      if (within_tolerance(ef) && h > h0 + 1e-9) {
+        *q = trial;
+        used += step_inf;
+        h_new = h;
+        accepted = true;
+        break;
+      }
+      lambda *= 0.5;
+    }
+    if (!accepted || h_new - h0 < 1e-7) {
+      break;
+    }
+  }
 }
 
 }  // namespace
@@ -143,7 +288,7 @@ PositionPitchIkResult PositionPitchIkSolver::Solve(const Eigen::Isometry3d& targ
     Eigen::Vector3d axis =
         options_.nullspace_secondary_link_solver->ComputePose(q_prefix).rotation() *
         Eigen::Vector3d::UnitZ();
-    return Eigen::Vector3d::UnitZ().dot(axis);
+    return std::abs(Eigen::Vector3d::UnitZ().dot(axis));  // vertical LINE: up or down both count
   };
 
   // Real bug, found live: with a null-space task configured, a seed
@@ -238,152 +383,58 @@ PositionPitchIkResult PositionPitchIkSolver::SolveFromSeed(const Eigen::Isometry
   const size_t n = seed.size();
   std::vector<double> q = seed;
 
-  size_t m = 0;
-  if (options_.nullspace_secondary_link_solver != nullptr && options_.nullspace_gain != 0.0) {
-    m = options_.nullspace_secondary_link_solver->GetActuatedJointNames().size();
-    if (m > n) {
-      throw std::invalid_argument(
-          "PositionPitchIkSolver: nullspace_secondary_link_solver has more actuated joints than "
-          "the chain -- it must be an upstream sub-chain of solver's");
-    }
+  const bool posture_task =
+      options_.nullspace_secondary_link_solver != nullptr && options_.nullspace_gain != 0.0;
+  if (posture_task &&
+      options_.nullspace_secondary_link_solver->GetActuatedJointNames().size() > n) {
+    throw std::invalid_argument(
+        "PositionPitchIkSolver: nullspace_secondary_link_solver has more actuated joints than "
+        "the chain -- it must be an upstream sub-chain of solver's");
   }
 
   Eigen::Matrix<double, 6, 1> residual = Eigen::Matrix<double, 6, 1>::Zero();
   int iterations = 0;
   bool converged = false;
-  // Tracks whether the primary task has EVER been satisfied so far in this
-  // call -- once true, subsequent iterations are pure secondary-task work
-  // and their drift back into the primary task gets bounded below (see
-  // kDriftCapMultiplier), rather than left free to accumulate for the rest
-  // of the iteration budget.
-  bool primary_ever_converged = false;
 
+  // Phase 1: primary task only (position + pitch), damped Newton with a
+  // backtracking line search on the task cost.
+  int refine_steps = 0;
   for (; iterations < options_.max_iterations; ++iterations) {
     TaskError e = ComputeTaskError(solver_, target_pose, q);
-
     residual.head<3>() = e.position_error;
     residual.tail<3>() = e.rotation_error;  // full 3-component rotation error, informational (see header)
+
+    if (e.position_error.norm() < options_.position_tolerance &&
+        std::abs(e.pitch_error) < options_.pitch_tolerance) {
+      // Inside the acceptance tolerance. Keep refining for a few cheap Newton
+      // steps down to kRefineFraction of it: stopping at the first iterate
+      // inside a loose tolerance (as path-tracking samples use) leaves each
+      // sample off by up to tolerance/|J|, and that offset jumps from sample to
+      // sample, giving a finite-differenced joint velocity that does not shrink
+      // when the duration is stretched (trajectory_generation.md, Finding 7).
+      if (refine_steps >= kRefineIterations ||
+          (e.position_error.norm() < kRefineFraction * options_.position_tolerance &&
+           std::abs(e.pitch_error) < kRefineFraction * options_.pitch_tolerance)) {
+        break;
+      }
+      ++refine_steps;
+    }
 
     Eigen::Matrix<double, 6, Eigen::Dynamic> J = ComputeGeometricJacobian(solver_, q);
     Eigen::Matrix<double, 4, Eigen::Dynamic> J_task(4, n);
     J_task.topRows<3>() = J.topRows<3>();
     J_task.row(3) = e.pitch_axis.transpose() * J.bottomRows<3>();
-
     Eigen::Vector4d e_task(e.position_error.x(), e.position_error.y(), e.position_error.z(),
                             e.pitch_error);
 
-    // Computed BEFORE the convergence check (not just before the step)
-    // deliberately: convergence below requires this to have settled too,
-    // not just the primary task, and its own magnitude is exactly the
-    // right thing to check that against -- it has a genuine fixed point
-    // at zero (see resolved_rate.h/.md's scalar-triple-product identity),
-    // so "small qdot0" really does mean "close to the secondary
-    // objective," not just "few iterations happened to run."
-    Eigen::VectorXd qdot0;
-    bool have_nullspace_bias = false;
-    if (m > 0) {
-      std::vector<double> q_prefix(q.begin(), q.begin() + m);
-      Eigen::Vector3d link_axis =
-          options_.nullspace_secondary_link_solver->ComputePose(q_prefix).rotation() *
-          Eigen::Vector3d::UnitZ();
-      const Eigen::Vector3d world_up = Eigen::Vector3d::UnitZ();
-      qdot0 = Eigen::VectorXd::Zero(n);
-      for (size_t i = 0; i < m; ++i) {
-        Eigen::Vector3d z_i = J.block<3, 1>(3, i);
-        qdot0(i) = options_.nullspace_gain * world_up.dot(z_i.cross(link_axis));
-      }
-      have_nullspace_bias = true;
-    }
-
-    // Real bug, confirmed empirically before this fix: breaking as soon
-    // as position+pitch converged gave the null-space bias exactly as
-    // many iterations as the PRIMARY task happened to need and not one
-    // more -- typically far too few for the bias's own, much slower,
-    // per-step-limited convergence to get anywhere close to its fixed
-    // point. A 100-target sweep isolating restart randomness (fixed rng,
-    // only seeds that converged directly compared) showed the bias
-    // always improves alignment relative to no bias at all (so its
-    // direction/sign was never wrong), but still landed worse than the
-    // *seed's own starting alignment* in the majority of cases simply
-    // because the loop stopped too early to let it work. Once the
-    // primary task is satisfied, e_task is already ~0, so continuing to
-    // iterate costs nothing extra there -- the step becomes almost pure
-    // null-space work "for free," so requiring the bias to *also* have
-    // settled (or the iteration budget to run out) rather than stopping
-    // the instant the primary does is the actual fix, not a change to
-    // the bias math itself (which was already correct).
-    bool primary_converged = e.position_error.norm() < options_.position_tolerance &&
-                              std::abs(e.pitch_error) < options_.pitch_tolerance;
-    bool secondary_converged = !have_nullspace_bias || qdot0.norm() < options_.nullspace_tolerance;
-    if (primary_converged && secondary_converged) {
-      break;  // nothing left to gain from further iteration
-    }
-    primary_ever_converged = primary_ever_converged || primary_converged;
-
-    Eigen::VectorXd dq = detail::SolveDampedRightPseudoInverse(
-        J_task, e_task, options_.damping, have_nullspace_bias ? &qdot0 : nullptr);
-
+    Eigen::VectorXd dq = detail::SolveDampedRightPseudoInverse(J_task, e_task, options_.damping, nullptr);
     double step_norm = dq.lpNorm<Eigen::Infinity>();
     if (step_norm > options_.max_step) {
       dq *= (options_.max_step / step_norm);
     }
 
-    if (have_nullspace_bias && !primary_ever_converged) {
-      // A configured secondary task mixes null-space work into every dq
-      // from the very first iteration, not just after primary convergence
-      // (see NullspaceBiasImprovesVerticalAlignmentAtConvergence) -- its
-      // leakage can transiently raise ||e_task||^2 well before primary
-      // convergence too, which a cost-based rejection can't tell apart
-      // from genuinely diverging. That leakage is an accepted trade-off
-      // WHILE still working toward primary convergence -- so no
-      // acceptance check applies here at all. Once primary has been
-      // satisfied even once, though, the drift-cap branch below takes
-      // over instead of this unconditional accept (see its own comment).
-      for (size_t i = 0; i < n; ++i) {
-        q[i] = std::min(std::max(q[i] + dq(i), limits[i].first), limits[i].second);
-      }
-      continue;
-    }
-
-    if (have_nullspace_bias && primary_ever_converged) {
-      // Real bug, found live via a day-to-day /reach_target_pose call:
-      // once primary is satisfied, remaining iterations are pure
-      // secondary-task work, and letting that run completely unchecked
-      // for the rest of the iteration budget (as the branch above does,
-      // deliberately, while primary hasn't converged even once yet) can
-      // leak the primary residual far past its own tolerance -- measured
-      // on a real case, 0.0064m against a 1e-4m tolerance (64x), after
-      // 200 unconditional iterations from an already-exactly-converged
-      // seed. That's not a marginal wobble to shrug off: it was enough to
-      // flip `converged` to false, which then sent Solve()'s restart loop
-      // off to a completely unrelated random basin -- discarding whatever
-      // alignment progress had already been made from a good seed in
-      // favor of an arbitrary "exactly converged" one with no relation to
-      // vertical alignment at all. Fix: cap how far a step is allowed to
-      // drift the primary task back out, relative to its own tolerance --
-      // small and well-justified now that it bounds drift FROM an
-      // already-good state, not (like max_inner_retries' backtracking)
-      // trying to recover an unbounded blowup after the fact. Halve and
-      // retry within bound like the no-bias case above; if nothing within
-      // bound is found, stop -- there's nothing more to safely gain.
-      bool step_within_bound = TryBacktrackingStep(
-          solver_, target_pose, limits, options_.max_inner_retries, dq, &q,
-          [this](const TaskError& e_candidate) {
-            return e_candidate.position_error.norm() < kDriftCapMultiplier * options_.position_tolerance &&
-                   std::abs(e_candidate.pitch_error) < kDriftCapMultiplier * options_.pitch_tolerance;
-          });
-
-      if (!step_within_bound) {
-        break;  // no further secondary-task progress possible without breaching the drift cap
-      }
-      continue;
-    }
-
-    // Backtracking line search on the primary task cost (see
-    // max_inner_retries' own comment for the real bug this fixes): only
-    // take this step if it actually reduces ||e_task||^2, halving and
-    // retrying otherwise. e_task itself is untouched by this -- it's
-    // recomputed fresh next outer iteration from whatever q ends up being.
+    // Only take a step that actually reduces ||e_task||^2, halving it
+    // otherwise (see max_inner_retries for the real bug this fixes).
     double cost = e_task.squaredNorm();
     bool step_accepted = TryBacktrackingStep(
         solver_, target_pose, limits, options_.max_inner_retries, dq, &q,
@@ -392,36 +443,26 @@ PositionPitchIkResult PositionPitchIkSolver::SolveFromSeed(const Eigen::Isometry
                                             e_candidate.position_error.z(), e_candidate.pitch_error);
           return e_task_candidate.squaredNorm() < cost;
         });
-
     if (!step_accepted) {
-      // No improving step found even after halving max_inner_retries
-      // times: a genuine local minimum (or a target this solver can't
-      // actually reach -- expected for some interior Cartesian-path
-      // samples, see docs/position_pitch_ik.md), not something more outer
-      // iterations alone would fix. Stop rather than keep wandering.
+      // A genuine local minimum or an unreachable target: more outer
+      // iterations alone would not fix it.
       break;
     }
   }
 
-  // `residual`/`converged` are both determined from the TRUE final state
-  // here, not from whatever they were mid-loop -- `residual` above is
-  // computed at the START of each iteration (before that iteration's
-  // step), so unless the loop exited via the both-converged `break`
-  // (where nothing changed after it was last computed), it's stale by
-  // one step relative to the `q` a subsequent step, or max_iterations
-  // exhaustion, just left behind. And `converged` genuinely needs
-  // recomputing here rather than latching true the moment primary first
-  // looked satisfied mid-loop: a real bug caught live -- once the loop
-  // was fixed (above) to keep running after primary convergence so the
-  // null-space bias gets real iterations, the bias's own damped (not
-  // exact) null-space projection can leak a small amount back into the
-  // primary task over MANY subsequent steps, occasionally drifting
-  // position error back out of tolerance by the time the budget runs
-  // out, even though it was satisfied earlier. `converged` must mean
-  // "the returned joint_positions/residual actually satisfy the
-  // tolerance," not "did at some earlier point" -- recomputing
-  // unconditionally is also simpler than tracking exactly which exit
-  // path needs it, at the cost of one extra FK call.
+  // Phase 2: posture optimisation along the self-motion manifold, only from
+  // a primary-converged point so the secondary task can never be what fails
+  // the primary one.
+  {
+    TaskError e = ComputeTaskError(solver_, target_pose, q);
+    if (posture_task && e.position_error.norm() < options_.position_tolerance &&
+        std::abs(e.pitch_error) < options_.pitch_tolerance) {
+      OptimizePosture(solver_, options_, target_pose, &q);
+    }
+  }
+
+  // `residual`/`converged` come from the TRUE final state, not from the last
+  // loop iteration (which is one step stale).
   TaskError final_error = ComputeTaskError(solver_, target_pose, q);
   residual.head<3>() = final_error.position_error;
   residual.tail<3>() = final_error.rotation_error;

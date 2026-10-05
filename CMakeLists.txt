@@ -118,6 +118,8 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(${PROJECT_NAME}-test-resolved-rate arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
+  add_executable(probe_nullspace test/probe_nullspace.cpp)
+  target_link_libraries(probe_nullspace arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   catkin_add_gtest(${PROJECT_NAME}-test-position-pitch-ik test/test_position_pitch_ik.cpp)
   if(TARGET ${PROJECT_NAME}-test-position-pitch-ik)
     target_link_libraries(${PROJECT_NAME}-test-position-pitch-ik arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})

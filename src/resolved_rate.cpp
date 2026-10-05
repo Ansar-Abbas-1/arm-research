@@ -58,10 +58,14 @@ ResolvedRateResult ComputeResolvedRateVelocity(
     // directly: it depends only on the shared root->joint_i sub-chain, not
     // on which tip the solver was built for. Reusing J's columns here
     // avoids a second Jacobian evaluation entirely.
+    // Ascent on |up . link_axis| (the vertical LINE), not the signed value: a
+    // link already vertical pointing down is at the optimum and must not be
+    // driven up through horizontal. sign(a) with sign(0) = +1.
+    const double sign = world_up.dot(link_axis) >= 0.0 ? 1.0 : -1.0;
     qdot0 = Eigen::VectorXd::Zero(n);
     for (size_t i = 0; i < m; ++i) {
       Eigen::Vector3d z_i = J.block<3, 1>(3, i);
-      qdot0(i) = nullspace_gain * world_up.dot(z_i.cross(link_axis));
+      qdot0(i) = sign * nullspace_gain * world_up.dot(z_i.cross(link_axis));
     }
     have_nullspace_bias = true;
   }

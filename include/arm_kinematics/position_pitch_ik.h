@@ -167,6 +167,43 @@ struct PositionPitchIkOptions {
   // docs/position_pitch_ik.md.
   double nullspace_tolerance = 1e-3;
 
+  // Posture optimisation (replaces the old per-Newton-step bias; see
+  // docs/position_pitch_ik.md). Once the primary task has converged, the joint
+  // vector is moved along the 1-D self-motion manifold of the primary task to
+  // maximise |up . z_link| (link as vertical as possible, up OR down).
+  // nullspace_gain != 0 and nullspace_secondary_link_solver set enables it; the
+  // gain's VALUE is no longer used. Heuristic values, not derived:
+  //   nullspace_max_step: largest step along the manifold per iteration [rad]
+  //   nullspace_max_iterations: cap on iterations
+  // nullspace_tolerance (above) now stops it when the projected gradient norm
+  // falls below it.
+  double nullspace_max_step = 0.1;
+  int nullspace_max_iterations = 100;
+
+  // Budget on the null-space bias, in joint radians accumulated over ONE
+  // Solve() call (sum over Newton iterations of the infinity-norm of the
+  // null-space part of the step). Once spent, the bias is switched off for
+  // the rest of that call and only the primary task keeps iterating.
+  // 0 (default) = unlimited, i.e. the behaviour documented above.
+  //
+  // Why: nullspace_gain is a per-iteration step, not a rate, so without a
+  // budget every Cartesian-path sample carries about the same bias motion
+  // however finely the path is sampled, and the finite-differenced joint
+  // velocity from it stays above a low velocity limit no matter how far the
+  // duration is stretched (trajectory_generation.md, Finding 7). A budget of
+  // `rate * sample_period` turns the bias into a bounded joint rate that
+  // the duration search can accommodate. The caller that knows the sample
+  // period sets this: see nullspace_max_rate.
+  double nullspace_max_displacement = 0.0;
+
+  // Joint-rate cap [rad/s] on the null-space bias along a sampled path.
+  // Not used by Solve() itself: GenerateCartesianTrajectory converts it to
+  // nullspace_max_displacement = nullspace_max_rate * (time between
+  // consecutive samples) for its interior-sample solver. 0 = unlimited. A
+  // heuristic choice by the caller, not derived: it should sit well below
+  // the slowest velocity limit so the bias cannot dominate the plan.
+  double nullspace_max_rate = 0.0;
+
   // Optional base-collision avoidance (see base_collision.h). Off by
   // default (nullptr), same "pointer = off" convention as
   // nullspace_secondary_link_solver above. When set, Solve()'s existing

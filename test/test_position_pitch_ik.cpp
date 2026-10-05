@@ -3,7 +3,9 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cmath>
+#include <utility>
 #include <memory>
 #include <random>
 
@@ -167,6 +169,131 @@ TEST_F(PositionPitchIkTest, NullspaceBiasImprovesVerticalAlignmentAtConvergence)
   EXPECT_GT(bias_better, total / 2)
       << "the null-space bias should converge to a more vertically-aligned link_4 than no bias "
          "in the majority of targets (won " << bias_better << "/" << total << ")";
+}
+
+TEST_F(PositionPitchIkTest, NullspaceDisplacementBudgetBoundsTheBiasMotionPerSolve) {
+  // From an already-converged seed the primary task has nothing to do, so
+  // the whole joint displacement of a Solve() is bias (plus negligible
+  // leakage). The budget must cap it; unlimited must move much further, or
+  // the test would prove nothing.
+  std::vector<double> q_known = {0.8, 1.2, -0.9, 1.5, -1.8};
+  Eigen::Isometry3d target = solver_->ComputePose(q_known);
+
+  auto max_displacement = [&](double budget) {
+    PositionPitchIkOptions options;
+    options.rng_seed = 1;
+    options.max_restarts = 0;
+    options.nullspace_secondary_link_solver = link4_solver_.get();
+    options.nullspace_gain = 0.05;
+    options.nullspace_max_displacement = budget;
+    PositionPitchIkSolver solver(*solver_, options);
+    auto result = solver.Solve(target, q_known);
+    double worst = 0.0;
+    for (size_t i = 0; i < q_known.size(); ++i) {
+      worst = std::max(worst, std::abs(result.joint_positions[i] - q_known[i]));
+    }
+    return std::make_pair(worst, result.converged);
+  };
+
+  const auto unlimited = max_displacement(0.0);
+  const auto small = max_displacement(0.01);
+  const auto tiny = max_displacement(0.002);
+
+  EXPECT_GT(unlimited.first, 0.05) << "fixture must show real bias motion without a budget";
+  EXPECT_LE(small.first, 0.01 * 1.5 + 1e-3);
+  EXPECT_LE(tiny.first, 0.002 * 1.5 + 1e-3);
+  EXPECT_LT(tiny.first, small.first);
+  EXPECT_LT(small.first, unlimited.first);
+  EXPECT_TRUE(small.second) << "a spent budget must not break primary convergence";
+  EXPECT_TRUE(tiny.second);
+}
+
+namespace {
+// |up . z_link4|: how vertical the LINE of link_4 is (up or down both count).
+double VerticalLine(arm_kinematics::ForwardKinematicsSolver& link4, const std::vector<double>& q) {
+  std::vector<double> q4(q.begin(), q.begin() + 4);
+  return std::abs(link4.ComputePose(q4).rotation().col(2).z());
+}
+}  // namespace
+
+TEST_F(PositionPitchIkTest, PostureTaskMakesLink4SubstantiallyMoreVerticalWithoutBreakingThePrimaryTask) {
+  // Regression for the "null-space projection does nothing" report: the old
+  // per-Newton-step bias was no better than no bias on average (41.6 vs 39.4 deg
+  // mean tilt over random targets). Fixed seeds, warm starts 0.3 rad from a
+  // known solution, as the service sees them.
+  std::mt19937 rng(11);
+  const auto limits = solver_->GetActuatedJointLimits();
+  double sum_off = 0.0, sum_on = 0.0;
+  int total = 0, improved = 0;
+  for (int t = 0; t < 40; ++t) {
+    std::vector<double> qk(5), seed(5);
+    for (int i = 0; i < 5; ++i) {
+      std::uniform_real_distribution<double> u(limits[i].first + 0.15, limits[i].second - 0.15);
+      qk[i] = u(rng);
+      std::normal_distribution<double> nd(0.0, 0.3);
+      seed[i] = std::min(std::max(qk[i] + nd(rng), limits[i].first), limits[i].second);
+    }
+    Eigen::Isometry3d target = solver_->ComputePose(qk);
+    PositionPitchIkOptions off;
+    off.rng_seed = 1;
+    PositionPitchIkOptions on = off;
+    on.nullspace_secondary_link_solver = link4_solver_.get();
+    on.nullspace_gain = 0.05;
+    auto r_off = PositionPitchIkSolver(*solver_, off).Solve(target, seed);
+    auto r_on = PositionPitchIkSolver(*solver_, on).Solve(target, seed);
+    if (!r_off.converged || !r_on.converged) continue;
+    // The posture task must never cost primary accuracy.
+    EXPECT_LT((solver_->ComputePose(r_on.joint_positions).translation() - target.translation()).norm(),
+              on.position_tolerance);
+    ++total;
+    const double v_off = VerticalLine(*link4_solver_, r_off.joint_positions);
+    const double v_on = VerticalLine(*link4_solver_, r_on.joint_positions);
+    sum_off += std::acos(std::min(1.0, v_off));
+    sum_on += std::acos(std::min(1.0, v_on));
+    if (v_on > v_off + 1e-3) ++improved;
+    EXPECT_GE(v_on, v_off - 0.02) << "target " << t << ": the posture task must not make it worse";
+  }
+  ASSERT_GT(total, 20);
+  EXPECT_LT(sum_on / total, 0.6 * sum_off / total) << "mean tilt should drop by at least 40%";
+  EXPECT_GT(improved, total / 2);
+}
+
+TEST_F(PositionPitchIkTest, LinkPointingStraightDownCountsAsVerticalAndIsNotFlippedUp) {
+  // The old objective maximised the SIGNED up . z, so a link already vertical
+  // pointing down was pushed up through horizontal (and sat on a zero-gradient
+  // point exactly at straight down). The far pose reached on 2026-10-05 has
+  // link_4 at 179.7 deg.
+  std::vector<double> q_far = {0.015, 2.608, -2.183, 3.019, -2.542};
+  Eigen::Isometry3d target = solver_->ComputePose(q_far);
+  ASSERT_GT(VerticalLine(*link4_solver_, q_far), 0.999);
+
+  PositionPitchIkOptions on;
+  on.rng_seed = 1;
+  on.nullspace_secondary_link_solver = link4_solver_.get();
+  on.nullspace_gain = 0.05;
+  auto r = PositionPitchIkSolver(*solver_, on).Solve(target, q_far);
+  ASSERT_TRUE(r.converged);
+  EXPECT_GE(VerticalLine(*link4_solver_, r.joint_positions), 0.999);
+  for (size_t i = 0; i < q_far.size(); ++i) {
+    EXPECT_NEAR(r.joint_positions[i], q_far[i], 0.05) << "joint " << i << " should barely move";
+  }
+}
+
+TEST_F(PositionPitchIkTest, ZeroBudgetIsIdenticalToUnlimited) {
+  std::vector<double> q_known = {0.8, 1.2, -0.9, 1.5, -1.8};
+  Eigen::Isometry3d target = solver_->ComputePose(q_known);
+  PositionPitchIkOptions a_options;
+  a_options.rng_seed = 1;
+  a_options.nullspace_secondary_link_solver = link4_solver_.get();
+  a_options.nullspace_gain = 0.05;
+  PositionPitchIkOptions b_options = a_options;
+  b_options.nullspace_max_displacement = 0.0;
+  b_options.nullspace_max_rate = 0.0;
+  auto a = PositionPitchIkSolver(*solver_, a_options).Solve(target, seed_);
+  auto b = PositionPitchIkSolver(*solver_, b_options).Solve(target, seed_);
+  for (size_t i = 0; i < a.joint_positions.size(); ++i) {
+    EXPECT_DOUBLE_EQ(a.joint_positions[i], b.joint_positions[i]);
+  }
 }
 
 TEST_F(PositionPitchIkTest, ZeroGainMatchesNoSecondaryTaskAtAll) {
