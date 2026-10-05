@@ -20,6 +20,9 @@
        to change. This demo streams a continuous jog: with use_hardware,
        that stream goes straight to the real motors, so know what
        vx/vy/vz/nullspace_gain you're commanding before setting this. -->
+  <!-- max_joint_velocity: per-joint cap in rad/s applied as min(URDF limit,
+       cap); 0 = URDF limits. -->
+  <arg name="max_joint_velocity" default="0.0"/>
   <arg name="vx" default="0.05"/>
   <arg name="vy" default="0.0"/>
   <arg name="vz" default="0.0"/>
@@ -51,6 +54,7 @@
 
   <node name="resolved_rate_demo_node" pkg="arm_kinematics" type="resolved_rate_demo_node"
         output="screen">
+    <param name="max_joint_velocity" type="double" value="$(arg max_joint_velocity)"/>
     <param name="vx" type="double" value="$(arg vx)"/>
     <param name="vy" type="double" value="$(arg vy)"/>
     <param name="vz" type="double" value="$(arg vz)"/>

@@ -123,6 +123,11 @@ if(CATKIN_ENABLE_TESTING)
     target_link_libraries(${PROJECT_NAME}-test-position-pitch-ik arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})
   endif()
 
+  catkin_add_gtest(${PROJECT_NAME}-test-joint-velocity-cap test/test_joint_velocity_cap.cpp)
+  if(TARGET ${PROJECT_NAME}-test-joint-velocity-cap)
+    target_link_libraries(${PROJECT_NAME}-test-joint-velocity-cap ${catkin_LIBRARIES})
+  endif()
+
   catkin_add_gtest(${PROJECT_NAME}-test-base-collision test/test_base_collision.cpp)
   if(TARGET ${PROJECT_NAME}-test-base-collision)
     target_link_libraries(${PROJECT_NAME}-test-base-collision arm_kinematics ${catkin_LIBRARIES} ${roslib_LIBRARIES})

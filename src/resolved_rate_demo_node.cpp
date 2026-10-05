@@ -10,6 +10,7 @@
 #include <urdf/model.h>
 
 #include "arm_kinematics/forward_kinematics.h"
+#include "arm_kinematics/joint_velocity_cap.h"
 #include "arm_kinematics/resolved_rate.h"
 
 // Minimal, standalone demo of ComputeResolvedRateVelocity and its
@@ -71,6 +72,7 @@ class ResolvedRateDemoNode {
         std::make_unique<arm_kinematics::ForwardKinematicsSolver>(model, root_link, nullspace_tip_link);
     joint_names_ = fk_solver_->GetActuatedJointNames();
     velocity_limits_ = fk_solver_->GetActuatedJointVelocityLimits();
+    velocity_limits_ = arm_kinematics::ApplyMaxJointVelocityParam(pnh, velocity_limits_);  // ~max_joint_velocity
     joint_limits_ = fk_solver_->GetActuatedJointLimits();
 
     joint_sub_ = nh_.subscribe("/joint_states_in", 10, &ResolvedRateDemoNode::JointStatesCb, this);
