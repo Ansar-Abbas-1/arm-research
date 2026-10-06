@@ -1,0 +1,23 @@
+image_width: 1920
+image_height: 1080
+camera_name: vitade_af
+camera_matrix:
+  rows: 3
+  cols: 3
+  data: [1521.4468823005311, 0.0, 951.9220001475215, 0.0, 1521.9495482801633, 532.1031741361647,
+    0.0, 0.0, 1.0]
+distortion_model: plumb_bob
+distortion_coefficients:
+  rows: 1
+  cols: 5
+  data: [-0.3761771212165912, 0.1733024028506654, -0.0010835693699721698, 0.0017590700827926067,
+    0.0]
+rectification_matrix:
+  rows: 3
+  cols: 3
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+projection_matrix:
+  rows: 3
+  cols: 4
+  data: [1521.4468823005311, 0.0, 951.9220001475215, 0.0, 0.0, 1521.9495482801633,
+    532.1031741361647, 0.0, 0.0, 0.0, 1.0, 0.0]

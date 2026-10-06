@@ -10,6 +10,7 @@ roslaunch_add_file_check(launch)
 install(PROGRAMS
   scripts/hand_eye_collector.py
   scripts/hand_eye_solve.py
+  scripts/calibrate_intrinsics.py
   scripts/hand_eye_tf_publisher.py
   scripts/calibration_overlay_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

@@ -7,6 +7,7 @@ import numpy as np
 
 from arm_camera import board as board_mod
 from arm_camera import hand_eye
+from arm_camera import intrinsics as intr_mod
 from arm_camera import overlay as overlay_mod
 from arm_camera.geometry import (average_rotation, invert_transform, make_transform, matrix_from_quat,
                                  quat_from_matrix, rot_x, rot_y, rot_z, rotation_error_deg)
@@ -54,45 +55,50 @@ class BoardPipelineTest(unittest.TestCase):
         self.assertFalse(board_mod.Board(7, 7, 0.03).is_unambiguous())
 
     def test_detect_and_recover_pose_from_a_rendered_image(self):
-        # black_parity=1: white top-left square, the detector's order matches board.object_points().
+        # black_parity=0: the cell at the origin corner is dark, which is the canonical
+        # labelling, so the recovered board frame is exactly the true one.
         for yaw, tilt, dist in ((0.0, 0.3, 0.55), (0.4, 0.5, 0.65), (-0.3, 0.2, 0.5)):
-            R = rot_z(yaw) @ rot_x(tilt)   # printed board: x right, y down, normal into the paper
-            T_true = make_transform(R, [-0.10, -0.06, dist])
-            img = render_board(T_true, black_parity=1)
-            corners = board_mod.detect_corners(img, BOARD)
+            T_true = make_transform(rot_z(yaw) @ rot_x(tilt), [-0.10, -0.06, dist])
+            corners = board_mod.detect_corners(render_board(T_true, black_parity=0), BOARD)
             self.assertIsNotNone(corners, "board not found at yaw=%.1f tilt=%.1f" % (yaw, tilt))
             T_est, rms = board_mod.estimate_pose(corners, BOARD, K, np.zeros(5))
             self.assertLess(rms, 0.6)
             self.assertLess(np.linalg.norm(T_est[:3, 3] - T_true[:3, 3]) * 1000.0, 3.0)   # mm
             self.assertLess(rotation_error_deg(T_true[:3, :3], T_est[:3, :3]), 0.7)       # deg
 
-    def test_black_top_left_board_is_labelled_from_the_far_end_but_consistently(self):
-        # The common printed board (black top-left square): the detector starts at the other
-        # end, so T_cam_board is the true pose composed with a fixed 180 degree in-plane turn.
-        # Calibration only needs the labelling to be consistent, which it is.
-        offsets = []
+    def test_board_frame_is_the_same_whichever_way_up_the_board_is_held(self):
+        # Real finding (88 views of a 9 x 6 board): detectors label the board from either end
+        # depending on how it is held, and a calibration needs ONE frame. Rotating the board
+        # by 180 degrees in the image must not change the estimated pose of the physical board.
+        for yaw in (0.0, 0.4, np.pi - 0.2, np.pi + 0.3, -2.8):
+            T_true = make_transform(rot_z(yaw) @ rot_x(0.35), [-0.10, -0.06, 0.55])
+            corners = board_mod.detect_corners(render_board(T_true, black_parity=0), BOARD)
+            self.assertIsNotNone(corners, "board not found at yaw=%.2f" % yaw)
+            T_est, rms = board_mod.estimate_pose(corners, BOARD, K, np.zeros(5))
+            self.assertLess(rms, 0.6)
+            self.assertLess(np.linalg.norm(T_est[:3, 3] - T_true[:3, 3]) * 1000.0, 3.0, "position, yaw=%.2f" % yaw)
+            self.assertLess(rotation_error_deg(T_true[:3, :3], T_est[:3, :3]), 0.7, "orientation, yaw=%.2f" % yaw)
+
+    def test_a_board_printed_with_the_other_colour_parity_gets_a_fixed_known_offset(self):
+        # Origin cell light: the canonical order starts at the far end, so the board frame is the
+        # true one turned 180 degrees in its plane about the board centre. Fixed, hence harmless.
+        sq = BOARD.square_size
+        flip = make_transform(rot_z(np.pi), [(BOARD.cols - 1) * sq, (BOARD.rows - 1) * sq, 0.0])
         for yaw, tilt in ((0.0, 0.3), (0.5, 0.4), (-0.4, 0.2)):
             T_true = make_transform(rot_z(yaw) @ rot_x(tilt), [-0.10, -0.06, 0.55])
-            corners = board_mod.detect_corners(render_board(T_true, black_parity=0), BOARD)
+            corners = board_mod.detect_corners(render_board(T_true, black_parity=1), BOARD)
             self.assertIsNotNone(corners)
             T_est, rms = board_mod.estimate_pose(corners, BOARD, K, np.zeros(5))
             self.assertLess(rms, 0.6)
-            offsets.append(invert_transform(T_true) @ T_est)   # same fixed transform every frame
-        for o in offsets[1:]:
-            self.assertLess(np.linalg.norm(o[:3, 3] - offsets[0][:3, 3]) * 1000.0, 3.0)
-            self.assertLess(rotation_error_deg(o[:3, :3], offsets[0][:3, :3]), 0.7)
+            expected = T_true @ flip
+            self.assertLess(np.linalg.norm(T_est[:3, 3] - expected[:3, 3]) * 1000.0, 3.0)
+            self.assertLess(rotation_error_deg(T_est[:3, :3], expected[:3, :3]), 0.7)
 
-    def test_first_square_colour_is_read_from_the_image(self):
-        for parity in (0, 1):
-            T_true = make_transform(rot_z(0.2) @ rot_x(0.3), [-0.10, -0.06, 0.55])
-            img = render_board(T_true, black_parity=parity)
-            corners = board_mod.detect_corners(img, BOARD)
-            T_est, _ = board_mod.estimate_pose(corners, BOARD, K, np.zeros(5))
-            # Independent check: sample the image at the projected centre of cell (0, 0) of the LABELLING frame.
-            centre = board_mod.project(K, np.zeros(5), T_est, [[BOARD.square_size / 2, BOARD.square_size / 2, 0.0]])[0]
-            dark_there = float(img[int(round(centre[1])) - 2:int(round(centre[1])) + 3,
-                                   int(round(centre[0])) - 2:int(round(centre[0])) + 3].mean()) < 100.0
-            self.assertEqual(board_mod.first_square_is_dark(img, corners, BOARD), dark_there)
+    def test_low_contrast_board_is_rejected_instead_of_guessed(self):
+        T_true = make_transform(rot_z(0.2) @ rot_x(0.3), [-0.10, -0.06, 0.55])
+        img = render_board(T_true, black_parity=0)
+        washed_out = (128 + (img.astype(np.float32) - 128) * 0.02).astype(np.uint8)   # cells differ by a few grey levels
+        self.assertIsNone(board_mod.detect_corners(washed_out, BOARD))
 
     def test_pose_with_lens_distortion(self):
         D = np.array([-0.30, 0.10, 0.001, -0.001, 0.0])
@@ -188,6 +194,54 @@ class HandEyeTest(unittest.TestCase):
     def test_too_few_samples_is_refused(self):
         with self.assertRaises(ValueError):
             hand_eye.solve(synthetic_samples(2, seed=7))
+
+
+class IntrinsicsTest(unittest.TestCase):
+    K_TRUE = np.array([[1520.0, 0.0, 940.0], [0.0, 1522.0, 535.0], [0.0, 0.0, 1.0]])
+    D_TRUE = np.array([-0.37, 0.17, -0.001, 0.001, 0.0])
+
+    def synthetic_views(self, n, seed, noise_px=0.3, n_bad=0, bad_px=4.0):
+        rng = np.random.RandomState(seed)
+        views = []
+        for i in range(n):
+            while True:
+                T = make_transform(rot_z(rng.uniform(-0.6, 0.6)) @ rot_y(rng.uniform(-0.6, 0.6)) @ rot_x(rng.uniform(-0.6, 0.6)),
+                                   [rng.uniform(-0.15, 0.15), rng.uniform(-0.08, 0.08), rng.uniform(0.3, 0.7)])
+                px = board_mod.project(self.K_TRUE, self.D_TRUE, T, BOARD.object_points())
+                if px[:, 0].min() > 20 and px[:, 0].max() < 1900 and px[:, 1].min() > 20 and px[:, 1].max() < 1060:
+                    break
+            sigma = bad_px if i < n_bad else noise_px
+            views.append((px + rng.normal(0, sigma, px.shape)).astype(np.float32).reshape(-1, 1, 2))
+        return views
+
+    def test_recovers_the_intrinsics_and_reports_their_uncertainty(self):
+        res = intr_mod.calibrate(self.synthetic_views(30, 1), BOARD, (1920, 1080), target_rms=1e9, min_keep=1.0, bootstrap=6)
+        self.assertEqual(len(res.dropped), 0)
+        self.assertLess(abs(res.K[0, 0] - 1520.0), 8.0)
+        self.assertLess(abs(res.D.reshape(-1)[0] + 0.37), 0.02)
+        self.assertLess(res.rms, 0.45)
+        self.assertGreater(res.spread["cx"], 0.0)
+
+    def test_blurred_views_are_dropped_and_the_fit_improves(self):
+        views = self.synthetic_views(30, 2, n_bad=6, bad_px=4.0)
+        everything = intr_mod.calibrate(views, BOARD, (1920, 1080), target_rms=1e9)
+        cleaned = intr_mod.calibrate(views, BOARD, (1920, 1080), target_rms=0.5, min_keep=0.6)
+        self.assertGreater(everything.rms, 1.0)
+        self.assertLess(cleaned.rms, 0.55)
+        self.assertTrue(set(range(6)) <= set(cleaned.dropped), "the 6 noisy views should be the ones dropped")
+        self.assertLess(abs(cleaned.K[0, 0] - 1520.0), 8.0)
+
+    def test_camera_info_round_trips_through_the_matrix_reader(self):
+        d = intr_mod.camera_info_dict(self.K_TRUE, self.D_TRUE, (1920, 1080), "cam")
+        self.assertEqual(d["distortion_model"], "plumb_bob")
+        np.testing.assert_allclose(board_mod.camera_matrix_from_info(d["camera_matrix"]["data"]), self.K_TRUE)
+        self.assertEqual(len(d["projection_matrix"]["data"]), 12)
+
+    def test_coverage_counts_image_regions(self):
+        corner = np.array([[[10.0, 10.0]]], np.float32)
+        self.assertAlmostEqual(intr_mod.coverage([corner], (1920, 1080)), 1.0 / 12.0)
+        spread = [np.array([[[x, y]]], np.float32) for x in (100, 700, 1300, 1800) for y in (100, 500, 900)]
+        self.assertEqual(intr_mod.coverage(spread, (1920, 1080)), 1.0)
 
 
 class OverlayTest(unittest.TestCase):

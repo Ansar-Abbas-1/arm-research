@@ -48,13 +48,40 @@ absorbs it, but **never flip or mirror an image** that goes into a calibration.
 ## Step 1: intrinsics
 
 ```bash
-roslaunch arm_camera intrinsics_calibration.launch cols:=9 rows:=6 square:=0.025
+roslaunch arm_camera intrinsics_calibration.launch cols:=9 rows:=6 square:=0.023
 ```
 
 Move the board (or the hand-held camera) until the X, Y, Size and Skew bars are green, press
-CALIBRATE, SAVE, COMMIT. Copy `~/.ros/camera_info/vitade_af.yaml` to `config/camera_info.yaml`.
-Check the reported reprojection error: well under 0.5 px at 1080p is good; much more means
-bad focus, a bent board or a wrong `square`/`cols`/`rows`.
+CALIBRATE, SAVE, COMMIT. Practical points learned on the first real run:
+- 40 to 60 views are plenty. A first attempt collected 117 and the window froze for minutes
+  after CALIBRATE; that is the computation, not a crash, and Ctrl-C then corrupts the exit.
+- **Hold the board still for each view.** The GUI accepts frames while the board moves, and
+  motion-blurred views are the main source of error: 35 of 88 detected views in the first run
+  had about 2.2 px RMS under any parameters, against 0.7 px for the sharp ones.
+- SAVE writes `/tmp/calibrationdata.tar.gz` (all accepted images, `left-*.png`); COMMIT writes
+  `/root/.ros/camera_info/vitade_af.yaml` inside the container.
+
+The GUI gives no per-view diagnostics, so refit offline from the saved images:
+
+```bash
+rosrun arm_camera calibrate_intrinsics.py --images <folder with left-*.png> \
+     --compare /root/.ros/camera_info/vitade_af.yaml --out $(rospack find arm_camera)/config/camera_info.yaml
+```
+
+It detects the corners (the same canonical detector as the hand-eye code), fits the plumb-bob
+model, drops outlier views in rounds, and prints the image coverage, the per-view error, and the
+resampling spread of each parameter. Real detections only.
+
+**First real calibration (2026-10-06, 88 views with the board found):** the GUI result and the
+offline refit agree on the lens (fx about 1522, k1 -0.375, k2 0.173, 85 degree diagonal field of
+view; a fisheye model fits no better, 1.268 against 1.272 px) and differ in the principal point
+by 20 px in each axis (GUI 932, 512; refit 952, 532, which is 8 px from the image centre). On the
+same views both give 0.7 px on the 53 sharp views and 2.2 px on the 35 blurred ones, so
+reprojection error cannot tell them apart; the refit is installed in `config/camera_info.yaml`
+because its principal point is the plausible one and it was fitted on the clean views. The
+arbiter is the hand-eye board-pose scatter in step 2. 20 px is about 0.75 degrees, about 5 mm at
+0.4 m: re-sample (still board, 40 to 60 sharp views, then run the offline tool) if that
+matters for M7.
 
 ## Step 2: hand-eye
 
@@ -109,13 +136,14 @@ at the first inner corner, x along the columns, y along the rows.
 
 | File | Role |
 |---|---|
-| `src/arm_camera/{geometry,board,hand_eye,session,overlay}.py` | pure library, no ROS |
+| `src/arm_camera/{geometry,board,hand_eye,intrinsics,session,overlay}.py` | pure library, no ROS |
 | `scripts/hand_eye_collector.py` | capture, undo and solve services, debug image |
 | `scripts/hand_eye_solve.py` | offline solve on a stored session |
+| `scripts/calibrate_intrinsics.py` | offline intrinsics refit from saved images, with outlier rounds and parameter spread |
 | `scripts/hand_eye_tf_publisher.py` | static TF from `hand_eye.yaml` |
 | `scripts/calibration_overlay_node.py` | image overlay and rviz markers |
 | `config/{camera,board}.yaml`, `rviz/camera_overlay.rviz`, `launch/*.launch` | configuration |
-| `test/test_calibration_pipeline.py` | 17 unit tests (geometry, detection on a rendered board, hand-eye with 0.25 deg / 1 mm noise, overlay geometry) |
+| `test/test_calibration_pipeline.py` | 22 unit tests (geometry, detection and labelling on a rendered board, hand-eye with 0.25 deg / 1 mm noise, intrinsics refit and outlier dropping, overlay geometry) |
 | `test/e2e_synthetic.py` | nodes end to end with a synthetic camera on a private master (port 11312) |
 
 Run: `cd src/arm_camera && PYTHONPATH=src python3 test/test_calibration_pipeline.py` and, with
@@ -124,10 +152,13 @@ captures, camera pose recovered within 0.35 mm / 0.011 deg, overlay 0.1 px.
 
 ## Known limits
 
-- Not run with the real camera or board yet; all numbers above from synthetic data.
-- A detection that labels the board from the other end (180 degree flip) is consistent for an
-  even x odd board and harmless to calibration; `first_square_dark` is read from the image so the
-  rviz board is drawn correctly.
+- Intrinsics are calibrated on real images (above); the hand-eye step has not been run on the arm yet, so its numbers are still from synthetic data.
+- Corner labelling: on real images `findChessboardCornersSB` labelled the board from opposite
+  ends in half of the views (the classic detector never did), which would corrupt a hand-eye
+  calibration. `detect_corners` now uses the classic detector first and always puts the corners
+  in the one order in which the origin cell is dark, and refuses a view whose cell colours cannot
+  be told apart. A board printed with the other colour parity just gets a fixed 180 degree turn
+  of its frame (tested), harmless.
 - Hand-eye uses the pose at the capture time from TF; an arm that is still moving or a TF
   delay larger than a few ms corrupts a sample, hence the stillness check.
 - Rolling-shutter and motion blur: capture only when the arm is still.

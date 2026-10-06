@@ -39,44 +39,63 @@ class Board:
         return (self.cols, self.rows)
 
 
-def detect_corners(gray, board):
-    """Sub-pixel inner corners as an (N, 1, 2) float32 array, or None if not found.
-
-    Tries the sector-based detector (cv2.findChessboardCornersSB, more robust at high
-    resolution, already sub-pixel) and falls back to the classic one plus cornerSubPix."""
-    if gray.ndim == 3:
-        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
-    found, corners = False, None
-    if hasattr(cv2, "findChessboardCornersSB"):
-        found, corners = cv2.findChessboardCornersSB(gray, board.pattern_size, cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY)
-    if not found:
-        flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
-        found, corners = cv2.findChessboardCorners(gray, board.pattern_size, flags)
-        if not found:
-            return None
-        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 40, 1e-4)
-        corners = cv2.cornerSubPix(gray, corners, (7, 7), (-1, -1), criteria)
-    return np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
-
-
-def first_square_is_dark(gray, corners, board):
-    """Colour of the board cell that touches the origin corner on its +x,+y side, read
-    from the image. The detector's corner order depends on which square is dark at the
-    printed board's corner: with a black top-left square the labelling starts at the far
-    end (the board frame is rotated 180 degrees in its plane). That is consistent across
-    frames, so calibration is unaffected, but anything that DRAWS the board needs it."""
-    if gray.ndim == 3:
-        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+def _cell_levels(gray, corners, board):
+    """Mean grey level of the board cell that touches the origin corner on its +x,+y side
+    and of the next cell along +x (which has the opposite colour)."""
     c = corners.reshape(-1, 2)
     first = c[0] + 0.5 * (c[1] - c[0]) + 0.5 * (c[board.cols] - c[0])
-    neighbour = first + (c[1] - c[0])   # the next cell along +x has the opposite colour
+    neighbour = first + (c[1] - c[0])
 
     def level(p):
         x, y = int(round(p[0])), int(round(p[1]))
         patch = gray[max(0, y - 3):y + 4, max(0, x - 3):x + 4]
-        return float(patch.mean())
+        return float(patch.mean()) if patch.size else float("nan")
 
-    return level(first) < level(neighbour)
+    return level(first), level(neighbour)
+
+
+def first_square_is_dark(gray, corners, board):
+    """Colour of the board cell that touches the origin corner on its +x,+y side, read
+    from the image. Detectors may label the board from either end (a 180 degree turn in
+    its plane); detect_corners() uses this to make the labelling identical in every view."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    a, b = _cell_levels(gray, corners, board)
+    return a < b
+
+
+MIN_CELL_CONTRAST = 12.0   # grey levels between adjacent cells below which the colour is not trusted
+
+
+def detect_corners(gray, board, canonical=True):
+    """Sub-pixel inner corners as an (N, 1, 2) float32 array, or None if not found.
+
+    The classic detector (findChessboardCorners plus cornerSubPix) is tried first: on 88
+    real 1080p views of a 9 x 6 board it labelled the board identically in every view,
+    while findChessboardCornersSB, tried second as a fallback, flipped the labelling by
+    180 degrees in half of them. With canonical=True (default) the corners are then put in
+    the one order in which the origin cell is dark, so the board frame is the same in every
+    view whatever the detector did. Returns None if the cell colours cannot be told apart
+    (low contrast, heavy blur), because the order would be a guess."""
+    if gray.ndim == 3:
+        gray = cv2.cvtColor(gray, cv2.COLOR_BGR2GRAY)
+    flags = cv2.CALIB_CB_ADAPTIVE_THRESH | cv2.CALIB_CB_NORMALIZE_IMAGE
+    found, corners = cv2.findChessboardCorners(gray, board.pattern_size, flags)
+    if found:
+        criteria = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 50, 1e-5)
+        corners = cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), criteria)
+    elif hasattr(cv2, "findChessboardCornersSB"):
+        found, corners = cv2.findChessboardCornersSB(gray, board.pattern_size, cv2.CALIB_CB_EXHAUSTIVE | cv2.CALIB_CB_ACCURACY)
+    if not found:
+        return None
+    corners = np.asarray(corners, dtype=np.float32).reshape(-1, 1, 2)
+    if canonical:
+        a, b = _cell_levels(gray, corners, board)
+        if not np.isfinite(a) or not np.isfinite(b) or abs(a - b) < MIN_CELL_CONTRAST:
+            return None
+        if not a < b:
+            corners = corners[::-1].copy()
+    return corners
 
 
 def project(K, D, T_cam_board, board_points):
