@@ -117,6 +117,14 @@ TEST(MotorHealth, FaultedMaskAndResetGating) {
   EXPECT_TRUE(ResetRefusalReason(healths, {1, 2, 3, 4, 5, 6}).empty());
 }
 
+TEST(RebootPacket, HardwareAlertAloneIsNotARejection) {
+  EXPECT_FALSE(RebootPacketRejected(0x00));
+  EXPECT_FALSE(RebootPacketRejected(0x80));  // alert flag of the fault being cleared: seen on real hardware, motor 4
+  EXPECT_TRUE(RebootPacketRejected(0x01));   // result fail
+  EXPECT_TRUE(RebootPacketRejected(0x02));   // instruction error
+  EXPECT_TRUE(RebootPacketRejected(0x84));   // an error number with the alert flag is still a rejection
+}
+
 int main(int argc, char** argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

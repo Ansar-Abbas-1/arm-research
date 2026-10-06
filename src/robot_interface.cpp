@@ -1017,7 +1017,8 @@ private:
                     ROS_ERROR("Failed to send reboot command to Motor ID %d: %s", dxl_id, packetHandler_->getTxRxResult(dxl_comm_result));
                     failed_to_reenable_ids.push_back(dxl_id);
                     continue;
-                } else if (dxl_error != 0) {
+                } else if (arm_interface::RebootPacketRejected(dxl_error)) {
+                    // (The Hardware Alert flag alone is expected here: the motor answers before it restarts.)
                     ROS_ERROR("Motor ID %d reboot packet error: %s", dxl_id, packetHandler_->getRxPacketError(dxl_error));
                     failed_to_reenable_ids.push_back(dxl_id);
                     continue;
@@ -1033,7 +1034,7 @@ private:
                     dxl_comm_result = COMM_TX_FAIL;
                 }
 
-                if (dxl_comm_result != COMM_SUCCESS || dxl_error != 0) {
+                if (dxl_comm_result != COMM_SUCCESS || arm_interface::RebootPacketRejected(dxl_error)) {
                     ROS_ERROR("Failed to seed goal / enable torque for Motor ID %d after reboot (torque NOT enabled)", dxl_id);
                     failed_to_reenable_ids.push_back(dxl_id);
                 } else {

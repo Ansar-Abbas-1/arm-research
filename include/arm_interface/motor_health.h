@@ -158,4 +158,13 @@ inline std::string ResetRefusalReason(const std::vector<MotorHealth>& healths, c
   return "";
 }
 
+/**
+ * Whether the status packet answering a REBOOT instruction means the reboot was refused.
+ *
+ * The motor answers BEFORE it restarts, so the ERROR byte still carries the Hardware Alert flag (bit 7) of the
+ * fault being cleared: that alone is not a failure (it made every reset of a faulted motor look failed while the
+ * motor in fact rebooted). Only the error number (bits 0-6: result fail, instruction error, CRC, access, ...) is.
+ */
+inline bool RebootPacketRejected(uint8_t error_byte) { return (error_byte & 0x7F) != 0; }
+
 }  // namespace arm_interface

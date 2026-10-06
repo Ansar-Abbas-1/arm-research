@@ -178,3 +178,16 @@ Verified on the real arm (operator ran, log read back):
 - **Open:** at the far pose above, 2 corrections left 17.7 mm / 0.023 rad (22 mm before); earlier near poses reached 4 to 7 mm. Cause not established (joint_1 holds -9 % load with no gravity on that axis, so friction or cable drag is a candidate).
 
 **Speed settings, operator decision 2026-10-05 (end of day).** Full speed as before the restructure: `velocity_scale` 1.0 (launch default, hardware included) and `max_goal_slew_rad_s` 2.0 per joint in `ArmInterface.yaml` (equal to the URDF velocity limit, so the slew cap no longer throttles tracking; it still removes steps). `max_joint_acceleration` stays 1.0 rad/s^2 on hardware. Everything verified so far on hardware (hold, e-stop mid-move, reset) was at 0.2 rad/s peak: at full speed the e-stop stopping distance and the hold behaviour have NOT been tested, and `estop_midmotion_test.py`'s fixed 2.5 s trigger lands after the move ends at this speed (plan about 2 s), so re-run it with a shorter `--trigger-after` (about 0.8) before relying on the e-stop at speed. The sections above that quote 0.5 rad/s describe the earlier setting.
+
+## 19. e-stop, torque and motor management interfaces (2026-10-06)
+
+Front ends for what the driver already offers, documented in `arm_trajectory/docs/preset_buttons.md`: `estop_cli.py status |
+motors | trigger | reset | torque on|off | watch`, and in rviz the "Arm Control" panel (`arm_gui`): status bar, E-STOP (no
+confirmation), Reset e-stop, preset poses, torque release/enable and a per-motor table (temperature and limit, load, voltage,
+error), each action but the E-STOP behind a confirmation dialog. "Reset failed motors (reboot)" calls
+`/arm_interface/reenable_failed_motors` (reboot, re-seed, enable) after a latched hardware error, when the operator judges it
+safe. The simulator publishes `drive_state` and `motor_status`, serves `set_torque` and `reenable_failed_motors`
+(`_sim_motor_warn_joint`, `_sim_motor_fault_joint` inject a bad motor). Tested in simulation and headless Qt (31 panel
+tests, about 40 end-to-end checks); on the real arm so far: the panel in rviz showing live motor readings (2026-10-06) and
+preset moves; e-stop at speed, torque release and the failed-motor reset are not yet verified there. Releasing torque lets the arm sag: both interfaces ask first and the driver refuses it while
+the e-stop is engaged.
