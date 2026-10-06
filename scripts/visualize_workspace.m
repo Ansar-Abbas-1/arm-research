@@ -18,9 +18,15 @@ function visualize_workspace(csv_paths, titles)
 % sum of the chain's own segment lengths, base_link->end_effector) is drawn
 % for scale -- no sample can fall outside it, by the triangle inequality on
 % a chain of rigid segments, regardless of joint limits.
+%
+% Performance: the 200k set assumes hardware OpenGL. If a warning reports
+% software OpenGL, MATLAB was started with -prefersoftwareopengl (or the
+% saved graphics pref/driver check forced it). Fix: opengl('save','hardware')
+% and restart with -nosoftwareopengl; on hybrid Intel+NVIDIA laptops also
+% launch with __NV_PRIME_RENDER_OFFLOAD=1 __GLX_VENDOR_LIBRARY_NAME=nvidia.
 
 if nargin < 1
-    csv_paths = {'workspace_points_50k.csv', 'workspace_points_200k.csv'};
+    csv_paths = {'workspace_points_200k.csv'};
 end
 if nargin < 2
     titles = repmat({''}, size(csv_paths));
@@ -37,8 +43,11 @@ for i = 1:n_sets
     x = T.x; y = T.y; z = T.z;
     r = sqrt(x.^2 + y.^2 + z.^2);
 
-    subplot(1, n_sets, i);
-    scatter3(x, y, z, 4, z, 'filled', 'MarkerFaceAlpha', 0.5);
+    ax = subplot(1, n_sets, i);
+    if i == 1
+        warn_if_software_opengl(ax);
+    end
+    scatter3(x, y, z, 4, z, 'filled', 'MarkerFaceAlpha',0.75);
     hold on;
     % A dense cloud like this one is largely opaque from outside (the
     % near-side points occlude the far side/interior), so the bound sphere
@@ -82,6 +91,21 @@ function plot_wireframe_sphere(radius, rgb, alpha)
 [sx, sy, sz] = sphere(24);
 h = mesh(radius * sx, radius * sy, radius * sz);
 set(h, 'FaceColor', 'none', 'EdgeColor', rgb, 'EdgeAlpha', alpha, 'LineWidth', 0.5);
+end
+
+function warn_if_software_opengl(ax)
+% Warn when MATLAB rasterizes on the CPU (Mesa llvmpipe / "OpenGL Software",
+% e.g. launched with -prefersoftwareopengl): 200k markers is then very slow,
+% and it is not a scatter3 limitation -- fix the MATLAB graphics setup
+% (opengl('save','hardware'), -nosoftwareopengl, PRIME offload to the dGPU).
+info = rendererinfo(ax);
+if contains(info.GraphicsRenderer, 'Software', 'IgnoreCase', true) || ...
+        contains(info.RendererDevice, 'llvmpipe', 'IgnoreCase', true)
+    warning('visualize_workspace:softwareOpenGL', ...
+            ['Software OpenGL in use (%s / %s): rendering is CPU-bound. ' ...
+             'See header note; use hardware OpenGL for the 200k set.'], ...
+            info.GraphicsRenderer, info.RendererDevice);
+end
 end
 
 function s = format_count(n)

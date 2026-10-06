@@ -8,13 +8,13 @@
 root_link: base_link
 tip_link: end_effector
 
-position_tolerance: 0.0001   # meters
-pitch_tolerance: 0.001       # radians
-max_iterations: 200
-damping: 0.05                # Chiaverini singularity threshold, see resolved_rate.md
+position_tolerance: 0.011   # meters
+pitch_tolerance: 0.01       # radians
+max_iterations: 20000
+damping: 0.1                # Chiaverini singularity threshold, see resolved_rate.md
 max_step: 0.2                # radians, per-iteration inf-norm clamp
-max_inner_retries: 5         # backtracking line-search retries before giving up on an iteration
-max_restarts: 20
+max_inner_retries: 50         # backtracking line-search retries before giving up on an iteration
+max_restarts: 200
 
 # Null-space secondary task: biases nullspace_tip_link's own local Z axis
 # toward vertical. nullspace_gain: 0.0 (the library default) disables
@@ -25,5 +25,5 @@ max_restarts: 20
 # starting point; see position_pitch_ik.h's own nullspace_gain comment for
 # the measured trade-off before turning this up.
 nullspace_tip_link: link_4
-nullspace_gain: 0.05
-nullspace_tolerance: 0.001
+nullspace_gain: 0.5
+nullspace_tolerance: 0.1
