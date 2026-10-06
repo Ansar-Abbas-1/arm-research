@@ -15,6 +15,7 @@ find_package(catkin REQUIRED COMPONENTS
   interactive_markers
   roslaunch
   message_generation
+  arm_gui
 )
 find_package(Eigen3 REQUIRED)
 
@@ -83,6 +84,8 @@ target_link_libraries(interactive_pose_marker_node
 catkin_install_python(PROGRAMS
   scripts/manual_trajectory_demo.py
   scripts/reach_pose_cli.py
+  scripts/preset_manager_node.py
+  scripts/legacy_preset_buttons_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -113,6 +116,8 @@ if(CATKIN_ENABLE_TESTING)
   if(TARGET ${PROJECT_NAME}-test-reach-correction)
     target_link_libraries(${PROJECT_NAME}-test-reach-correction ${catkin_LIBRARIES})
   endif()
+
+  catkin_add_nosetests(test/test_preset_logic.py)
 
   catkin_add_gtest(${PROJECT_NAME}-test-cartesian-trajectory test/test_cartesian_trajectory.cpp)
   if(TARGET ${PROJECT_NAME}-test-cartesian-trajectory)

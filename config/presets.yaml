@@ -1,0 +1,18 @@
+# Named joint poses for the rviz "Arm Control" panel (arm_gui), served by preset_manager_node. Joints are
+# joint_1..joint_5 in radians. These shipped values are poses already run on the real arm. Your own poses are
+# saved with the panel's "Save current pose as..." button into ~/.ros/arm_trajectory/presets.yaml and override
+# the entries here by name, so this file stays as the fallback.
+presets:
+  default:
+    joints: [0.0, 0.02, -0.16, 0.02, -0.02]
+    note: "rest pose (upright); the pose the arm returns to with stage3_joint_move.py --goal 0 0.02 -0.16 0.02 -0.02"
+  ready:
+    joints: [0.15, 0.25, -0.25, 0.25, -0.25]
+    note: "raised, near upright, the 'pivot' pose used to route around the singular rest pose"
+  pre_grasp:
+    joints: [0.652, 0.348, -0.262, 0.227, -0.313]
+    note: "PLACEHOLDER (pose A, tip about 0.13, 0.10, 0.55 m): jog the arm to your real pre-grasp pose and overwrite this"
+
+# The largest joint move a preset may start [rad]: an optional guard against a typo in a saved pose. 0 = no limit
+# (the launch argument preset_max_delta overrides this value, and its default is 0).
+max_delta: 0

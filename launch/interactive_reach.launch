@@ -84,6 +84,12 @@
        2.0 rad/s per joint). Passed to the real driver only. -->
   <arg name="max_goal_slew_rad_s" default="0.0"/>
 
+  <!-- Simulator only: inject a bad motor to try the Arm Control panel's motor report and "Reset failed motors"
+       without touching the real arm. N is the 1-based joint (0 = none): sim_motor_warn_joint shows 47 C near the
+       limit, sim_motor_fault_joint an overload that "Reset failed motors" (or the reenable service) clears. -->
+  <arg name="sim_motor_warn_joint" default="0"/>
+  <arg name="sim_motor_fault_joint" default="0"/>
+
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
 
@@ -98,12 +104,14 @@
       <param name="sim_mode" type="string" value="ideal"/>
       <param name="publish_rate" type="double" value="50.0"/>
       <param name="num_joints" type="int" value="6"/>
+      <param name="sim_motor_warn_joint" type="int" value="$(arg sim_motor_warn_joint)"/>
+      <param name="sim_motor_fault_joint" type="int" value="$(arg sim_motor_fault_joint)"/>
     </node>
   </group>
   <group if="$(arg use_hardware)">
     <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
       <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
-      <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
+      <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s" subst_value="true">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
     </node>
   </group>
 
@@ -126,6 +134,20 @@
     <param name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)" />
   </node>
   <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
+
+  <!-- Preset-pose backend for the "Arm Control" rviz panel (arm_gui): it holds the poses (config/presets.yaml,
+       plus the ones you save from the panel in ~/.ros/arm_trajectory/presets.yaml) and runs the moves through the
+       same planner and executor as every other reach. presets:=false leaves it out (the panel then has no
+       preset buttons; its e-stop, torque and motor controls still work). preset_max_delta limits the largest
+       joint move a preset may start (rad; a heuristic guard against a typo in a saved pose, 0 = no limit). -->
+  <arg name="presets" default="true"/>
+  <arg name="preset_max_delta" default="0"/>
+  <group if="$(arg presets)">
+    <node name="preset_manager" pkg="arm_trajectory" type="preset_manager_node.py" output="screen">
+      <rosparam command="load" file="$(find arm_trajectory)/config/presets.yaml"/>
+      <param name="max_delta" value="$(arg preset_max_delta)"/>
+    </node>
+  </group>
 
   <group if="$(arg use_rviz)">
     <node name="rviz" pkg="rviz" type="rviz"
