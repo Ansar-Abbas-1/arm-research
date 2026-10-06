@@ -1,0 +1,3 @@
+<launch>
+  <test test-name="test_arm_control_panel" pkg="arm_gui" type="test_arm_control_panel" time-limit="120.0"/>
+</launch>

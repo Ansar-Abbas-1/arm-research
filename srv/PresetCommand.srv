@@ -1,0 +1,9 @@
+# Command to preset_manager_node (/preset_manager/command).
+#   action  "go"      move to the stored preset `name` (planned like every other joint move)
+#           "save"    store the arm's CURRENT joint pose under `name` (new or overwrite) in the user file
+#           "cancel"  cancel the move in progress (`name` ignored)
+string action
+string name
+---
+bool success
+string message

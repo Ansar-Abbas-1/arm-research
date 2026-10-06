@@ -1,0 +1,5 @@
+<library path="lib/libarm_gui">
+  <class name="arm_gui/ArmControlPanel" type="arm_gui::ArmControlPanel" base_class_type="rviz::Panel">
+    <description>Preset poses, e-stop, torque enable/disable and the motor status report of the arm.</description>
+  </class>
+</library>
