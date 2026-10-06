@@ -11,6 +11,12 @@ install(PROGRAMS
   scripts/hand_eye_collector.py
   scripts/hand_eye_solve.py
   scripts/calibrate_intrinsics.py
+  scripts/aruco_detector_node.py
+  scripts/aruco_distance_report.py
+  scripts/make_aruco_markers.py
+  scripts/make_charuco_board.py
+  scripts/charuco_mount_calibration.py
+  scripts/charuco_mount_solve.py
   scripts/hand_eye_tf_publisher.py
   scripts/calibration_overlay_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})

@@ -84,6 +84,8 @@ def load_hand_eye(path):
     """dict with X (T_ee_cam), B (T_base_board), board, metrics, and the raw yaml."""
     with open(path) as f:
         d = yaml.safe_load(f)
-    out = {"X": _pose_from_dict(d), "B": _pose_from_dict(d["board_in_base"]), "raw": d,
-           "board": Board(d["board"]["cols"], d["board"]["rows"], d["board"]["square_size"])}
-    return out
+    b = d.get("board", {})
+    # A file written by the ChArUco mount calibration has no chessboard to draw: board is None there
+    # (the camera pose X is still valid; the rviz overlay needs a chessboard-based file).
+    board = None if b.get("type") == "charuco" else Board(b["cols"], b["rows"], b["square_size"])
+    return {"X": _pose_from_dict(d), "B": _pose_from_dict(d["board_in_base"]), "raw": d, "board": board}

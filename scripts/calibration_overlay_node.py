@@ -42,6 +42,11 @@ class OverlayNode:
     def __init__(self):
         data = session.load_hand_eye(rospy.get_param("~hand_eye_file"))
         self.B, self.board = data["B"], data["board"]
+        if self.board is None:
+            rospy.logfatal("the hand-eye file comes from the ChArUco mount calibration: the overlay draws a chessboard and "
+                           "needs a chessboard-based calibration (hand_eye_collector). The camera pose in this file is still "
+                           "published by hand_eye_tf_publisher.py.")
+            raise SystemExit(1)
         self.first_dark = bool(data["raw"]["board"].get("first_square_dark") or False)
         self.base = rospy.get_param("~base_frame", "base_link")
         self.cam = rospy.get_param("~camera_frame", session.CHILD_FRAME)

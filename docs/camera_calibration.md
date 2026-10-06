@@ -150,6 +150,22 @@ Run: `cd src/arm_camera && PYTHONPATH=src python3 test/test_calibration_pipeline
 ROS sourced, `python3 test/e2e_synthetic.py`. Last result (2026-10-06): 17/17; end to end 14/14
 captures, camera pose recovered within 0.35 mm / 0.011 deg, overlay 0.1 px.
 
+## Arm and camera in one command
+
+`roslaunch arm_camera arm_with_camera.launch use_hardware:=true correction_steps:=2` starts the whole arm stack
+and the camera driver together. `camera_tf:=static x:= y:= z:= yaw:= pitch:= roll:=` or `camera_tf:=hand_eye`
+connects the camera to the kinematic tree (default `none`); `aruco:=true marker_size:=0.1` adds the marker
+detector; `camera:=false` leaves the camera out. See the comments in `launch/arm_with_camera.launch`.
+
+## Camera mount from a ChArUco board on the ground
+
+`docs/charuco_mount_calibration.md`: the mount from a board with a measured pose (or without, by hand-eye), with a cross-check.
+
+## ArUco distance test
+
+A separate check of the camera's scale against a ruler, and the ways to calibrate the mount from
+markers, are in `docs/aruco_distance_test.md`.
+
 ## Known limits
 
 - Intrinsics are calibrated on real images (above); the hand-eye step has not been run on the arm yet, so its numbers are still from synthetic data.

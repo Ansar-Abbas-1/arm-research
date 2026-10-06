@@ -1,0 +1,9 @@
+# The printed ChArUco board used for the camera-mount calibration (docs/charuco_mount_calibration.md).
+# Print it from the SVG made by `rosrun arm_camera make_charuco_board.py` at 100 % ("actual size"),
+# glue it flat on a rigid plate, then MEASURE a printed square and the black marker inside it and edit the
+# two lengths below to the measured values (in metres): they set the scale of the whole calibration.
+squares_x: 8            # squares along the board's x axis (columns)
+squares_y: 6            # squares along y (rows)
+square_length: 0.030    # edge of one chessboard square [m]
+marker_length: 0.022    # edge of the black ArUco marker inside a white square [m]
+dictionary: 4X4_50

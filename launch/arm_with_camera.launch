@@ -1,0 +1,77 @@
+<launch>
+  <!-- The arm stack (arm_trajectory/interactive_reach.launch: driver or simulator, kinematics,
+       trajectory service and executor, reach node, interactive marker, rviz) together with the
+       eye-in-hand camera (usb_cam) and the transform that connects the two, in one command:
+
+         roslaunch arm_camera arm_with_camera.launch use_hardware:=true correction_steps:=2
+
+       The arm arguments below are passed through (their defaults repeat the ones of
+       interactive_reach.launch: edit both if you change one).
+
+       camera_tf says where the camera sits on the arm (end_effector to camera_optical_frame):
+         none      publish nothing (default): the camera image and the arm run side by side, but
+                   the camera is not connected to the kinematic tree
+         static    from x y z (metres) and yaw pitch roll (radians); with the identity default this
+                   is only a placeholder, give real values
+         hand_eye  from hand_eye_file (written by the hand-eye or ChArUco mount calibration)
+       Optional extras: aruco:=true runs the marker detector (marker_size is the measured black
+       square in metres; it publishes TF to aruco_N and the image /aruco_detector/image), and
+       camera_viewer:=true opens an image window. To see the camera in the arm's rviz add an Image
+       display on /usb_cam/image_raw (or /aruco_detector/image) and the TF display shows the frames. -->
+  <arg name="use_hardware" default="false"/>
+  <arg name="use_rviz" default="true"/>
+  <arg name="correction_steps" default="0"/>
+  <arg name="velocity_scale" default="1.0"/>
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+
+  <arg name="camera" default="true"/>
+  <arg name="device" default="/dev/video2"/>
+  <arg name="camera_tf" default="none"/>
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="0"/>
+  <arg name="yaw" default="0"/>
+  <arg name="pitch" default="0"/>
+  <arg name="roll" default="0"/>
+  <arg name="hand_eye_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+  <arg name="aruco" default="false"/>
+  <arg name="marker_size" default="0.10"/>
+  <arg name="dictionary" default="auto"/>
+  <arg name="camera_viewer" default="false"/>
+
+  <include file="$(find arm_trajectory)/launch/interactive_reach.launch">
+    <arg name="use_hardware" value="$(arg use_hardware)"/>
+    <arg name="use_rviz" value="$(arg use_rviz)"/>
+    <arg name="correction_steps" value="$(arg correction_steps)"/>
+    <arg name="velocity_scale" value="$(arg velocity_scale)"/>
+    <arg name="max_joint_acceleration" value="$(arg max_joint_acceleration)"/>
+  </include>
+
+  <group if="$(arg camera)">
+    <include file="$(find arm_camera)/launch/camera.launch">
+      <arg name="device" value="$(arg device)"/>
+    </include>
+
+    <include if="$(eval arg('camera_tf') == 'static')" file="$(find arm_camera)/launch/camera_static_tf.launch">
+      <arg name="x" value="$(arg x)"/>
+      <arg name="y" value="$(arg y)"/>
+      <arg name="z" value="$(arg z)"/>
+      <arg name="yaw" value="$(arg yaw)"/>
+      <arg name="pitch" value="$(arg pitch)"/>
+      <arg name="roll" value="$(arg roll)"/>
+    </include>
+
+    <node if="$(eval arg('camera_tf') == 'hand_eye')" name="hand_eye_tf_publisher" pkg="arm_camera"
+          type="hand_eye_tf_publisher.py" output="screen">
+      <param name="file" value="$(arg hand_eye_file)"/>
+    </node>
+
+    <node if="$(arg aruco)" name="aruco_detector" pkg="arm_camera" type="aruco_detector_node.py" output="screen">
+      <param name="marker_size" value="$(arg marker_size)"/>
+      <param name="dictionary" value="$(arg dictionary)"/>
+    </node>
+
+    <node if="$(arg camera_viewer)" name="camera_viewer" pkg="rqt_image_view" type="rqt_image_view"
+          args="/usb_cam/image_raw"/>
+  </group>
+</launch>

@@ -1,0 +1,16 @@
+<launch>
+  <!-- Static transform parent -> child. Used for end_effector -> camera_optical_frame until the
+       hand-eye calibration (config/hand_eye.yaml) provides it. x y z in metres; yaw pitch roll in
+       radians, applied about z, y, x in that order. The identity default means "the camera is at
+       the end_effector origin looking along its z axis": only meaningful as a placeholder. -->
+  <arg name="parent" default="end_effector"/>
+  <arg name="child" default="camera_optical_frame"/>
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="0"/>
+  <arg name="yaw" default="0"/>
+  <arg name="pitch" default="0"/>
+  <arg name="roll" default="0"/>
+  <node name="camera_static_tf" pkg="tf2_ros" type="static_transform_publisher"
+        args="$(arg x) $(arg y) $(arg z) $(arg yaw) $(arg pitch) $(arg roll) $(arg parent) $(arg child)"/>
+</launch>

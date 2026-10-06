@@ -1,0 +1,41 @@
+<launch>
+  <!-- ArUco distance test: camera, detector, and rviz showing the markers, the camera-to-marker
+       distance and the annotated image. Measure the black square of the PRINTED marker and pass it
+       as marker_size (metres). dictionary:=auto finds it by itself (use a name once known).
+       Optional static_tf:=true publishes end_effector -> camera_optical_frame from x y z yaw pitch
+       roll (only needed for results in base_link; the camera-to-marker distance does not use it).
+       Then, with the marker in view:
+         rosrun arm_camera aruco_distance_report.py with the options id, measured and offset
+       (see its help). -->
+  <arg name="device" default="/dev/video2"/>
+  <arg name="marker_size" default="0.10"/>
+  <arg name="dictionary" default="auto"/>
+  <arg name="rviz" default="true"/>
+  <arg name="static_tf" default="false"/>
+  <arg name="x" default="0"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="0"/>
+  <arg name="yaw" default="0"/>
+  <arg name="pitch" default="0"/>
+  <arg name="roll" default="0"/>
+
+  <include file="$(find arm_camera)/launch/camera.launch">
+    <arg name="device" value="$(arg device)"/>
+  </include>
+
+  <include if="$(arg static_tf)" file="$(find arm_camera)/launch/camera_static_tf.launch">
+    <arg name="x" value="$(arg x)"/>
+    <arg name="y" value="$(arg y)"/>
+    <arg name="z" value="$(arg z)"/>
+    <arg name="yaw" value="$(arg yaw)"/>
+    <arg name="pitch" value="$(arg pitch)"/>
+    <arg name="roll" value="$(arg roll)"/>
+  </include>
+
+  <node name="aruco_detector" pkg="arm_camera" type="aruco_detector_node.py" output="screen">
+    <param name="marker_size" value="$(arg marker_size)"/>
+    <param name="dictionary" value="$(arg dictionary)"/>
+  </node>
+
+  <node if="$(arg rviz)" name="rviz_aruco" pkg="rviz" type="rviz" args="-d $(find arm_camera)/rviz/aruco.rviz"/>
+</launch>

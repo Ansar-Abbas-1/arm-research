@@ -97,3 +97,12 @@ def average_rotation(rotations):
         U[:, -1] *= -1
         R = U @ Vt
     return R
+
+
+def ypr_from_matrix(R):
+    """(yaw, pitch, roll) in radians such that R = Rz(yaw) @ Ry(pitch) @ Rx(roll): the argument order of
+    tf2_ros static_transform_publisher (and camera_static_tf.launch)."""
+    yaw = float(np.arctan2(R[1, 0], R[0, 0]))
+    pitch = float(np.arcsin(np.clip(-R[2, 0], -1.0, 1.0)))
+    roll = float(np.arctan2(R[2, 1], R[2, 2]))
+    return yaw, pitch, roll
