@@ -1,0 +1,25 @@
+<launch>
+  <!-- Calibration check in rviz: predicted board corners (from joint states, forward
+       kinematics, hand-eye and intrinsics) against the detected ones, plus the board, the
+       camera frustum and the RMS error in the 3D view. Needs config/hand_eye.yaml and
+       config/camera_info.yaml, and the arm stack running (TF and robot_description). -->
+  <arg name="device" default="/dev/video2"/>
+  <arg name="hand_eye_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+  <arg name="camera" default="true"/>
+  <arg name="rviz" default="true"/>
+
+  <include if="$(arg camera)" file="$(find arm_camera)/launch/camera.launch">
+    <arg name="device" value="$(arg device)"/>
+  </include>
+
+  <node name="hand_eye_tf_publisher" pkg="arm_camera" type="hand_eye_tf_publisher.py" output="screen">
+    <param name="file" value="$(arg hand_eye_file)"/>
+  </node>
+
+  <node name="calibration_overlay" pkg="arm_camera" type="calibration_overlay_node.py" output="screen">
+    <param name="hand_eye_file" value="$(arg hand_eye_file)"/>
+  </node>
+
+  <node if="$(arg rviz)" name="rviz_calibration" pkg="rviz" type="rviz"
+        args="-d $(find arm_camera)/rviz/camera_overlay.rviz"/>
+</launch>

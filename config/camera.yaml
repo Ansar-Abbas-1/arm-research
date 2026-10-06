@@ -1,0 +1,29 @@
+# usb_cam parameters for the eye-in-hand camera (Microdia Webcam Vitade AF, USB 0c45:6366).
+# v4l2-ctl 2026-10-06: MJPG 1920x1080 and 1280x720 at 30 fps; YUYV only 25 or 10 fps at the
+# larger sizes (USB 2.0 bandwidth), so MJPEG.
+video_device: /dev/video2        # /dev/video3 of the same camera is its metadata node
+image_width: 1920
+image_height: 1080
+pixel_format: mjpeg
+framerate: 30
+io_method: mmap
+camera_frame_id: camera_optical_frame
+camera_name: vitade_af
+
+# FOCUS: despite the "AF" in its name this camera exposes NO focus control to V4L2 (no
+# focus_auto / focus_absolute in `v4l2-ctl --list-ctrls`), so the focus cannot be locked in
+# software. Calibrate with the board at the working distance (0.25 to 0.5 m) in steady light,
+# and check that the sharpness does not hunt (docs/camera_calibration.md). A changed focus
+# after calibration invalidates the intrinsics.
+#
+# EXPOSURE: kept AUTOMATIC (operator preference): auto_exposure is on in the camera (value 3),
+# the exposure time follows the light, and this file does not override it. Two related
+# settings, both left at the camera's defaults:
+#  - exposure_dynamic_framerate (on): in dim light the camera lengthens the exposure past
+#    1/30 s by lowering the frame rate (that is why 20 fps was measured). More light, or
+#    v4l2-ctl -d /dev/video2 -c exposure_dynamic_framerate=0, gives a steady 30 fps.
+#  - brightness (v4l2 range -64..64, default 0) biases what the auto exposure aims for. The
+#    first frame of a mostly white scene was bright (mean 168); if the printed board looks
+#    washed out, lower brightness a little (e.g. -10) instead of fixing the exposure.
+# Exposure does not affect the geometry being calibrated; only motion blur and clipped
+# whites matter, so capture only when the arm is still (the collector enforces that).
