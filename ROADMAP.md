@@ -14,7 +14,7 @@ and one new repo per milestone that adds a package, per the "new capability
 | M3 — Trajectory generation | **Done** (2026-09-26) | `arm_trajectory` (new) |
 | M4 — Non-interactive reach + base-collision avoidance | **Done** (2026-10-01) | `arm_trajectory`, `arm_kinematics` |
 | M5 — Sim-to-real | **On hold (2026-10-06, operator decision).** Stages 1 to 3 and the e-stop / hold restructure passed on real hardware at 0.2 rad/s; remaining safety work parked (see the M5 section) | `arm_interface` |
-| M6 — Camera + calibration | Sketch | TBD |
+| M6 — Camera + calibration | **In progress (2026-10-06):** tooling built and tested on synthetic data; waiting for `usb_cam` in the container and the first real calibration | `arm_camera` (new) |
 | M7 — Target detection/localization | Sketch | TBD |
 | M8 — Closed-loop reach | Sketch | — |
 
@@ -164,9 +164,11 @@ New files: `arm_interface/include/arm_interface/gripper_conversion.h` (+ test), 
 
 Parked by the operator because the remaining items are not critical right now; the arm is usable as is. Resume from `arm_interface/docs/sim_to_real.md` sections 16 to 18. What is done: the reach pipeline on hardware, the hold / slew / e-stop restructure (verified, e-stop mid-move PASS at 0.2 rad/s), motor health monitoring (startup fault path and a power cycle verified), the posture optimiser and acceleration limit (simulation only). What is parked, roughly in priority order: (1) re-verify the e-stop at the full speed now configured (`velocity_scale` 1.0, `max_goal_slew_rad_s` 2.0; only 0.2 rad/s was verified); (2) thermal lockout (WARN only logs today; joint 2 warms about 10 C per session) and a joint-limit margin / reach-feasibility check for far-low poses; (3) the correction loop measures after a fixed 0.05 s settle and should wait for the arm to come to rest; (4) hardware tests not yet run: `set_torque false`, recovery of a motor leaving a fault, the posture optimiser on a real reach; (5) gravity-torque objective calibrated from `/arm_interface/motor_load`, branch switching, motor-side Position P/I gain, monitoring in the velocity-mode node.
 
-## M6 — Camera integration and calibration (sketch)
+## M6 — Camera integration and calibration (in progress, started 2026-10-06)
 
-Intrinsics, camera-to-robot extrinsics.
+Eye-in-hand camera (Microdia Webcam Vitade AF, USB 0c45:6366, MJPG 1920x1080 about 20 fps; autofocus, lock it), printed chessboard, new package `arm_camera` (own repo). Delivered so far, all tested only on synthetic data (17 unit tests, plus a node-level end-to-end run against a synthetic camera and simulated TF on a private master): `usb_cam` bring-up (`camera.launch`, `config/camera.yaml`), intrinsic calibration through the standard `camera_calibration` GUI (`intrinsics_calibration.launch`), hand-eye calibration `X = T_end_effector_camera` (`hand_eye_collector` capture/undo/solve services with stillness and fit checks, OpenCV `calibrateHandEye` with all five methods, pose-diversity check specific to this arm's two rotation axes, offline `hand_eye_solve.py`), the calibrated transform as a static TF `end_effector -> camera_optical_frame`, and an rviz overlay (`overlay.launch`: detected corners against the corners predicted from joint states, forward kinematics, hand-eye and intrinsics, plus the board, the camera frustum and the RMS error in 3D). The collector never moves the arm. Docs: `arm_camera/docs/camera_calibration.md`.
+
+Remaining before M6 is done: install `ros-noetic-usb-cam` in the container, measure the printed board and edit `config/board.yaml`, run the real intrinsics and hand-eye calibrations, check them with the overlay at poses not used for the calibration, and record the real accuracy (expected to be limited by the arm's 4 to 7 mm repeatability, not by the camera). Gate for M7: overlay RMS at held-out poses and the board-pose scatter from the real run.
 
 ## M7 — Target detection and 3D localization (sketch)
 
