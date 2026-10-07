@@ -10,6 +10,8 @@ Publishes (private names):
   TF  <base_frame> -> <tf_prefix><id>              (valid markers only, default marker_<id>)
   ~marker_<id>  geometry_msgs/PoseStamped         (valid markers only, in base_frame)
   ~report       std_msgs/String (JSON, latched)   every marker seen in the window, valid or not, with spread
+  ~observations arm_perception/MarkerObservationArray  every listed marker found in EACH processed frame, in the camera
+                frame, unaveraged and at the image stamp (also empty): what a controller (visual servoing) consumes
 
 Markers: config/markers.yaml (~markers_file) lists every marker to look for with its MEASURED size and dictionary
 (see arm_perception/marker_config.py); markers seen but not listed are ignored and named under "ignored" in the
@@ -28,13 +30,14 @@ import numpy as np
 import rospy
 import tf2_ros
 from cv_bridge import CvBridge
-from geometry_msgs.msg import PoseStamped, TransformStamped
+from geometry_msgs.msg import Pose, PoseStamped, TransformStamped
 from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from arm_camera import aruco
 from arm_camera.geometry import make_transform, matrix_from_quat, quat_from_matrix
-from arm_perception import marker_config, marker_logic as ml
+from arm_perception import marker_config, marker_detector, marker_logic as ml
+from arm_perception.msg import MarkerObservation, MarkerObservationArray
 
 
 def tf_to_matrix(msg):
@@ -51,7 +54,7 @@ class Node:
         self.prefix = P("~tf_prefix", "marker_")
         self.camera_frame = P("~camera_frame", "")
         self.max_rms = float(P("~max_reprojection_px", 2.0))
-        self.detector = aruco.detector_parameters(quad_decimate=float(P("~quad_decimate", 2.0)))
+        self.detector = marker_detector.MarkerDetector(self.cfg, float(P("~quad_decimate", 2.0)), self.max_rms)
         self.period = 1.0 / float(P("~max_rate_hz", 15.0))
         self.tracker = ml.MarkerTracker(float(P("~window_s", 0.5)), float(P("~still_translation_mm", 2.0)),
                                         float(P("~still_rotation_deg", 0.3)), int(P("~min_samples", 3)))
@@ -63,6 +66,7 @@ class Node:
         self.last = rospy.Time(0)
         self.pose_pubs = {}
         self.pub_report = rospy.Publisher("~report", String, queue_size=1, latch=True)
+        self.pub_obs = rospy.Publisher("~observations", MarkerObservationArray, queue_size=2)
         rospy.Subscriber(P("~camera_info_topic", "/usb_cam/camera_info"), CameraInfo, self.on_info, queue_size=1)
         rospy.Subscriber(P("~image_topic", "/usb_cam/image_raw"), Image, self.on_image, queue_size=1, buff_size=2 ** 24)
         rospy.loginfo("marker localizer: %d markers (%s), dictionaries %s, pose in %s (still-only, window %.2f s)",
@@ -86,16 +90,19 @@ class Node:
         self.tracker.add_camera_pose(t, T_bc)
         K, D = self.info
         gray = cv2.cvtColor(self.bridge.imgmsg_to_cv2(msg, "bgr8"), cv2.COLOR_BGR2GRAY)
-        for dname in self.cfg.dictionaries():
-            for d in aruco.detect(gray, dname, self.detector):
-                spec = self.cfg.spec(dname, d.marker_id)
-                if spec is None:
-                    self.ignored[d.marker_id] = (dname, t)
-                    continue
-                T_cm, rms, ratio = aruco.estimate_pose(d.corners, spec.size, K, D)
-                if T_cm is None or rms > self.max_rms:
-                    continue
-                self.tracker.add_detection(d.marker_id, t, ml.base_pose(T_bc, T_cm), ratio, rms, float(np.linalg.norm(T_cm[:3, 3])))
+        found, ignored = self.detector.detect(gray, K, D)
+        for i, dname in ignored:
+            self.ignored[i] = (dname, t)
+        obs = MarkerObservationArray()
+        obs.header.stamp, obs.header.frame_id = msg.header.stamp, frame
+        for d in found:
+            self.tracker.add_detection(d.id, t, ml.base_pose(T_bc, d.T_cam_marker), d.ambiguity, d.rms, d.distance)
+            o = MarkerObservation(id=d.id, dictionary=d.dictionary, size=d.size, reprojection_px=d.rms, ambiguity_ratio=d.ambiguity, distance=d.distance)
+            o.pose.position.x, o.pose.position.y, o.pose.position.z = [float(v) for v in d.T_cam_marker[:3, 3]]
+            q = quat_from_matrix(d.T_cam_marker[:3, :3])
+            o.pose.orientation.x, o.pose.orientation.y, o.pose.orientation.z, o.pose.orientation.w = [float(v) for v in q]
+            obs.markers.append(o)
+        self.pub_obs.publish(obs)
         self.publish(t, msg.header.stamp)
 
     def publish(self, t, stamp):

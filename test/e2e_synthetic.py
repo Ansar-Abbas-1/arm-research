@@ -4,7 +4,7 @@ ArUco marker whose pose in the base frame is fixed and known, TF carries a camer
 stops at another pose, and the marker finally disappears. Starts its OWN roscore on port 11312 (never the real
 arm's 11311) and kills only what it started. Run with ROS sourced:
 
-    python3 src/arm_perception/test/e2e_synthetic.py
+    python3 src/arm_perception/test/e2e_synthetic.py      (after catkin_make: it uses the built arm_perception and arm_camera)
 """
 import os
 import subprocess
@@ -18,8 +18,6 @@ os.environ["ROS_MASTER_URI"] = "http://localhost:%d" % PORT
 HERE = os.path.dirname(os.path.abspath(__file__))
 PKG = os.path.dirname(HERE)
 ARM_CAMERA = os.path.join(os.path.dirname(PKG), "arm_camera")
-sys.path.insert(0, os.path.join(PKG, "src"))
-sys.path.insert(0, os.path.join(ARM_CAMERA, "src"))
 sys.path.insert(0, os.path.join(ARM_CAMERA, "test"))
 
 import json  # noqa: E402
@@ -31,6 +29,7 @@ from cv_bridge import CvBridge  # noqa: E402
 from geometry_msgs.msg import PoseStamped, TransformStamped  # noqa: E402
 from sensor_msgs.msg import CameraInfo, Image  # noqa: E402
 from std_msgs.msg import String  # noqa: E402
+from arm_perception.msg import MarkerObservationArray  # noqa: E402
 
 import test_aruco as TA  # noqa: E402
 from arm_camera.geometry import invert_transform, make_transform, quat_from_matrix, rot_x, rot_y, rot_z, rotation_error_deg  # noqa: E402
@@ -56,8 +55,7 @@ def cam_pose(t):
 
 
 def start(cmd, name):
-    env = dict(os.environ)
-    env["PYTHONPATH"] = os.pathsep.join([os.path.join(PKG, "src"), os.path.join(ARM_CAMERA, "src"), env.get("PYTHONPATH", "")])
+    env = dict(os.environ)          # the BUILT packages (source devel/setup.bash): the generated message module is there
     log = open(os.path.join(tempfile.gettempdir(), "arm_perception_e2e_%s.log" % name), "w")
     p = subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT)
     procs.append(p)
@@ -81,7 +79,8 @@ def main():
         assert "/arm_interface" not in subprocess.check_output(["rosnode", "list"]).decode(), "arm_interface on this master"
         rospy.init_node("e2e_marker")
         start([sys.executable, os.path.join(PKG, "scripts", "marker_localizer_node.py"), "_markers_file:=" + MARKERS_YAML], "node")
-        reports, poses = [], []
+        reports, poses, observations = [], [], []
+        rospy.Subscriber("/marker_localizer/observations", MarkerObservationArray, lambda m: observations.append((time.time(), m)), queue_size=100)
         rospy.Subscriber("/marker_localizer/report", String, lambda m: reports.append((time.time(), json.loads(m.data))), queue_size=50)
         rospy.Subscriber("/marker_localizer/marker_0", PoseStamped, lambda m: poses.append((time.time(), m)), queue_size=50)
         buf = tf2_ros.Buffer()
@@ -114,7 +113,7 @@ def main():
 
         def run_cli():
             r = subprocess.run([sys.executable, os.path.join(PKG, "scripts", "marker_pose_cli.py"), "--timeout", "4"],
-                               capture_output=True, text=True, env=dict(os.environ, PYTHONPATH=os.pathsep.join([os.path.join(PKG, "src"), os.path.join(ARM_CAMERA, "src"), os.environ.get("PYTHONPATH", "")])))
+                               capture_output=True, text=True)
             cli_out.update(rc=r.returncode, out=r.stdout + r.stderr)
 
         cli_started = False
@@ -167,6 +166,12 @@ def main():
         seen = [r for (tw, r) in reports if t0 + 1.5 <= tw <= t0 + T_STILL_A]
         check("the unlisted marker is never reported but is named under ignored",
               seen and not any(m["id"] == 5 for r in seen for m in r["markers"]) and any(i["id"] == 5 for r in seen for i in r["ignored"]))
+        obs_a = [m for (tw, o) in observations if t0 + 1.5 <= tw <= t0 + T_STILL_A for m in o.markers if m.id == 984]
+        check("per-frame observations carry the 50 mm marker in the camera frame at the image stamp",
+              bool(obs_a) and obs_a[-1].size == 0.050 and abs(obs_a[-1].distance - np.linalg.norm(T_CAM_SMALL_A[:3, 3])) < 0.02
+              and all(o.header.frame_id == "camera_optical_frame" for (_, o) in observations))
+        during_obs = [o for (tw, o) in observations if t0 + T_STILL_A + 0.8 <= tw <= t0 + T_MOVE - 0.2]
+        check("observations keep coming (unaveraged, not withheld) while the camera moves", len(during_obs) >= 5 and any(o.markers for o in during_obs))
         print("-- camera moving")
         a, b = T_STILL_A + 0.8, T_MOVE - 0.2
         during = [(tw, r) for (tw, r) in reports if t0 + a <= tw <= t0 + b]
@@ -192,6 +197,7 @@ def main():
         check("marker_pose_cli prints the pose and exits 0", cli_out.get("rc") == 0 and "marker 0 (100 mm):" in cli_out.get("out", ""))
         print("-- marker gone")
         check("a vanished marker disappears from the report", reports and reports[-1][1]["markers"] == [])
+        check("an empty observation array is published when nothing is seen", observations and not observations[-1][1].markers)
         print("RESULT:", "PASS" if ok else "FAIL")
     finally:
         for p in reversed(procs):
