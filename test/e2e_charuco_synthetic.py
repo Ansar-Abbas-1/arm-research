@@ -132,7 +132,12 @@ def main():
         ok &= saved >= 10 and r.success and 0.5 < cross.get("board_pose_error_deg", 0.0) < 4.0
 
         out2 = os.path.join(work, "mount_fixed.yaml")
-        res = subprocess.run([os.path.join(PKG, "scripts/charuco_mount_solve.py"), "--session", session, "--board-pose", "0.34", "0.03", "0.0",
+        board_file = os.path.join(work, "board.yaml")        # the test's own board, NOT the live config/charuco.yaml
+        with open(board_file, "w") as bf:
+            bf.write("squares_x: %d\nsquares_y: %d\nsquare_length: %r\nmarker_length: %r\ndictionary: %s\n" % (
+                s.squares_x, s.squares_y, s.square_length, s.marker_length, s.dictionary))
+        res = subprocess.run([os.path.join(PKG, "scripts/charuco_mount_solve.py"), "--session", session, "--board", board_file,
+                              "--board-pose", "0.34", "0.03", "0.0",
                               str(true_yaw), "--origin", "center", "--out", out2], capture_output=True, text=True,
                              env=dict(os.environ, PYTHONPATH=os.path.join(PKG, "src") + os.pathsep + os.environ.get("PYTHONPATH", "")))
         print("\noffline re-solve with the corrected yaw:\n" + res.stdout)

@@ -86,6 +86,24 @@ class ArucoPoseTest(unittest.TestCase):
         self.assertLess(np.linalg.norm(A[:3, 3] - B[:3, 3]) * 1000.0, 3.0)   # same centre
 
 
+class DetectorParametersTest(unittest.TestCase):
+    def test_line_fit_refinement_and_optional_quad_decimation(self):
+        p = aruco.detector_parameters()
+        self.assertEqual(p.cornerRefinementMethod, cv2.aruco.CORNER_REFINE_APRILTAG)
+        self.assertEqual(p.aprilTagQuadDecimate, 0.0)
+        self.assertEqual(aruco.detector_parameters(quad_decimate=2.0).aprilTagQuadDecimate, 2.0)
+        self.assertEqual(aruco.detector_parameters(refine=cv2.aruco.CORNER_REFINE_SUBPIX).cornerRefinementMethod, cv2.aruco.CORNER_REFINE_SUBPIX)
+
+    def test_a_decimated_search_still_finds_and_poses_a_marker_without_losing_accuracy(self):
+        T_true = pose_facing_camera(0.3, 0.4, (0.02, -0.01, 0.50))
+        img = render_scene([("4X4_50", 3, T_true)])
+        for dec in (0.0, 2.0):
+            det = aruco.detect(img, "4X4_50", aruco.detector_parameters(quad_decimate=dec))
+            self.assertEqual([d.marker_id for d in det], [3], "decimation %.0f" % dec)
+            T, _, _ = aruco.estimate_pose(det[0].corners, SIZE, K, np.zeros(5))
+            self.assertLess(np.linalg.norm(T[:3, 3] - T_true[:3, 3]) * 1000.0, 2.5)
+
+
 class ArucoDictionaryTest(unittest.TestCase):
     def test_auto_detection_names_the_dictionary(self):
         T = pose_facing_camera(0.1, 0.4, (0.0, 0.0, 0.5))

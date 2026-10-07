@@ -32,9 +32,21 @@ def get_dictionary(name):
     return cv2.aruco.Dictionary_get(DICTIONARIES[name])
 
 
-def detector_parameters():
+def detector_parameters(refine=None, quad_decimate=0.0):
+    """OpenCV detector settings. Corner refinement is by line fitting (CORNER_REFINE_APRILTAG): measured on the real
+    camera (soft focus, 80 frames of a still scene, 2026-10-07) the 100 mm marker's depth noise was 9.5 mm with
+    CORNER_REFINE_SUBPIX (window 5 px: the corner search latches onto the blur of a large marker; edge length
+    std 6.8 px), 1.0 mm with a 15 px window, and 0.1 mm (0.04 px) with the line fit, which also gave the 50 mm
+    markers 0.2 mm instead of 0.6 to 0.8 mm. `refine` overrides the method for experiments.
+
+    quad_decimate: factor by which the image is shrunk for the quad (marker outline) search only; the corner fit
+    still uses full resolution. Per frame at 1920x1080 with two dictionaries: 269 ms at 0, 96 ms at 2, 28 ms at 4,
+    with the same accuracy. The cost is range: a marker needs an edge of roughly 20 px after the shrink, i.e. 40 px
+    at 2 and 80 px at 4 (a 50 mm marker at 1.5 m is about 50 px). Default 0: exact, and the ChArUco board has 14 mm
+    markers that the shrink would lose."""
     p = cv2.aruco.DetectorParameters_create()
-    p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_SUBPIX
+    p.cornerRefinementMethod = cv2.aruco.CORNER_REFINE_APRILTAG if refine is None else refine
+    p.aprilTagQuadDecimate = float(quad_decimate)
     return p
 
 
