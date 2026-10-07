@@ -12,16 +12,37 @@ why it needed no changes to the solver itself.
 
 ## Task-space dimension vs. DOF: why this is a least-squares problem
 
-Task space is 6D (3 position + 3 orientation). There are only 5 joints. So
-the Jacobian `J` is 6×5 — **more rows than columns**. This is the opposite
-situation from a classically "redundant manipulator" (more joints than task
-dimensions, e.g. a 7-DOF arm reaching a 6D pose), which is what the
-right-pseudo-inverse damped-least-squares formula (`J^T(JJ^T+λ²I)⁻¹`) is
-for. Here the system is **overdetermined**: generically no exact solution
-exists for an arbitrary target (consistent with the ROADMAP finding that
-this arm can't reach a general 3D orientation, only position + one in-plane
-angle). The right tool is ordinary least squares with Levenberg-Marquardt
-damping, i.e. the **left** pseudo-inverse / normal-equations form:
+Task space is 6D (3 position + 3 orientation) and there are 5 joints, so the
+Jacobian `J` is 6×5. The relevant number is its **rank, which is 4 at every
+configuration** (not 5), for a structural reason (derived in full in
+[`kinematics_report.md`](kinematics_report.md) §2.2): joint_1 is a `z` rotation
+and joints 2–5 share one horizontal axis `â = Rz(q₁)ŷ`, so in the cylindrical
+basis `(ê_r, ê_θ, ẑ)` the end-effector twist always satisfies two linear
+constraints, `ω_r = 0` (roll rate identically zero) and `v_θ = r·ω_z` (yaw
+rate slaved to the tangential velocity). Two of the six rows are therefore
+dependent on the others:
+
+- **The reachable poses form a 4-dimensional submanifold of SE(3)**,
+  `{(p, Rz(atan2(p_y,p_x)[+π])·Ry(φ))}`: roll is 0 and yaw is determined by
+  the position. An arbitrary 6D target is generically *off* that manifold, so
+  no exact solution exists (consistent with the M2 finding that the arm
+  reaches position + one in-plane angle, pitch).
+- **`J` still has a 1-dimensional null space** (5 columns, rank 4): the planar
+  self-motion of the four parallel elbow joints that keeps the tip position
+  and pitch fixed (null vector: zero `q₁` component, `Σ q̇₂..₅ = 0`). So the
+  chain is *both* overdetermined for a generic 6D target (6 rows, only 4 of
+  them independent) *and* redundant for a reachable one (4 independent rows,
+  5 joints). The earlier version of this section called it purely
+  overdetermined with a trivial null space; that was wrong (verified
+  numerically: `σ₅(J) ≈ 1e-16…1e-19` at random in-limit configurations).
+
+For the full-pose solve the right tool is ordinary least squares with
+Levenberg-Marquardt damping (the **left** / normal-equations form). By the
+push-through identity `(JᵀJ+λ²I)⁻¹Jᵀ = Jᵀ(JJᵀ+λ²I)⁻¹` this is the same
+operator as the right-pseudo-inverse form used by `resolved_rate`/
+`position_pitch_ik`; the two differ in which task rows they are given, not in
+the algebra. The damping is what keeps the normal matrix `JᵀWJ+λ²I`
+invertible despite the structural rank deficiency:
 
 ```
 minimize  ||J·Δq − e||² + λ²||Δq||²
@@ -86,14 +107,16 @@ Switching to adaptive damping *without* restarts actually converged
 problem wasn't step quality: **this chain is redundant.** From
 [`forward_kinematics.md`](forward_kinematics.md): joint_1 is a base yaw,
 and joints 2-5 are four *parallel*-axis "elbow" joints. A planar 4R
-sub-chain like that has multiple distinct joint configurations reaching
-the same end-effector pose (the familiar "elbow up / elbow down" style
-ambiguity, generalized), i.e. genuinely separate solution basins — no
+sub-chain like that has a 1-parameter family (the self-motion curve, e.g.
+parametrised by the angle of link_4) of joint configurations reaching the
+same end-effector pose, split into several discrete branches (elbow up /
+down, and the two base branches `q₁` / `q₁+π`) — genuinely separate solution
+basins — no
 amount of better-tuned local descent from one fixed seed reaches a
 solution in a *different* basin.
 
 Standard fix, and what's implemented: if the given seed doesn't converge,
-retry from up to `IkOptions::max_restarts` (default 10) random seeds
+retry from up to `IkOptions::max_restarts` (default 20) random seeds
 within joint limits, keeping the best (lowest-residual, preferring
 converged) result. On the same 20-target benchmark this reaches **100%**,
 typically within 0-2 restarts, worst case 4. Adaptive damping and restarts
@@ -117,7 +140,7 @@ genuinely stuck target get a fresh set of attempts each time.
 | initial damping λ₀ | 0.05 | arbitrary starting point; adapted from there per-step |
 | damping decrease/increase factor | 0.5 / 3.0 | standard LM defaults, not tuned specifically for this arm |
 | max step/attempt | 0.2 rad (∞-norm clamp on Δq) | prevents a single step from overshooting wildly |
-| max restarts | 10 | empirically, 0-4 needed in the benchmark above; generous margin |
+| max restarts | 20 | empirically, 0-4 needed in the benchmark above; generous margin |
 
 ## Not covered here
 
