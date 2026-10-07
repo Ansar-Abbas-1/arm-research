@@ -83,6 +83,10 @@
   <!-- max_goal_slew_rad_s: robot_interface goal slew limit (0 = yaml value,
        2.0 rad/s per joint). Passed to the real driver only. -->
   <arg name="max_goal_slew_rad_s" default="0.0"/>
+  <!-- serial_port: the USB-serial adapter of the Dynamixel bus (hardware only), overriding device_name of
+       ArmInterface.yaml. The adapter can come back under another number after a USB glitch (ttyUSB0 became
+       ttyUSB1 on 2026-10-07): in the Docker container the node must also exist (mknod /dev/ttyUSB1 c 188 1). -->
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
 
   <!-- Simulator only: inject a bad motor to try the Arm Control panel's motor report and "Reset failed motors"
        without touching the real arm. N is the 1-based joint (0 = none): sim_motor_warn_joint shows 47 C near the
@@ -111,6 +115,7 @@
   <group if="$(arg use_hardware)">
     <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
       <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+      <param name="device_name" value="$(arg serial_port)"/>
       <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s" subst_value="true">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
     </node>
   </group>
