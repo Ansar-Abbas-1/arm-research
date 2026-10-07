@@ -36,6 +36,7 @@
   <arg name="nullspace_rate_fraction" default="0.25"/>
   <arg name="max_joint_velocity" default="0.0"/>
   <arg name="max_goal_slew_rad_s" default="0.0"/>
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
   <arg name="sim_motor_warn_joint" default="0"/>
   <arg name="sim_motor_fault_joint" default="0"/>
   <arg name="presets" default="true"/>
@@ -73,6 +74,7 @@
     <arg name="nullspace_rate_fraction" value="$(arg nullspace_rate_fraction)"/>
     <arg name="max_joint_velocity" value="$(arg max_joint_velocity)"/>
     <arg name="max_goal_slew_rad_s" value="$(arg max_goal_slew_rad_s)"/>
+    <arg name="serial_port" value="$(arg serial_port)"/>
     <arg name="sim_motor_warn_joint" value="$(arg sim_motor_warn_joint)"/>
     <arg name="sim_motor_fault_joint" value="$(arg sim_motor_fault_joint)"/>
     <arg name="presets" value="$(arg presets)"/>

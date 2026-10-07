@@ -150,6 +150,24 @@ Run: `cd src/arm_camera && PYTHONPATH=src python3 test/test_calibration_pipeline
 ROS sourced, `python3 test/e2e_synthetic.py`. Last result (2026-10-06): 17/17; end to end 14/14
 captures, camera pose recovered within 0.35 mm / 0.011 deg, overlay 0.1 px.
 
+## Camera mount measured by hand (a placeholder until the real calibration)
+
+With the arm at a known pose (the `default` preset is convenient: there the `end_effector` frame has z forward,
+x down and y to the left), measure in room directions (forward = base +x, left = +y, up = +z): the offset of the
+lens centre from the `end_effector` origin (about 5 to 10 mm behind the front glass), where the optical axis
+points, and which way the right (and bottom) edge of the image is (move a pen in front of the camera to see it;
+the image may be rotated). Then, with the arm stack running at that pose:
+
+```bash
+rosrun arm_camera static_tf_from_measurements.py --offset 0.05 0 0.03 --optical-axis forward --image-right right --image-down down
+```
+
+It reads `base_link -> end_effector` from TF (or `--ee-pose x y z qx qy qz qw` offline), checks that the three
+directions are consistent (a mirrored or non-perpendicular set is refused), and prints the arguments for
+`camera_static_tf.launch` / `arm_with_camera.launch camera_tf:=static`; `--output file.yaml` writes the
+`hand_eye.yaml` format for `camera_tf:=hand_eye hand_eye_file:=...`. Expect a few millimetres and a few degrees of
+error: check it with `overlay.launch` or the board scatter of a collector run. Tests: `test/test_static_mount.py` (9).
+
 ## Arm and camera in one command
 
 `roslaunch arm_camera arm_with_camera.launch use_hardware:=true correction_steps:=2` starts the whole arm stack
