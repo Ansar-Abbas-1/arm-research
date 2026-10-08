@@ -52,6 +52,7 @@ void ServoSupervisor::BeginSelecting(double now) {
   start_time_ = now;
   converged_since_ = -1.0;
   last_error_norm_ = last_pitch_error_ = 1e9;
+  too_close_since_ = -1.0;
   left_view_ = false;
 }
 
@@ -61,6 +62,7 @@ void ServoSupervisor::BeginServoing(double now) {
   start_time_ = now;
   converged_since_ = -1.0;
   last_error_norm_ = last_pitch_error_ = 1e9;
+  too_close_since_ = -1.0;
   left_view_ = false;
 }
 
@@ -83,10 +85,10 @@ SupervisorOutput ServoSupervisor::Update(const SupervisorInputs& in) {
     if (!in.estop_allows_motion) Abort(AbortReason::kEStop);
     else if (in.collision) Abort(AbortReason::kCollision);
     else if (in.below_ground) Abort(AbortReason::kBelowGround);
-    else if (in.measurement_age <= params_.vision_max_age && in.camera_distance < params_.min_camera_distance)
-      Abort(AbortReason::kTooCloseCamera);
-    else if (in.measurement_age <= params_.vision_max_age && in.ee_distance < params_.min_ee_distance)
-      Abort(AbortReason::kTooCloseEndEffector);
+    else if (in.measurement_age <= params_.vision_max_age &&
+             (in.camera_distance < params_.min_camera_distance || in.ee_distance < params_.min_ee_distance) &&
+             (too_close_since_ >= 0.0 || (too_close_since_ = in.now, false)) && in.now - too_close_since_ >= params_.too_close_debounce)
+      Abort(in.camera_distance < params_.min_camera_distance ? AbortReason::kTooCloseCamera : AbortReason::kTooCloseEndEffector);
     else if (in.measurement_age > params_.lost_timeout) {
       // Lost. Within lost_near_goal_tol of the goal this is the expected end (the marker leaves the view at the
       // stand-off): done, holding. Anywhere else it is an abort.
@@ -106,6 +108,9 @@ SupervisorOutput ServoSupervisor::Update(const SupervisorInputs& in) {
   }
 
   if (state_ == ServoState::kServoing) {
+    if (in.measurement_age <= params_.vision_max_age && in.camera_distance >= params_.min_camera_distance &&
+        in.ee_distance >= params_.min_ee_distance)
+      too_close_since_ = -1.0;
     out.zero_velocity = in.measurement_age > params_.vision_max_age;
     const bool inside = !out.zero_velocity && in.error_norm < params_.converge_tol && std::fabs(in.pitch_error) < params_.converge_pitch_tol;
     if (inside) {

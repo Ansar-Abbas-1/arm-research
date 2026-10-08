@@ -22,8 +22,13 @@
 /// exponentially. With V = e'e / 2:  dV/dt = -lambda |e|^2 - e'(w x p_e) <= -lambda |e|^2 + |e| |w| |p_e|, i.e. e
 /// is input-to-state stable with a vanishing input: e -> 0.
 /// The measurement p_e = R_ec p_c + t_ec uses the camera mount (R_ec, t_ec) but NOT the forward kinematics, so a
-/// mount error moves the fixed point by at most |t error| + |p*| sin(rotation error) and never destabilises
-/// the loop; the forward kinematics only enter through the Jacobian (the direction and speed of the motion).
+/// mount error never destabilises the loop and only moves the fixed point: with the controller's mount (R_a, t_a)
+/// and the real one (R_t, t_t), the loop settles at p_e,assumed = p*, i.e. p_c = R_a' (p* - t_a), and the TRUE marker
+/// position is p_t = R_t R_a' (p* - t_a) + t_t, so
+///     p_t - p* = (R_t R_a' - I)(p* - t_a) + (t_t - t_a),   |p_t - p*| <= |t_t - t_a| + 2 sin(theta/2) |p* - t_a|
+/// where theta is the rotation error and |p* - t_a| the camera-to-marker distance at the goal (0.16 m here, NOT
+/// |p*| = 0.10 m): a 5 degree mount error moves the final position by up to 14 mm plus the translation error.
+/// The forward kinematics only enter through the Jacobian (the direction and speed of the motion).
 /// Discrete loop, sample time T and a measurement delay of d samples: e[k+1] = e[k] - lambda T e[k-d], whose
 /// characteristic equation z^(d+1) - z^d + lambda T = 0 is stable iff
 ///     lambda T < 2 sin( pi / (2 (2 d + 1)) )                      (d = 0: 2; d = 1: 1; d = 2: 0.618; d = 3: 0.445).
@@ -39,6 +44,7 @@ struct ServoParams {
   Eigen::Vector3d p_star = Eigen::Vector3d(0.0, 0.0, 0.10);  ///< desired marker position in E [m]
   double min_camera_distance = 0.08;                ///< [m] abort below this camera-to-marker distance
   double min_ee_distance = 0.08;                    ///< [m] abort below this end-effector-origin-to-marker distance
+  double too_close_debounce = 0.25;                 ///< [s] the too-close condition must hold this long (one noisy sample must not abort)
   double converge_tol = 0.005;                      ///< [m] |e| below this ...
   double converge_pitch_tol = 0.05;                 ///< [rad] ... and |pitch error| below this ...
   double converge_time = 1.0;                       ///< [s] ... for this long: done
@@ -122,6 +128,7 @@ class ServoSupervisor {
   double converged_since_ = -1.0;
   double last_error_norm_ = 1e9;       ///< error at the last fresh measurement
   double last_pitch_error_ = 1e9;
+  double too_close_since_ = -1.0;
   bool left_view_ = false;
 };
 

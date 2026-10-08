@@ -174,16 +174,31 @@ TEST(Supervisor, LosingTheMarkerNearTheGoalEndsDoneAndFarFromItAborts) {
   }
 }
 
-TEST(Supervisor, TooCloseToTheMarkerAborts) {
+TEST(Supervisor, TooCloseToTheMarkerAbortsOnlyIfItPersists) {
   for (int which = 0; which < 2; ++which) {
     ServoSupervisor s(Params());
     s.BeginServoing(0.0);
     auto in = Good(0.5);
     (which == 0 ? in.camera_distance : in.ee_distance) = 0.07;   // below the 8 cm minimum
-    const auto out = s.Update(in);
+    EXPECT_EQ(s.Update(in).state, ServoState::kServoing) << which;   // one sample (a noisy one) does not abort
+    in.now = 0.6;
+    EXPECT_EQ(s.Update(in).state, ServoState::kServoing) << which;   // 0.1 s: still within the 0.25 s debounce
+    in.now = 0.8;
+    const auto out = s.Update(in);                                  // 0.3 s: it persists
     EXPECT_EQ(out.state, ServoState::kAborted) << which;
     EXPECT_EQ(out.reason, which == 0 ? AbortReason::kTooCloseCamera : AbortReason::kTooCloseEndEffector);
   }
+}
+
+TEST(Supervisor, ASingleNoisySampleBelowTheMinimumDistanceIsForgotten) {
+  ServoSupervisor s(Params());
+  s.BeginServoing(0.0);
+  auto bad = Good(0.5); bad.ee_distance = 0.07;
+  s.Update(bad);
+  auto good = Good(0.6);
+  s.Update(good);                                                  // back above the limit: the timer restarts
+  bad.now = 0.8;
+  EXPECT_EQ(s.Update(bad).state, ServoState::kServoing);           // a new episode, only 0 s long
 }
 
 TEST(Supervisor, CollisionGroundAndRunTimeAbort) {

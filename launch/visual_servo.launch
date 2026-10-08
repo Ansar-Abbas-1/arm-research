@@ -10,6 +10,10 @@
          rostopic echo /visual_servo/status          (state, error, distances)
        Limits: config/visual_servo.yaml. -->
   <arg name="config" default="$(find arm_servo)/config/visual_servo.yaml"/>
+  <!-- logging: records every run (read-only) to ~/.ros/arm_servo/runs as servo_run_TIME.jsonl; summarise the
+       newest with: rosrun arm_servo servo_report.py latest -->
+  <arg name="logging" default="true"/>
+  <node if="$(arg logging)" name="servo_run_logger" pkg="arm_servo" type="servo_run_logger.py" output="screen"/>
   <node name="visual_servo" pkg="arm_servo" type="visual_servo_node" output="screen">
     <rosparam command="load" file="$(arg config)"/>
   </node>

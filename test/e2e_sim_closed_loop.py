@@ -92,6 +92,8 @@ def main():
         pub_info.publish(info)
         pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
         start(["roslaunch", "arm_perception", "marker_localizer.launch"], "localizer")
+        run_dir = tempfile.mkdtemp()
+        rospy.set_param("/servo_run_logger/output_dir", run_dir)         # before the logger starts
         start(["roslaunch", "arm_servo", "visual_servo.launch"], "servo")
         status = {"v": None}
         rospy.Subscriber("/visual_servo/status", String, lambda m: status.update(v=json.loads(m.data)), queue_size=5)
@@ -185,6 +187,16 @@ def main():
         n_done = servo_out["n"]
         time.sleep(1.0)
         check("after DONE the node sends nothing more (the driver holds)", servo_out["n"] == n_done)
+
+        from arm_servo import run_log, run_report
+        import glob
+        wait_for(lambda: glob.glob(os.path.join(run_dir, "servo_run_*.jsonl")), 10, "the logger to save the run")
+        records = run_log.load_run(sorted(glob.glob(os.path.join(run_dir, "servo_run_*.jsonl")))[-1])
+        summary = run_report.summarize(records)
+        print("   " + run_report.format_summary(summary).replace("\n", "\n   "))
+        check("the logger recorded the run and the report agrees (outcome %s, target %d, final error %.1f mm)" % (summary["outcome"], summary["target_id"], summary["final_error_mm"] or -1),
+              summary["outcome"] == "DONE" and summary["target_id"] == 118 and summary["final_error_mm"] is not None and summary["final_error_mm"] < 20.0)
+        run_report.plot_run(records, os.path.join(tempfile.gettempdir(), "arm_servo_e2e_run.png"))
 
         print("-- scenario 2: e-stop in the middle of a run")
         to_idle(); goto_pre_approach(); wait_for(ground_ready, 30, "ground marker")
