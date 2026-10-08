@@ -30,3 +30,6 @@ target_max_age: 5.0       # s: the target TF must be this fresh (marker_localize
 recheck_translation_mm: 5.0
 recheck_rotation_deg: 3.0
 base_frame: base_link
+
+# Behavior tree
+tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (view it with rqt_py_trees)

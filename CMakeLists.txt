@@ -13,4 +13,5 @@ install(DIRECTORY launch config DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
 
 if(CATKIN_ENABLE_TESTING)
   catkin_add_nosetests(test/test_grasp_plan.py)
+  catkin_add_nosetests(test/test_grasp_tree.py)
 endif()

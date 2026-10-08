@@ -162,7 +162,11 @@ def main():
         trace.clear(); joints["g"].clear(); history.clear()
         r = grasp("target", False)
         check("the sequence is accepted (%s)" % r.message[:60], r.success)
+        paths = set()
+        rospy.Subscriber("/grasp_sequencer/status", String, lambda m: paths.add(json.loads(m.data).get("active_path", "")), queue_size=50)
         wait_for(lambda: status["v"]["state"] in ("DONE", "ABORTED"), 240, "the sequence to end")
+        check("the status carries the tree's active path (%s)" % sorted(p for p in paths if "DESCEND" in p), any(p.endswith("grasp/DESCEND") for p in paths) and any(p.endswith("grasp/open gripper") for p in paths))
+        check("the tree is published for rqt_py_trees on ~log/tree", "/grasp_sequencer/log/tree" in subprocess.check_output(["rostopic", "list"]).decode())
         check("it ends DONE (%s %s)" % state(), state()[0] == "DONE")
         seen = []
         for _, st in history:

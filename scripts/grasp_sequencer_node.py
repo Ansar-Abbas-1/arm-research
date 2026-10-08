@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """TF-driven grasp sequence: open the gripper, move above the target, descend straight onto it, close the gripper, lift.
+Executed as a behavior tree (py_trees, see arm_grasp/grasp_tree.py); view it live with `rqt_py_trees` (topic ~log/tree).
 
 COMMANDS THE REAL ARM (through the trajectory executor and /joint_states_out). Safety:
   * the WHOLE sequence is planned first (each leg with /generate_trajectory, chained start configurations, nothing
     executed); any leg that is unreachable, or a straight leg that deviates too much, means nothing moves
   * ~grasp with dry_run:=true plans and reports only
-  * the trajectories run through the existing executor, which refuses to move under an e-stop (fail closed); this node
-    also checks the e-stop between and during the steps, and ~stop / any failure cancels the motion (the driver holds)
+  * the trajectories run through the existing executor, which refuses to move under an e-stop (fail closed); the
+    tree's guard checks stop and e-stop before every tick, and any failure cancels the motion (the driver holds)
   * the descent and the lift are slowed down (descent_slow_factor, lift_slow_factor) beyond the planner's timing
   * the target must be a fresh TF (target_max_age); before the descent it is looked up again and the sequence aborts
     if it moved
@@ -20,6 +21,8 @@ import time
 
 import actionlib
 import numpy as np
+import py_trees
+import py_trees_ros
 import rospy
 import tf2_ros
 from control_msgs.msg import FollowJointTrajectoryAction, FollowJointTrajectoryGoal
@@ -29,7 +32,10 @@ from std_msgs.msg import Bool, String
 from std_srvs.srv import Trigger, TriggerResponse
 from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
+from actionlib_msgs.msg import GoalStatus
+
 from arm_grasp import grasp_plan as gp
+from arm_grasp import grasp_tree as gt
 from arm_grasp.srv import Grasp, GraspResponse
 from arm_trajectory.srv import GenerateTrajectory, GenerateTrajectoryRequest
 
@@ -43,11 +49,7 @@ def quat_to_matrix(q):
                      [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
 
 
-class Aborted(Exception):
-    pass
-
-
-class Node:
+class Node(gt.GraspContext):
     def __init__(self):
         P = rospy.get_param
         d = gp.GraspSpec()
@@ -69,6 +71,11 @@ class Node:
         self.require_object = bool(P("~require_object", False))
         self.object_threshold = float(P("~object_threshold", 0.002))
         self.endpoint_tol = float(P("~endpoint_tolerance_rad", 0.03))
+        self.tick_rate = float(P("~tick_rate", 20.0))
+        self.params = gt.SequenceParams(
+            gripper_speed=self.gripper_speed, gripper_settle=self.gripper_settle, gripper_tolerance=self.gripper_tol,
+            gripper_timeout=self.gripper_timeout, recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg,
+            require_object=self.require_object, object_threshold=self.object_threshold)
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
         self.q = None
@@ -81,6 +88,13 @@ class Node:
         self.plan_info = {}
         self.target_frame = ""
         self.worker = None
+        self.abort_reason = None
+        self.plan_T, self.plan_stamp, self.trajs = None, None, {}
+        self.goal_sent_at, self.goal_end, self.goal_duration = 0.0, None, 0.0
+        self.outcome = None
+        self.tree = py_trees_ros.trees.BehaviourTree(gt.build_tree(self, self.spec, self.params, lambda: self.outcome), record_rosbag=False)
+        if not self.tree.setup(timeout=5.0):
+            rospy.logwarn("grasp: the behavior tree's ROS interfaces did not set up in time (the tree still runs)")
         rospy.Subscriber("/joint_states_in", JointState, self.on_joints, queue_size=1)
         rospy.Subscriber("/arm_interface/estop_state", Bool, lambda m: setattr(self, "estop", bool(m.data)), queue_size=1)
         self.pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
@@ -107,7 +121,8 @@ class Node:
 
     def publish(self):
         self.pub_status.publish(String(json.dumps({"state": self.state, "message": self.message, "target_frame": self.target_frame,
-                                                   "plan": self.plan_info, "gripper": self.gripper})))
+                                                   "plan": self.plan_info, "gripper": self.gripper,
+                                                   "active_path": gt.active_path(self.tree.root)})))
 
     def set_state(self, state, message=""):
         self.state, self.message = state, message
@@ -191,7 +206,8 @@ class Node:
             return GraspResponse(True, "plan feasible: PRE %.1f s, DESCEND %.1f s (x%.1f), LIFT %.1f s (x%.1f), total about %.1f s; nothing moved" % (
                 legs[0].duration, legs[1].duration, self.spec.descent_slow_factor, legs[2].duration, self.spec.lift_slow_factor, duration), duration, dev)
         self.stop_requested.clear()
-        self.worker = threading.Thread(target=self.run, args=(T, stamp, trajs), daemon=True)
+        self.plan_T, self.plan_stamp, self.trajs = T, stamp, trajs
+        self.worker = threading.Thread(target=self.run, daemon=True)
         self.worker.start()
         return GraspResponse(True, "plan feasible, sequence started (about %.1f s)" % duration, duration, dev)
 
@@ -201,98 +217,104 @@ class Node:
             self.client.cancel_all_goals()
         return TriggerResponse(True, "stop requested (the driver holds the last goal)")
 
-    # ---- execution ------------------------------------------------------------------------------------------
-    def check(self):
+    # ---- GraspContext (what the tree's leaves use) ----------------------------------------------------------
+    def now(self):
+        return time.time()
+
+    def warn(self, message):
+        rospy.logwarn("grasp: %s", message)
+
+    def fail(self, reason):
+        if self.abort_reason is None:
+            self.abort_reason = reason
+
+    def safety_violation(self):
         if self.stop_requested.is_set():
-            raise Aborted("stopped by the operator")
+            return "stopped by the operator (during %s)" % self.state
         if not self.estop_allows():
-            raise Aborted("e-stop engaged or its state unknown")
+            return "e-stop engaged or its state unknown (during %s)" % self.state
+        return None
 
-    def move_gripper(self, target):
-        """Ramp the joint_6 command to `target` at gripper_speed. Returns once the measurement is at the target and has
-        settled, or (blocked by an object between the jaws, or no measurement) gripper_timeout after the ramp ended;
-        the caller decides what the final measured position means."""
-        rate = rospy.Rate(20)
-        start = self.gripper if self.gripper is not None else (self.spec.gripper_closed if target == self.spec.gripper_open else self.spec.gripper_open)
-        cmd = start
-        t0 = time.time()
-        ramp_time = abs(target - start) / self.gripper_speed
-        reached_at = None
-        while not rospy.is_shutdown():
-            self.check()
-            cmd = gp.gripper_ramp(cmd, target, self.gripper_speed, 0.05)
-            js = JointState()
-            js.header.stamp = rospy.Time.now()
-            js.name, js.position = ["joint_6"], [float(cmd)]
-            self.pub_out.publish(js)
-            if cmd == target:
-                at_target = self.gripper is None or abs(self.gripper - target) <= self.gripper_tol
-                if at_target and reached_at is None:
-                    reached_at = time.time()
-                if reached_at is not None and time.time() - reached_at >= self.gripper_settle:
-                    return
-                if time.time() - t0 > ramp_time + self.gripper_timeout:
-                    return
-            rate.sleep()
+    def gripper_position(self):
+        return self.gripper
 
-    def run_trajectory(self, name, traj, slow):
-        pts = []
-        for p in traj.points:
-            pts.append((p.time_from_start.to_sec(), p.positions, p.velocities, p.accelerations))
-        stretched = gp.stretch_times(pts, slow)
+    def command_gripper(self, position):
+        js = JointState()
+        js.header.stamp = rospy.Time.now()
+        js.name, js.position = ["joint_6"], [float(position)]
+        self.pub_out.publish(js)
+
+    def start_trajectory(self, name, slow):
+        traj = self.trajs[name]
+        stretched = gp.stretch_times([(p.time_from_start.to_sec(), p.positions, p.velocities, p.accelerations) for p in traj.points], slow)
         out = JointTrajectory()
         out.joint_names = traj.joint_names
         for t, pos, vel, acc in stretched:
             jp = JointTrajectoryPoint(positions=pos, velocities=vel or [], accelerations=acc or [])
             jp.time_from_start = rospy.Duration(t)
             out.points.append(jp)
-        self.check()
         if not self.client.wait_for_server(rospy.Duration(3.0)):
-            raise Aborted("follow_joint_trajectory server not available")
+            return "follow_joint_trajectory server not available"
         goal = FollowJointTrajectoryGoal()
         goal.trajectory = out
+        self.goal_name, self.goal_end = name, np.array(out.points[-1].positions)
+        self.goal_duration = out.points[-1].time_from_start.to_sec()
+        self.goal_sent_at = time.time()
         self.client.send_goal(goal)
-        duration = out.points[-1].time_from_start.to_sec()
-        t0 = time.time()
-        while not self.client.wait_for_result(rospy.Duration(0.1)):
-            if self.stop_requested.is_set() or not self.estop_allows() or time.time() - t0 > duration + 15.0:
-                self.client.cancel_all_goals()
-                raise Aborted("stopped during %s" % name if self.stop_requested.is_set() else ("e-stop during %s" % name if not self.estop_allows() else "%s timed out" % name))
-        if self.client.get_state() != 3:                              # actionlib SUCCEEDED
-            raise Aborted("%s failed: %s" % (name, self.client.get_goal_status_text() or "not completed"))
-        end = np.array(out.points[-1].positions)
-        got = np.array(self.q)
-        if np.max(np.abs(end - got[:len(end)])) > self.endpoint_tol:
-            raise Aborted("%s ended %.3f rad away from its goal" % (name, float(np.max(np.abs(end - got[:len(end)])))))
+        return None
 
-    def run(self, T_plan, stamp_plan, trajs):
+    def poll_trajectory(self):
+        state = self.client.get_state()
+        if state in (GoalStatus.PENDING, GoalStatus.ACTIVE, GoalStatus.PREEMPTING, GoalStatus.RECALLING):
+            if time.time() - self.goal_sent_at > self.goal_duration + 15.0:
+                self.client.cancel_all_goals()
+                return "failed", "%s timed out" % self.goal_name
+            return "running", ""
+        if state != GoalStatus.SUCCEEDED:
+            return "failed", "%s failed: %s" % (self.goal_name, self.client.get_goal_status_text() or "not completed")
+        got = np.array(self.q)
+        err = float(np.max(np.abs(self.goal_end - got[:len(self.goal_end)])))
+        if err > self.endpoint_tol:
+            return "failed", "%s ended %.3f rad away from its goal" % (self.goal_name, err)
+        return "succeeded", ""
+
+    def cancel_trajectory(self):
+        self.client.cancel_all_goals()
+
+    def target_drift(self):
+        T_now, stamp_now, _ = self.lookup_target()
+        if stamp_now == self.plan_stamp:                              # nothing newer to compare with
+            return None
+        return gp.target_moved(self.plan_T, T_now)
+
+    def record_outcome(self, outcome):
+        self.outcome = outcome
+        self.plan_info["grasp_outcome"] = outcome
+
+    # ---- execution: tick the tree ---------------------------------------------------------------------------
+    def run(self):
+        """Tick the behavior tree at tick_rate until it succeeds or fails. The leaves report the states."""
+        self.abort_reason, self.outcome = None, None
+        self.tree.root.stop(py_trees.common.Status.INVALID)
+        rate = rospy.Rate(self.tick_rate)
+        last_path = None
         try:
-            self.set_state("OPENING", "gripper to %.3f" % self.spec.gripper_open)
-            self.move_gripper(self.spec.gripper_open)
-            self.set_state("MOVING_PRE", "above the target")
-            self.run_trajectory("PRE", trajs["PRE"], 1.0)
-            self.set_state("RECHECK", "is the target where it was planned?")
-            T_now, stamp_now, age = self.lookup_target()
-            if stamp_now != stamp_plan:                               # a NEWER observation exists: compare, otherwise there is nothing to compare
-                mm, deg = gp.target_moved(T_plan, T_now)
-                if mm > self.recheck_mm or deg > self.recheck_deg:
-                    raise Aborted("the target moved by %.1f mm / %.1f deg since it was planned" % (mm, deg))
-            else:
-                rospy.logwarn("grasp: no newer observation of the target before the descent (it is not visible from here): trusting the plan")
-            self.set_state("DESCENDING", "straight down, %.1f times slower than planned" % self.spec.descent_slow_factor)
-            self.run_trajectory("DESCEND", trajs["DESCEND"], self.spec.descent_slow_factor)
-            self.set_state("CLOSING", "gripper to %.3f" % self.spec.gripper_closed)
-            self.move_gripper(self.spec.gripper_closed)
-            outcome = gp.grasp_outcome(self.gripper if self.gripper is not None else self.spec.gripper_closed, self.spec, self.object_threshold)
-            self.plan_info["grasp_outcome"] = outcome
-            if outcome == "empty" and self.require_object:
-                raise Aborted("nothing between the jaws (closed all the way) and require_object is set")
-            self.set_state("LIFTING", "grasp outcome: %s" % outcome)
-            self.run_trajectory("LIFT", trajs["LIFT"], self.spec.lift_slow_factor)
-            self.set_state("DONE", "grasp outcome: %s" % outcome)
-        except Aborted as e:
-            self.set_state("ABORTED", str(e))
-        except Exception as e:  # noqa: BLE001  (never leave the state machine running)
+            while not rospy.is_shutdown():
+                self.tree.tick()
+                status = self.tree.root.status
+                path = gt.active_path(self.tree.root)
+                if path != last_path:                                 # leaves set the state before they are RUNNING: refresh the path
+                    last_path = path
+                    self.publish()
+                if status == py_trees.common.Status.SUCCESS:
+                    self.set_state("DONE", "grasp outcome: %s" % self.outcome)
+                    return
+                if status == py_trees.common.Status.FAILURE:
+                    self.set_state("ABORTED", self.abort_reason or "the behavior tree failed")
+                    return
+                rate.sleep()
+            self.client.cancel_all_goals()
+        except Exception as e:  # noqa: BLE001  (never leave the tree running)
             self.client.cancel_all_goals()
             self.set_state("ABORTED", "unexpected error: %s" % e)
 
