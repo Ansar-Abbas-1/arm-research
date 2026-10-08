@@ -1,0 +1,32 @@
+# Grasp sequence (arm_grasp). EVERY value here is a FLAGGED DEFAULT, not a measurement: confirm or replace each one
+# before a real grasp. Heights are along the target's +z (up from a floor marker), measured from the target point.
+pre_height: 0.10          # m: the grasp point above the target at PRE (matches the visual servo stand-off)
+grasp_height: 0.02        # m: at GRASP. UNCONFIRMED: depends on the gripper's finger geometry and the object
+lift_height: 0.15         # m: at LIFT
+tool_offset: 0.0          # m: distance from the end_effector origin to the grasp point (fingertips) along the tool axis.
+                          # UNKNOWN: the URDF fingers are placeholders. With 0 the end_effector origin itself goes to the heights above.
+grasp_offset: [0.0, 0.0]  # m: x, y of the grasp point in the target frame
+
+# Gripper (joint_6, metres). From the URDF placeholder: 0 = closed (4 cm jaw gap), 0.025 = open (9 cm gap). The real
+# gripper's open/close sense is handled by gripper_invert in arm_interface/config/ArmInterface.yaml; the closed value
+# of the REAL gripper on a real object is unknown.
+gripper_open: 0.025
+gripper_closed: 0.0
+gripper_speed: 0.02       # m/s ramp of the command (URDF velocity limit 0.05)
+gripper_settle: 0.6       # s to wait after reaching the target
+gripper_tolerance: 0.002  # m
+gripper_timeout: 5.0      # s
+require_object: false     # abort if the gripper closes all the way (nothing between the jaws). False: the target may be a paper marker
+object_threshold: 0.002   # m: stopping this far short of fully closed counts as "object"
+
+# Motion
+descent_slow_factor: 3.0  # the descent takes this many times the planner's time (>= 1)
+lift_slow_factor: 2.0
+max_cartesian_deviation: 0.005   # m: a straight leg that is only followed to worse than this refuses the whole sequence
+endpoint_tolerance_rad: 0.03     # a leg that ends further than this from its goal aborts
+
+# Target
+target_max_age: 5.0       # s: the target TF must be this fresh (marker_localizer publishes only while the camera is still)
+recheck_translation_mm: 5.0
+recheck_rotation_deg: 3.0
+base_frame: base_link
