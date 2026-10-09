@@ -155,14 +155,16 @@ class CloseParams:
     contact_speed: float = 0.0005    # m/s: speed once the load has risen to contact_load (the final approach)
     contact_load: float = 4.0        # % of max torque: the first sign of contact (free closing measured 0.8 to 1.7 %)
     load_target: float = 37.5        # % of max torque: the STEADY-STATE load to hold the grasp at (the close stops when the PREDICTED load reaches it)
-    load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once at close_speed; if it persists for hold_timeout the grasp fails
+    load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at contact_speed); if it persists for hold_timeout the grasp fails
     load_lead_s: float = 0.25        # s: look-ahead of the stop decision, predicted load = load + (load rate) x load_lead_s (covers the 10 Hz sampling and the lag)
-    load_band: float = 2.0           # % deadband of the hold regulation around load_target (the hold stays at or under load_target + band = 39.5 %)
-    trim_speed: float = 0.0003       # m/s: speed of the hold regulation (load too high: open, too low: close)
+    load_band: float = 2.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
+    hold_kp: float = 3e-6            # m per % of load error: proportional gain of the hold PI (command increment = -(kp d(e) + ki e Ts), e = target - load)
+    hold_ki: float = 1.4e-5          # m per (% s): integral gain of the hold PI. From the measured 65 to 80 %/mm: loop time constant ~1 s, well above the load delay
+    trim_speed: float = 0.0003       # m/s: the PI's command rate limit (load too high: open, too low: close)
     confirm_samples: int = 1         # consecutive NEW load samples with predicted load >= load_target before the close stops
     load_max_age: float = 0.5        # s: an older load sample is no measurement (the driver publishes at 10 Hz)
     hold_time: float = 1.0           # s in the band and still before the grasp counts as done
-    hold_timeout: float = 6.0        # s of holding without getting in the band
+    hold_timeout: float = 10.0       # s of holding without settling in the band
     still_time: float = 0.5          # s the jaw position must stay within still_tol
     still_tol: float = 0.0003        # m
     closed_settle: float = 0.6       # s after the command reached fully closed before calling it 'thin'
@@ -184,10 +186,13 @@ class LoadLimitedCloser:
     Command law (cmd decreases toward `closed`; load is |motor load| in %; predicted = load + rate x load_lead_s):
       CLOSING   cmd -= close_speed dt (approach), contact_speed dt once the load has reached contact_load,
                 until `confirm_samples` consecutive NEW samples have predicted >= load_target
-      HOLDING   load >= load_limit:       cmd += close_speed dt (relief, fast)
-                load > target + band:     cmd += trim_speed dt  (open)
-                load < target - band:     cmd -= trim_speed dt  (never past `closed`; only while the PREDICTED load is below target - band)
-                done once the load stayed within the band for hold_time and the jaws are still
+      HOLDING   load >= load_limit:       cmd += contact_speed dt (relief)
+                otherwise a PI on e = target - load keeps the load AS CLOSE AS POSSIBLE to the target, above and below it:
+                  once per new load sample  d = -(kp (e - e_prev) + ki e Ts)      (incremental form: no windup; d < 0 closes)
+                  d < 0 is dropped while the PREDICTED load is already >= target (look-ahead against overshoot)
+                  the command moves by at most trim_speed dt per step and stays inside [closed, opened]; what a limit blocks is discarded
+                done once the load stayed within `band` of the target for hold_time and the jaws are still
+                at the closed limit with the load still below target - band the outcome is 'thin' (nothing more can be closed)
       CLOSED    the command reached `closed` without the load target: after closed_settle with the jaws still the
                 outcome is 'thin' (closed completely at a lower load). By the user's decision this counts as a successful
                 grasp of a thinner element, although the load cannot tell it from an empty closure.
@@ -209,6 +214,10 @@ class LoadLimitedCloser:
         self.ref = None                      # (position, time) the jaws have been within still_tol of
         self.slow = False                    # the load has reached contact_load: final approach at contact_speed
         self.predicted = 0.0
+        self.e_prev = None                   # previous load error of the hold PI
+        self.pending = 0.0                   # command increment not yet applied (rate-limited)
+        self.sample_dt = 0.1
+        self.new_sample = False
 
     def _still(self, t, measured):
         if self.ref is None or abs(measured - self.ref[0]) > self.p.still_tol:
@@ -225,7 +234,11 @@ class LoadLimitedCloser:
         self.t_last = t
         pos = self.cmd if measured is None else measured
         still = self._still(t, pos)
+        self.new_sample = False
         if not self.samples or load_stamp != self.samples[-1][0]:                 # a NEW load sample
+            self.new_sample = True
+            if self.samples:
+                self.sample_dt = min(max(load_stamp - self.samples[-1][0], 0.02), 0.3)
             self.samples = (self.samples + [(load_stamp, load)])[-2:]
             rate = 0.0
             if len(self.samples) == 2 and self.samples[1][0] > self.samples[0][0]:
@@ -234,6 +247,7 @@ class LoadLimitedCloser:
             self.hits = self.hits + 1 if self.predicted >= p.load_target else 0
         if self.phase in ("CLOSING", "CLOSED") and (self.hits >= p.confirm_samples or load >= p.load_limit):
             self.phase, self.t_hold, self.in_band_since = "HOLDING", t, None     # freeze the command where it is
+            self.e_prev, self.pending = p.load_target - load, 0.0
             if load < p.load_limit:
                 return CloseStep(self.cmd, self.phase)
         if self.phase == "CLOSING":
@@ -248,30 +262,45 @@ class LoadLimitedCloser:
                 return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
             return CloseStep(self.cmd, self.phase)
         # HOLDING
-        err = load - p.load_target
+        e = p.load_target - load
         if load >= p.load_limit:
-            self.cmd = min(self.opened, self.cmd + p.close_speed * dt)                # relief, fast
-            self.in_band_since = None
-        elif err > p.load_band:
-            self.cmd = min(self.opened, self.cmd + p.trim_speed * dt)
-            self.in_band_since = None
-        elif err < -p.load_band:
-            if self.cmd > self.closed:
-                if self.predicted < p.load_target - p.load_band:             # only keep closing while the PREDICTED load is still short of the band
-                    self.cmd = max(self.closed, self.cmd - p.trim_speed * dt)
-                self.t_closed = None
-            elif self.t_closed is None:
-                self.t_closed = t
-            elif t - self.t_closed >= p.closed_settle and still:               # regulated all the way to closed, load still low
-                return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
-            self.in_band_since = None
+            self.cmd = min(self.opened, self.cmd + p.contact_speed * dt)              # relief: at 65-80 %/mm this already sheds ~40 %/s, and does not lose the contact
+            self.pending, self.in_band_since = 0.0, None
+            self.e_prev = e
         else:
-            if self.in_band_since is None:
-                self.in_band_since = t
-            if t - self.in_band_since >= p.hold_time and still:
-                return CloseStep(self.cmd, self.phase, done=True, outcome="object")
+            if self.new_sample:
+                d = -(p.hold_kp * (e - self.e_prev) + p.hold_ki * e * self.sample_dt) if self.e_prev is not None else 0.0
+                if d < 0.0 and self.predicted >= p.load_target:
+                    d = 0.0                                                           # the load is about to reach the target: no more closing
+                self.pending += d
+                self.e_prev = e
+            step = max(-p.trim_speed * dt, min(p.trim_speed * dt, self.pending))
+            new = min(self.opened, max(self.closed, self.cmd + step))
+            if new != self.cmd + step:
+                self.pending = 0.0                                                    # a command limit blocks it: discard (anti-windup)
+            else:
+                self.pending -= step
+            self.cmd = new
+            at_closed_limit = self.cmd <= self.closed + 1e-12
+            if abs(e) <= p.load_band:
+                self.t_closed = None
+                if self.in_band_since is None:
+                    self.in_band_since = t
+                if t - self.in_band_since >= p.hold_time and still:
+                    return CloseStep(self.cmd, self.phase, done=True, outcome="object")
+            else:
+                self.in_band_since = None
+                if e > p.load_band and at_closed_limit:                               # cannot close any further, load still short of the target
+                    if self.t_closed is None:
+                        self.t_closed = t
+                    elif t - self.t_closed >= p.closed_settle and still:
+                        return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
+                else:
+                    self.t_closed = None
         if t - self.t_hold > p.hold_timeout:
             if load >= p.load_limit:
                 return CloseStep(self.cmd, self.phase, fault="the gripper load stays at %.0f %% (limit %.0f %%)" % (load, p.load_limit))
+            if load < p.contact_load:
+                return CloseStep(self.cmd, self.phase, fault="the contact was lost while holding (load %.1f %%)" % load)
             return CloseStep(self.cmd, self.phase, done=True, outcome="object")   # in contact, load not in the band: report it
         return CloseStep(self.cmd, self.phase)

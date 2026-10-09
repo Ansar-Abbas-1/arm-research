@@ -203,6 +203,52 @@ class LoadLimitedCloserTest(unittest.TestCase):
         step = pl.run(60)
         self.assertTrue(step.fault or pl.load < pl.p.load_limit, "ended at %.1f %% without a fault" % pl.load)
 
+    def test_the_hold_pi_keeps_closing_while_the_load_is_below_the_target(self):
+        # a soft contact: the close stops on the predicted load but the load is still short of the target; the PI must keep closing
+        pl = Plant(obj=0.012, gain=15.0)
+        step = pl.run(60)
+        self.assertEqual(step.outcome, "object")
+        self.assertLessEqual(abs(pl.load - pl.p.load_target), pl.p.load_band)
+        self.assertGreater(pl.p.load_target - 10.0, 0.0)
+        hold_cmds = pl.cmds[-60:]
+        self.assertLess(pl.cmds[-1], pl.cmds[len(pl.cmds) // 3])                  # the command went further in after the first freeze
+
+    def test_the_hold_pi_tracks_the_target_for_a_range_of_stiffness_in_this_model(self):
+        for gain in (15.0, 40.0, 80.0):
+            pl = Plant(obj=0.012, gain=gain)
+            step = pl.run(60)
+            self.assertEqual(step.outcome, "object", "gain %s" % gain)
+            self.assertLessEqual(abs(pl.load - pl.p.load_target), pl.p.load_band, "gain %s" % gain)
+
+    def test_the_hold_pi_respects_the_command_rate_limit(self):
+        pl = Plant(obj=0.012, gain=40.0)
+        pl.run(60)
+        k = int(round(pl.closer.t_hold / 0.05))                                   # the tick at which the hold began
+        steps = np.abs(np.diff(pl.cmds[k:])) / 0.05
+        self.assertLessEqual(steps.max(), pl.p.trim_speed + 1e-9)
+
+    def test_at_the_closed_limit_with_the_load_still_short_the_outcome_is_thin_not_an_endless_squeeze(self):
+        pl = Plant(obj=0.012, gain=1.0)                                           # so soft that even fully closed it never reaches the target
+        step = pl.run(60)
+        self.assertEqual(step.outcome, "thin")
+        self.assertGreaterEqual(min(pl.cmds), 0.0)
+
+    def test_losing_the_contact_while_holding_is_a_fault_not_a_grasp(self):
+        pl = Plant(obj=0.012, gain=80.0)
+        pl.run(8)                                                                 # in contact and holding
+        step = pl.run(40, load_override=1.0)                                      # the object slips away: no load any more
+        self.assertIn("contact was lost", step.fault)
+
+    def test_relief_at_the_peak_limit_opens_gently_and_keeps_the_contact(self):
+        pl = Plant(obj=0.012, gain=80.0)
+        pl.run(8)
+        before = pl.cmd
+        c = pl.closer
+        c.step(pl.t + 0.05, pl.measured(), 46.0, pl.t + 0.05)                     # a load above the peak limit
+        after = c.step(pl.t + 0.10, pl.measured(), 46.0, pl.t + 0.10).cmd
+        self.assertGreater(after, before)
+        self.assertLessEqual(after - before, pl.p.contact_speed * 0.2 + 1e-9)
+
     def _spike(self, confirm):
         pl = Plant(obj=None, params=gp.CloseParams(confirm_samples=confirm))
         for _ in range(40):                                                       # 2 s of closing, then one spike sample
