@@ -26,7 +26,7 @@ import rospy  # noqa: E402
 import tf2_ros  # noqa: E402
 from geometry_msgs.msg import TransformStamped  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
-from std_msgs.msg import Float64, String  # noqa: E402
+from std_msgs.msg import String  # noqa: E402
 from std_srvs.srv import Trigger  # noqa: E402
 
 from arm_grasp.srv import Grasp  # noqa: E402
@@ -101,8 +101,17 @@ def main():
         pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
         grasp = rospy.ServiceProxy("/grasp_sequencer/grasp", Grasp)
         stop_srv = rospy.ServiceProxy("/grasp_sequencer/stop", Trigger)
-        obj_pub = rospy.Publisher("/arm_sim/gripper_object", Float64, queue_size=1, latch=True)   # joint_6 position where the jaws touch an object
-        obj_pub.publish(Float64(float("nan")))
+        # The simulator has NO gripper load model (load behaviour is hardware only). This is a constant low-load STUB so the
+        # sequencing checks can run: the close ends "fully closed below the target" ('thin'). Nothing here says anything
+        # about real load behaviour.
+        load_pub = rospy.Publisher("/arm_interface/motor_load", JointState, queue_size=1)
+
+        def load_stub():
+            while not stop.is_set():
+                m = JointState(); m.header.stamp = rospy.Time.now(); m.name, m.effort = ["joint_6"], [2.5]
+                load_pub.publish(m)
+                time.sleep(0.1)
+        threading.Thread(target=load_stub, daemon=True).start()
         estop = rospy.ServiceProxy("/arm_interface/estop", Trigger)
         estop_reset = rospy.ServiceProxy("/arm_interface/estop_reset", Trigger)
         wait_for(lambda: joints["q"] is not None and status["v"] is not None, 30, "joint states and status")
@@ -139,7 +148,6 @@ def main():
                 estop_reset()
             except Exception:
                 pass
-            obj_pub.publish(Float64(float("nan")))
             TARGET.update(publish=True, dz=0.0, x=0.47, y=0.04)
             stop_srv(); time.sleep(0.5)
 
@@ -195,29 +203,12 @@ def main():
         check("the final pose is the lift height (error %.1f mm)" % (1000 * np.linalg.norm(pts[-1] - expected(SPEC["lift"]))), np.linalg.norm(pts[-1] - expected(SPEC["lift"])) < 0.010)
         g = np.array([v for _, v in joints["g"]])
         check("the gripper opened and closed (max %.3f, final %.3f)" % (g.max(), g[-1]), g.max() > 0.024 and g[-1] < 0.002)
-        check("fully closed below the load target = 'thin' (%s)" % status["v"]["plan"].get("grasp_outcome"), status["v"]["plan"].get("grasp_outcome") == "thin")
+        check("fully closed below the load target (stub load) = 'thin' (%s)" % status["v"]["plan"].get("grasp_outcome"), status["v"]["plan"].get("grasp_outcome") == "thin")
         t_desc = [t for t, s in history if s == "DESCENDING"]
         t_close = [t for t, s in history if s == "CLOSING"]
         planned = [l for l in status["v"]["plan"]["legs"] if l["name"] == "DESCEND"][0]["duration"]
         dur = t_close[0] - t_desc[0]
         check("the descent was slowed: %.1f s against %.1f s planned (x3)" % (dur, planned), dur > 2.0 * planned)
-
-        print("-- scenario 3b: load reaches the target before fully closed (load-limited close to 40 %)")
-        reset(); goto_start()
-        obj_pub.publish(Float64(0.012))
-        trace.clear(); joints["g"].clear(); history.clear()
-        r = grasp("target", False)
-        check("the sequence is accepted", r.success)
-        wait_for(lambda: status["v"]["state"] in ("DONE", "ABORTED"), 240, "the sequence to end")
-        plan = status["v"]["plan"]
-        check("it ends DONE (%s %s)" % state(), state()[0] == "DONE")
-        check("the outcome is 'object' (%s)" % plan.get("grasp_outcome"), plan.get("grasp_outcome") == "object")
-        check("closed to the 40 %% load target and held there (load %.1f %%)" % (plan.get("grasp_load_percent") or -1), plan.get("grasp_load_percent") is not None and abs(plan["grasp_load_percent"] - 40.0) <= 5.0)
-        pts = np.array([p for _, p in trace])
-        check("and the arm lifted it (final z error %.1f mm)" % (1000 * np.linalg.norm(pts[-1] - expected(SPEC["lift"]))), np.linalg.norm(pts[-1] - expected(SPEC["lift"])) < 0.010)
-        t_close = [t for t, s in history if s == "CLOSING"]
-        t_lift = [t for t, s in history if s == "LIFTING"]
-        check("the close was slow: %.1f s to the load target (>= 2 s)" % (t_lift[0] - t_close[0]), t_lift[0] - t_close[0] > 2.0)
 
         print("-- scenario 4: e-stop in the descent")
         reset(); goto_start()

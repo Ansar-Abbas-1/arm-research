@@ -19,9 +19,6 @@
   <depend>std_srvs</depend>
   <depend>tf2_ros</depend>
   <depend>arm_trajectory</depend>
-  <test_depend>rostest</test_depend>
-  <test_depend>arm_interface</test_depend>
-  <test_depend>xacro</test_depend>
   <depend>actionlib_msgs</depend>
   <exec_depend>py_trees</exec_depend>
   <exec_depend>py_trees_ros</exec_depend>
