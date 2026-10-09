@@ -72,10 +72,11 @@ max_goal_slew_rad_s: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
 # (one widened bulk-read block, no extra bus transaction). The hardware error
 # register (70) is read when a position read reports the Hardware Alert bit and
 # every error_poll_period_s as a safety net. status_rate_hz is only the
-# publishing rate of /arm_interface/motor_status. A latched hardware error raises the software e-stop
+# publishing rate of /arm_interface/motor_status and /arm_interface/motor_load (10 Hz: the grasp sequence reads the
+# gripper load from it). A latched hardware error raises the software e-stop
 # (estop_on_hardware_error) and excludes that motor from torque writes.
 # Thresholds below are heuristic starting values, not from the datasheets.
-status_rate_hz: 2.0
+status_rate_hz: 10.0
 error_poll_period_s: 2.0
 estop_on_hardware_error: true
 temperature_limit_default_c: 80.0   # used only if a motor's own limit cannot be read

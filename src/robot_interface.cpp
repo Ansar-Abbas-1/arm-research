@@ -821,7 +821,7 @@ private:
         pnh.param("addr_bulk_block", addr_bulk_block_, addr_bulk_block_);
         pnh.param("len_bulk_block", len_bulk_block_, len_bulk_block_);
         pnh.param("error_poll_period_s", error_poll_period_s_, error_poll_period_s_);
-        double status_rate_hz = 2.0;
+        double status_rate_hz = 10.0;
         pnh.param("status_rate_hz", status_rate_hz, status_rate_hz);
         status_period_s_ = status_rate_hz > 0.0 ? 1.0 / status_rate_hz : 0.5;
         pnh.param("estop_on_hardware_error", estop_on_hardware_error_, estop_on_hardware_error_);
