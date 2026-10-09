@@ -15,11 +15,6 @@
  *   - /arm_interface/drive_state (std_msgs/String, latched): ESTOPPED / TORQUE_OFF / TRACKING / HOLDING
  *   - /arm_interface/motor_status (diagnostic_msgs/DiagnosticArray, 10 Hz): healthy simulated motors, with
  *     optional injected faults (~sim_motor_warn_joint, ~sim_motor_fault_joint: 1-based joint number)
- *   - /arm_interface/motor_load (sensor_msgs/JointState, 10 Hz): effort = load in % of max torque (2.5 % baseline)
- *
- * Gripper contact (simulation only, gripper_object_model.h): publish the joint_6 position at which closing is blocked
- * to /arm_sim/gripper_object (std_msgs/Float64, NaN = closes freely). The gripper then stops there and its load grows
- * by ~sim_gripper_load_per_mm (default 5 %/mm) per millimetre the command goes past it.
  *
  * Motor reset: /arm_interface/reenable_failed_motors (std_srvs/Trigger) clears the injected fault.
  *
@@ -41,9 +36,7 @@
 #include <std_srvs/SetBool.h>
 #include <std_msgs/String.h>
 #include <diagnostic_msgs/DiagnosticArray.h>
-#include <std_msgs/Float64.h>
 #include "arm_interface/estop.h"
-#include "arm_interface/gripper_object_model.h"
 #include <cmath>
 #include <vector>
 #include <algorithm>
@@ -112,14 +105,6 @@ public:
         reenable_srv_ = nh.advertiseService("/arm_interface/reenable_failed_motors", &ArmSimulatorNode::handleReenable, this);
         drive_state_pub_ = nh.advertise<std_msgs::String>("/arm_interface/drive_state", 1, true);
         status_pub_ = nh.advertise<diagnostic_msgs::DiagnosticArray>("/arm_interface/motor_status", 2);
-        load_pub_ = nh.advertise<sensor_msgs::JointState>("/arm_interface/motor_load", 2);
-        pnh.param("sim_gripper_load_per_mm", gripper_load_per_mm_, 5.0);
-        for (int i = 0; i < num_joints_; ++i) {
-            if (joint_names_[i] == "joint_6") gripper_idx_ = i;
-        }
-        object_sub_ = nh.subscribe<std_msgs::Float64>("/arm_sim/gripper_object", 1, [this](const std_msgs::Float64::ConstPtr& m) {
-            gripper_object_ = m->data;
-        });
         pnh.param("sim_motor_warn_joint", warn_joint_, 0);
         pnh.param("sim_motor_fault_joint", fault_joint_, 0);
         last_cmd_time_ = ros::Time(0);
@@ -173,22 +158,7 @@ private:
     ros::ServiceServer reenable_srv_;
     ros::Publisher drive_state_pub_;
     ros::Publisher status_pub_;
-    ros::Publisher load_pub_;
     ros::Timer status_timer_;
-
-    // Simulated gripper contact: joint_6 position at which closing is blocked (NaN = none).
-    double gripper_object_ = std::nan("");
-    double gripper_load_per_mm_ = 5.0;
-    int gripper_idx_ = -1;
-    ros::Subscriber object_sub_;
-    static constexpr double kBaselineLoad = 2.5;
-
-    double motorLoad(int i) const {
-        if (i == gripper_idx_) {
-            return arm_interface::GripperLoadWithContact(commanded_positions_[i], gripper_object_, gripper_load_per_mm_, kBaselineLoad);
-        }
-        return kBaselineLoad;
-    }
 
     std::string driveState() const {
         if (estop_.latched()) return "ESTOPPED";
@@ -237,8 +207,6 @@ private:
         publishDriveState();
         diagnostic_msgs::DiagnosticArray arr;
         arr.header.stamp = ros::Time::now();
-        sensor_msgs::JointState load_msg;
-        load_msg.header.stamp = arr.header.stamp;
         for (int i = 0; i < num_joints_; ++i) {
             diagnostic_msgs::DiagnosticStatus st;
             st.name = "arm_interface/joint_" + std::to_string(i + 1);
@@ -264,15 +232,12 @@ private:
             };
             kv("temperature_c", std::to_string(temp));
             kv("temperature_limit_c", i < 4 ? "50" : "80");
-            kv("load_percent", std::to_string(motorLoad(i)));
+            kv("load_percent", "2.5");
             kv("input_voltage_v", "11.8");
             kv("hardware_error", std::to_string(hw_error));
             arr.status.push_back(st);
-            load_msg.name.push_back(joint_names_[i]);
-            load_msg.effort.push_back(motorLoad(i));
         }
         status_pub_.publish(arr);
-        load_pub_.publish(load_msg);
     }
 
     void publishEStopState() {
@@ -375,10 +340,6 @@ private:
             for (int i = 0; i < num_joints_; ++i) {
                 current_positions_[i] += alpha * (commanded_positions_[i] - current_positions_[i]);
             }
-        }
-
-        if (gripper_idx_ >= 0) {
-            current_positions_[gripper_idx_] = arm_interface::GripperMeasuredWithContact(current_positions_[gripper_idx_], gripper_object_);
         }
 
         // Publish simulated state
