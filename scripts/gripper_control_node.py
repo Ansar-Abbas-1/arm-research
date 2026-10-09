@@ -14,10 +14,12 @@ The same law runs inside the grasp sequence (grasp_tree.CloseOnLoad). Parameters
     rosservice call /gripper_control/close "{execute: false, open_first: false}"     # watch only
     rosservice call /gripper_control/close "{execute: true, open_first: false}"      # close from where it is
     rosservice call /gripper_control/open                                            # ramp to gripper_open (COMMANDS the gripper)
+    rosservice call /gripper_control/close_on_load                                   # the same as close with execute: true (for the rviz panel)
 """
 import json
 import threading
 import time
+import types
 
 import rospy
 from sensor_msgs.msg import JointState
@@ -50,6 +52,7 @@ class Node(object):
         rospy.Service("~close", GripperClose, self.on_close)
         rospy.Service("~stop", Trigger, self.on_stop)
         rospy.Service("~open", Trigger, self.on_open)
+        rospy.Service("~close_on_load", Trigger, self.on_close_trigger)
         self.publish("IDLE", "")
         rospy.logwarn("gripper_control ready (IDLE): load target %.0f %%, close speed %.4f m/s (config/grasp.yaml). Nothing moves until ~close with execute:=true.",
                       self.params.load_target, self.params.close_speed)
@@ -129,6 +132,11 @@ class Node(object):
             return TriggerResponse(ok, message)
         finally:
             self.busy.release()
+
+    def on_close_trigger(self, _):
+        """Trigger flavour of ~close with execute: true, open_first: false (the rviz panel uses it: no arm_grasp message dependency)."""
+        r = self.on_close(types.SimpleNamespace(execute=True, open_first=False))
+        return TriggerResponse(r.success, ("%s: " % r.outcome if r.success else "") + r.message)
 
     def close(self, req):
         why = self.preflight()
