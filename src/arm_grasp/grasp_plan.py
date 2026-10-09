@@ -151,8 +151,8 @@ class CloseParams:
     """Load-limited closing. EVERY value is a FLAGGED, UNVALIDATED default (see config/grasp.yaml) except the operator's two
     numbers (2026-10-09): peak load 45 % (load_limit); steady state 37.5 %, raised to 38.5 % on request (load_target). The gripper motor tripped its
     overload protection (error 0x20) holding 43 to 48 %, so the STEADY state must stay under 40 %: target 38.5 +- 1 % (raised from 37.5)."""
-    close_speed: float = 0.002       # m/s: APPROACH speed of the close (until the load first rises); set it from outside via close/close_speed
-    contact_speed: float = 0.0005    # m/s: speed once the load has risen to contact_load (the final approach)
+    close_speed: float = 0.003       # m/s: APPROACH speed of the close (until the load first rises; operator: at least 3 mm/s); set it from outside via close/close_speed
+    contact_speed: float = 0.001     # m/s: speed once the load has risen to contact_load (the final approach; operator: at least 1 mm/s)
     contact_load: float = 4.0        # % of max torque: the first sign of contact (free closing measured 0.8 to 1.7 %)
     load_target: float = 38.5        # % of max torque: the STEADY-STATE load to hold the grasp at (raised from the operator's 37.5 on request, still under 40 with the band)
     load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at contact_speed); if it persists for hold_timeout the grasp fails
@@ -160,7 +160,7 @@ class CloseParams:
     load_band: float = 1.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
     hold_kp: float = 3e-6            # m per % of load error: proportional gain of the hold PI (command increment = -(kp d(e) + ki e Ts), e = target - load)
     hold_ki: float = 1.4e-5          # m per (% s): integral gain of the hold PI. From the measured 65 to 80 %/mm: loop time constant ~1 s, well above the load delay
-    trim_speed: float = 0.0003       # m/s: the PI's command rate limit (load too high: open, too low: close)
+    trim_speed: float = 0.001        # m/s: the PI's command rate limit, the final trim (operator: at least 1 mm/s)
     confirm_samples: int = 1         # consecutive NEW load samples with predicted load >= load_target before the close stops
     load_max_age: float = 0.5        # s: an older load sample is no measurement (the driver publishes at 10 Hz)
     hold_time: float = 1.0           # s in the band and still before the grasp counts as done

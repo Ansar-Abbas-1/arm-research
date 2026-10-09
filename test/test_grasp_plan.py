@@ -136,7 +136,7 @@ class Plant(object):
     def measured(self):
         return self.cmd if self.obj is None else max(self.cmd, self.obj)
 
-    def run(self, seconds, load_override=None):
+    def run(self, seconds, load_override=None, stop_on_done=True):
         step = None
         for _ in range(int(seconds * 20)):
             self.t += 0.05
@@ -148,7 +148,7 @@ class Plant(object):
                 self.load = self.pipe.pop(0)
                 self.stamp = self.t
             step = self.closer.step(self.t, self.measured(), self.load, self.stamp)
-            if step.fault or step.done:
+            if step.fault or (step.done and stop_on_done):
                 return step
             self.cmd = step.cmd
             self.loads.append(self.load)
@@ -173,7 +173,7 @@ class LoadLimitedCloserTest(unittest.TestCase):
         pl.run(60)
         steps = np.diff(pl.cmds) / 0.05
         self.assertAlmostEqual(-steps.min(), pl.p.close_speed, delta=1e-6)           # the fast approach reached close_speed
-        self.assertLessEqual(-steps.min(), 0.002 + 1e-9)
+        self.assertLessEqual(-steps.min(), 0.003 + 1e-9)
         i = next(k for k, l in enumerate(pl.loads) if l >= pl.p.contact_load)
         self.assertLessEqual(max(-x for x in steps[i + 1:]), pl.p.contact_speed + 1e-9)   # slow after the first rise of the load
 
@@ -236,7 +236,7 @@ class LoadLimitedCloserTest(unittest.TestCase):
     def test_losing_the_contact_while_holding_is_a_fault_not_a_grasp(self):
         pl = Plant(obj=0.012, gain=80.0)
         pl.run(8)                                                                 # in contact and holding
-        step = pl.run(40, load_override=1.0)                                      # the object slips away: no load any more
+        step = pl.run(40, load_override=1.0, stop_on_done=False)                  # the object slips away: no load any more
         self.assertIn("contact was lost", step.fault)
 
     def test_relief_at_the_peak_limit_opens_gently_and_keeps_the_contact(self):
