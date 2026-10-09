@@ -149,7 +149,11 @@ def gripper_ramp(current, target, max_speed, dt):
 @dataclass
 class CloseParams:
     """Load-limited closing. Every value is a FLAGGED DEFAULT except load_target (the user's 40 %), see config/grasp.yaml."""
-    close_speed: float = 0.001       # m/s: slow constant-speed close (the open ramp is gripper_speed). Set from the first real data: the load rises ~80 %/mm of command lead, one 10 Hz sample is 0.1 mm at 1 mm/s
+    close_speed: float = 0.002       # m/s: APPROACH speed of the close (fast part, until the load first rises); set it from outside via
+                                     # close/close_speed. UNVALIDATED: an estimate from one soft-object run at 1 mm/s and one hard-stop run, with
+                                     # a simple model of the 10 Hz load delay. The real limit must be found on the hardware (watch the peak load)
+    contact_speed: float = 0.001     # m/s: speed once the load has risen to contact_load (the final approach to the target)
+    contact_load: float = 4.0        # % of max torque: the first sign of contact (free closing measured 0.8 to 1.7 %)
     load_target: float = 40.0        # % of max torque to close to and hold
     load_band: float = 5.0           # % deadband of the hold regulation
     trim_speed: float = 0.0003       # m/s: speed of the hold regulation (load too high: open, too low: close); at ~80 %/mm this is ~24 %/s
@@ -176,7 +180,8 @@ class LoadLimitedCloser:
     """Closes the gripper slowly at constant speed until the motor load reaches `load_target`, then holds there.
 
     Command law (cmd decreases toward `closed`; load is |motor load| in %):
-      CLOSING   cmd -= close_speed dt              until `confirm_samples` consecutive NEW load samples >= load_target
+      CLOSING   cmd -= close_speed dt (approach), contact_speed dt once the load has reached contact_load,
+                until `confirm_samples` consecutive NEW load samples >= load_target
       HOLDING   load > target + band: cmd += v dt  (open; v = trim_speed, close_speed once load >= load_abort)
                 load < target - band: cmd -= trim_speed dt (never past `closed`)
                 done once the load stayed within the band for hold_time and the jaws are still
@@ -198,6 +203,7 @@ class LoadLimitedCloser:
         self.in_band_since = None
         self.t_closed = None
         self.ref = None                      # (position, time) the jaws have been within still_tol of
+        self.slow = False                    # the load has reached contact_load: final approach at contact_speed
 
     def _still(self, t, measured):
         if self.ref is None or abs(measured - self.ref[0]) > self.p.still_tol:
@@ -221,7 +227,9 @@ class LoadLimitedCloser:
             self.phase, self.t_hold, self.in_band_since = "HOLDING", t, None     # freeze the command where it is
             return CloseStep(self.cmd, self.phase)
         if self.phase == "CLOSING":
-            self.cmd = max(self.closed, self.cmd - p.close_speed * dt)
+            if load >= p.contact_load:
+                self.slow = True
+            self.cmd = max(self.closed, self.cmd - (p.contact_speed if self.slow else p.close_speed) * dt)
             if self.cmd <= self.closed:
                 self.phase, self.t_closed = "CLOSED", t
             return CloseStep(self.cmd, self.phase)

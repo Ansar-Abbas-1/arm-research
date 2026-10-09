@@ -109,7 +109,7 @@ class TestGraspTree(unittest.TestCase):
         run(ctx, tree)
         steps = [b - a for a, b in zip(ctx.cmds, ctx.cmds[1:])]
         self.assertLessEqual(max(steps), 0.02 * DT + 1e-9)                         # opening ramp
-        self.assertLessEqual(max(-x for x in steps), 0.001 * DT + 1e-9)            # closing at close_speed, much slower
+        self.assertLessEqual(max(-x for x in steps), 0.002 * DT + 1e-9)            # closing at close_speed, 10x slower than opening
         self.assertAlmostEqual(max(ctx.cmds), spec.gripper_open)
         self.assertAlmostEqual(ctx.cmds[-1], spec.gripper_closed)
 
