@@ -8,7 +8,10 @@
        gripper_control with execute: true) and, for the load-versus-error relation, let it push against something. -->
   <arg name="dir" default="/home/dev/recordings/gripper"/>
   <arg name="control_node" default="true"/>
+  <arg name="close_speed" default=""/>
   <node name="gripper_recorder" pkg="rosbag" type="record" output="screen"
         args="-o $(arg dir)/gripper /arm_interface/motor_load /arm_interface/motor_status /arm_interface/estop_state /arm_interface/drive_state /joint_states_in /joint_states_out /gripper_control/status /grasp_sequencer/status"/>
-  <include if="$(arg control_node)" file="$(find arm_grasp)/launch/gripper_control.launch"/>
+  <include if="$(arg control_node)" file="$(find arm_grasp)/launch/gripper_control.launch">
+    <arg name="close_speed" value="$(arg close_speed)"/>
+  </include>
 </launch>

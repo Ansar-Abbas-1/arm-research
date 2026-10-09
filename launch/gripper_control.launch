@@ -8,7 +8,11 @@
          rostopic echo /gripper_control/status        (rosservice call /gripper_control/stop ends it; the driver holds)
        Parameters (load target, speeds, band) come from config/grasp.yaml; every value there except load_target is flagged. -->
   <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <!-- close_speed: m/s approach speed of the close, overriding the yaml (empty: keep the yaml value). The node reads it at
+       startup, so a change needs a restart of this launch. Example: roslaunch arm_grasp gripper_control.launch close_speed:=0.003 -->
+  <arg name="close_speed" default=""/>
   <node name="gripper_control" pkg="arm_grasp" type="gripper_control_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
+    <param name="close/close_speed" value="$(arg close_speed)" type="double" unless="$(eval arg('close_speed') == '')"/>
   </node>
 </launch>
