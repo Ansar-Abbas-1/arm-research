@@ -1,0 +1,17 @@
+<launch>
+  <!-- The grasp target as a marker plus a hand-measured offset (see scripts/grasp_target_node.py). Needs the camera stack and
+       marker_localizer (marker_<id> is published only while the camera is still and sees the marker). The offset is in the MARKER frame
+       (+z out of the surface, x and y in its plane), in metres. Then plan with:
+         rosservice call /grasp_sequencer/grasp "{target_frame: grasp_target, dry_run: true}"
+       The sequencer refuses a target older than target_max_age (5 s), so keep the marker in view and the arm still when you call it. -->
+  <arg name="marker" doc="TF frame of the marker, for example marker_984"/>
+  <arg name="offset_x" default="0.0"/>
+  <arg name="offset_y" default="0.0"/>
+  <arg name="offset_z" default="0.0"/>
+  <arg name="target_frame" default="grasp_target"/>
+  <node name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">
+    <param name="marker_frame" value="$(arg marker)"/>
+    <rosparam param="offset" subst_value="true">[$(arg offset_x), $(arg offset_y), $(arg offset_z)]</rosparam>
+    <param name="target_frame" value="$(arg target_frame)"/>
+  </node>
+</launch>
