@@ -1,0 +1,22 @@
+# Object detector (scripts/object_detector_node.py). Every value marked UNKNOWN or FLAGGED is a placeholder to be set by the operator.
+model: ""                       # UNKNOWN: path of your YOLO model exported to ONNX (see docs/yolo_detector.md), e.g. /home/dev/models/best.onnx
+input_size: 640                 # used only if the model has a dynamic input size; otherwise read from the model
+format: auto                    # auto | v8 (YOLOv8/11, channels first) | v5 | e2e (NMS-free export)
+names: []                       # class names in model order; empty = read from the ONNX metadata (ultralytics exports store them)
+conf: 0.35                      # FLAGGED: score threshold
+iou: 0.45                       # FLAGGED: NMS IoU threshold
+max_rate_hz: 2.0                # frames processed per second at most (CPU inference of a few tens of ms each)
+threads: 8                      # onnxruntime intra-op threads
+image_topic: /usb_cam/image_raw
+camera_info_topic: /usb_cam/camera_info
+base_frame: base_link
+# Floor: the plane the detections are intersected with. marker_0 (the 100 mm ground marker) gives its z when it was seen in the last 60 s
+# (accuracy about 1 to 2 cm); otherwise floor_z. 3D position from ONE camera is only exact for a point IN that plane.
+floor_from_marker0: true
+floor_z: -0.60                  # FLAGGED: floor z in base_link when marker_0 is not seen (marker_0 was at z = -0.598 on 2026-10-09)
+default_grasp_height: 0.03      # UNKNOWN: m above the floor of the point to grasp, for classes not listed below
+grasp_heights: {}               # UNKNOWN: per class, e.g. {cup: 0.04, bottle: 0.08}: the height of the point the gripper should reach
+max_range: 1.5                  # m: a floor hit farther than this from the camera is rejected
+tf_prefix: object_              # TF frames object_<class>_<rank>, best first
+grasp_class: ""                 # class to publish as the grasp target frame; empty = none (set at runtime on ~select_class)
+target_frame: grasp_target      # the frame the grasp sequence takes (grasp_sequencer ~grasp target_frame)
