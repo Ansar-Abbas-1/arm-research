@@ -5,13 +5,20 @@
     └─ Sequence "grasp"
        ├─ open gripper                 OPENING         (the gripper_control node ramps it open)
        ├─ PRE                          MOVING_PRE      (joint-space move above the target)
+       ├─ correct PRE *                CORRECTING      (re-measure the end effector, re-aim up to `steps` times: gravity sag)
+       ├─ re-plan DESCEND, LIFT *      REPLANNING      (from the actual joints, with the learned offset; abort before descending if infeasible)
        ├─ recheck target               RECHECK         (fails if the target moved since planning)
        ├─ DESCEND                      DESCENDING      (straight down, slowed)
+       ├─ correct GRASP *              CORRECTING
+       ├─ close on load                CLOSING
+       ├─ re-plan LIFT *               REPLANNING      (from the pose the arm really holds)
        ├─ close on load                CLOSING         (the gripper_control node closes slowly to the load target and keeps regulating it)
        └─ Parallel "lift while holding"
           ├─ LIFT                      LIFTING         (straight up, slowed)
           └─ grip watch                                (fails if the grip is lost or no longer regulated)
 
+(*) only when correction steps are enabled (SequenceParams.correction): grasp_plan's open loop leaves the end effector off by the arm's gravity
+sag (measured on the hardware: joint 3 0.053 rad, 3.7 cm at the PRE pose), see correction.PositionCorrection.
 The gripper is owned by the gripper_control node: the leaves only ask it to open / close and watch its status. Its load PI keeps
 running after the close, through the lift and after the sequence ends, until the gripper is opened or stopped.
 The leaves publish their state name through `ctx.set_state`, which is what `~status` reports. A leaf that fails calls
@@ -26,7 +33,9 @@ from py_trees.common import Status
 class SequenceParams(object):
     """Thresholds of the leaves (the geometry and heights live in `grasp_plan.GraspSpec`, the gripper's law in the gripper_control node)."""
 
-    def __init__(self, recheck_mm=5.0, recheck_deg=3.0, require_object=False):
+    def __init__(self, recheck_mm=5.0, recheck_deg=3.0, require_object=False, correction=None, correction_settle=0.8):
+        self.correction = correction                # a correction.PositionCorrection, or None / steps == 0: no correction leaves at all
+        self.correction_settle = correction_settle  # s to wait after a move before measuring the end effector
         self.recheck_mm = recheck_mm
         self.recheck_deg = recheck_deg
         self.require_object = require_object        # 'thin' (closed completely below the load target) fails instead of counting as grasped
@@ -79,6 +88,23 @@ class GraspContext(object):
         raise NotImplementedError
 
     def cancel_trajectory(self):
+        raise NotImplementedError
+
+    def measure_ee(self):
+        """The measured end-effector position in the base frame (numpy xyz), or None."""
+        raise NotImplementedError
+
+    def waypoint(self, key):
+        """The planned (uncompensated) position of 'PRE', 'GRASP' or 'LIFT' (numpy xyz)."""
+        raise NotImplementedError
+
+    def start_corrective(self, key, aim):
+        """Plan from the current joints to `aim` at the waypoint `key`'s orientation and start it. Returns None or an error message."""
+        raise NotImplementedError
+
+    def replan_legs(self, comp, legs):
+        """Re-plan the named legs ('DESCEND', 'LIFT' or just 'LIFT') from the CURRENT joints with `comp` added to their waypoints, check them
+        like the original plan, and store them. Returns None or the problems as text."""
         raise NotImplementedError
 
     def target_drift(self):
@@ -160,6 +186,77 @@ class GripperAction(_Leaf):
             self.ctx.cancel_gripper()
 
 
+class CorrectPosition(_Leaf):
+    """After a move: wait for the arm to settle, measure the end effector against the planned waypoint, and re-aim (a corrective move
+    planned from the actual joints) up to correction.steps times. The compensation it learns is kept for the later legs."""
+
+    def __init__(self, ctx, params, key):
+        super(CorrectPosition, self).__init__("correct %s" % key, ctx)
+        self.params, self.key = params, key
+        self.phase, self.t = "settle", 0.0
+
+    def initialise(self):
+        self.params.correction.begin()
+        self.phase, self.t = "settle", self.ctx.now()
+        self.ctx.set_state("CORRECTING", "%s: measuring the end-effector error" % self.key)
+
+    def update(self):
+        c = self.params.correction
+        if self.phase == "moving":
+            status, message = self.ctx.poll_trajectory()
+            if status == "running":
+                return Status.RUNNING
+            if status == "failed":
+                self.ctx.fail(message)
+                return Status.FAILURE
+            self.phase, self.t = "settle", self.ctx.now()
+        if self.phase == "settle":
+            if self.ctx.now() - self.t < self.params.correction_settle:
+                return Status.RUNNING
+        measured = self.ctx.measure_ee()
+        if measured is None:
+            self.ctx.fail("cannot measure the end effector for the %s correction" % self.key)
+            return Status.FAILURE
+        action, aim, err = c.step(self.ctx.waypoint(self.key), measured)
+        if action == "ok":
+            self.ctx.set_state("CORRECTING", "%s: %.1f mm off after %d correction step(s)" % (self.key, 1000.0 * err, c.used))
+            return Status.SUCCESS
+        if action == "fail":
+            self.ctx.fail("%s not reached: %.1f mm off after %d correction steps (limit %.0f mm)" % (self.key, 1000.0 * err, c.used, 1000.0 * c.max_error))
+            return Status.FAILURE
+        problem = self.ctx.start_corrective(self.key, aim)
+        if problem:
+            self.ctx.fail("%s correction step %d: %s" % (self.key, c.used, problem))
+            return Status.FAILURE
+        self.ctx.set_state("CORRECTING", "%s: step %d, %.1f mm off, re-aiming" % (self.key, c.used, 1000.0 * err))
+        self.phase = "moving"
+        return Status.RUNNING
+
+    def terminate(self, new_status):
+        if new_status == Status.INVALID and self.status == Status.RUNNING and self.phase == "moving":
+            self.ctx.cancel_trajectory()
+
+
+class ReplanLegs(_Leaf):
+    """Re-plans the named legs from the actual joints with the learned compensation; fails (before anything moves) if they are not
+    feasible. With no compensation learned there is nothing to do."""
+
+    def __init__(self, ctx, params, legs, name):
+        super(ReplanLegs, self).__init__(name, ctx)
+        self.params, self.legs = params, legs
+
+    def update(self):
+        comp = self.params.correction.comp
+        if float((comp ** 2).sum()) ** 0.5 < 1e-4:
+            return Status.SUCCESS
+        self.ctx.set_state("REPLANNING", "%s with the %.1f mm compensation" % (" and ".join(self.legs), 1000.0 * float((comp ** 2).sum()) ** 0.5))
+        problem = self.ctx.replan_legs(comp, self.legs)
+        if problem:
+            self.ctx.fail("re-planning %s with the compensation failed: %s" % (" and ".join(self.legs), problem))
+            return Status.FAILURE
+        return Status.SUCCESS
+
+
 class GripWatch(_Leaf):
     """Runs alongside the lift: RUNNING while the gripper_control node reports the grip held (or 'thin', counted as grasped), FAILURE if
     it is lost, no longer regulated or its status is missing. It never succeeds: the lift ending ends the Parallel."""
@@ -234,20 +331,29 @@ class RecheckTarget(_Leaf):
 
 def build_tree(ctx, spec, params, outcome_text=lambda: ""):
     """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome)."""
+    corrected = params.correction is not None and params.correction.steps > 0
     lift = py_trees.composites.Parallel(name="lift while holding", policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE, children=[
         FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", lambda: "grasp outcome: %s" % outcome_text()),
         GripWatch(ctx),
     ])
-    mission = py_trees.composites.Sequence(name="grasp", children=[
+    children = [
         GripperAction("open gripper", ctx, params, "open", "OPENING", "gripper to %.3f" % spec.gripper_open),
         FollowTrajectory("PRE", ctx, "PRE", 1.0, "MOVING_PRE", "above the target"),
+    ]
+    if corrected:
+        children += [CorrectPosition(ctx, params, "PRE"), ReplanLegs(ctx, params, ("DESCEND", "LIFT"), "re-plan DESCEND, LIFT")]
+    children += [
         RecheckTarget(ctx, params),
         FollowTrajectory("DESCEND", ctx, "DESCEND", spec.descent_slow_factor, "DESCENDING",
                          "straight down, %.1f times slower than planned" % spec.descent_slow_factor),
-        GripperAction("close on load", ctx, params, "close", "CLOSING", "the gripper closes to its load target and keeps regulating it"),
-        lift,
-    ])
-    return Guarded(mission, ctx)
+    ]
+    if corrected:
+        children += [CorrectPosition(ctx, params, "GRASP")]
+    children += [GripperAction("close on load", ctx, params, "close", "CLOSING", "the gripper closes to its load target and keeps regulating it")]
+    if corrected:
+        children += [ReplanLegs(ctx, params, ("LIFT",), "re-plan LIFT")]
+    children += [lift]
+    return Guarded(py_trees.composites.Sequence(name="grasp", children=children), ctx)
 
 
 def active_path(root):

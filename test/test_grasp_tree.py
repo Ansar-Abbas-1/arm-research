@@ -3,11 +3,13 @@
 gripper_control node: how it regulates the load is tested in test_gripper_controller.py, here only how the tree uses it."""
 import unittest
 
+import numpy as np
 import py_trees
 from py_trees.common import Status
 
 from arm_grasp import grasp_plan as gp
 from arm_grasp import grasp_tree as gt
+from arm_grasp.correction import PositionCorrection
 
 DT = 0.05
 
@@ -33,6 +35,13 @@ class FakeContext(gt.GraspContext):
         self.gripper_fail, self.gripper_start_error = {}, {}
         self.close_outcome, self.close_load = "object", 38.0
         self.grip = "held"                                         # what the gripper_control node reports
+        # correction: the arm reaches (aim + offset), i.e. it misses its aim by `offset` (gravity sag)
+        self.offset = np.zeros(3)
+        self.waypoints = {"PRE": np.array([0.330, -0.052, -0.480]), "GRASP": np.array([0.338, -0.056, -0.560]), "LIFT": np.array([0.325, -0.050, -0.430])}
+        self.ee_aim, self.comp = None, np.zeros(3)
+        self.arm_responds, self.measure_none = True, False
+        self.corrective, self.replans = [], []
+        self.corrective_error, self.replan_problem = None, None
 
     def now(self): return self.t
     def set_state(self, state, message=""): self.states.append(state) if not self.states or self.states[-1] != state else None
@@ -60,7 +69,29 @@ class FakeContext(gt.GraspContext):
     def start_trajectory(self, name, slow):
         self.started.append((name, slow))
         self.traj = [name, self.traj_ticks]
+        if name == "PRE":
+            self.ee_aim = self.waypoints["PRE"].copy()
+        elif name == "DESCEND":
+            self.ee_aim = self.waypoints["GRASP"] + self.comp
         return self.start_error.get(name)
+
+    def measure_ee(self):
+        return None if self.measure_none else self.ee_aim + self.offset
+
+    def waypoint(self, key): return self.waypoints[key]
+
+    def start_corrective(self, key, aim):
+        self.corrective.append((key, np.array(aim)))
+        if self.arm_responds:
+            self.ee_aim = np.array(aim)
+        self.traj = ["CORR_" + key, self.traj_ticks]
+        return self.corrective_error
+
+    def replan_legs(self, comp, legs):
+        self.replans.append((tuple(legs), np.array(comp)))
+        if not self.replan_problem:
+            self.comp = np.array(comp)
+        return self.replan_problem
 
     def poll_trajectory(self):
         name = self.traj[0]
@@ -79,9 +110,11 @@ class FakeContext(gt.GraspContext):
     def record_outcome(self, outcome, load): self.outcome, self.final_load = outcome, load
 
 
-def make(ctx=None, **pk):
+def make(ctx=None, correction_steps=0, **pk):
     ctx = ctx or FakeContext()
     spec = gp.GraspSpec()
+    if correction_steps:
+        pk["correction"], pk["correction_settle"] = PositionCorrection(steps=correction_steps), 0.2
     params = gt.SequenceParams(**pk)
     root = gt.build_tree(ctx, spec, params, lambda: ctx.outcome)
     return ctx, spec, root, py_trees.trees.BehaviourTree(root)
@@ -252,6 +285,93 @@ class TestGraspTree(unittest.TestCase):
         self.assertEqual(gt.active_path(root), "stop / e-stop guard/grasp/DESCEND")
         run(ctx, tree, until=lambda i: ctx.states and ctx.states[-1] == "LIFTING")
         self.assertEqual(gt.active_path(root), "stop / e-stop guard/grasp/lift while holding/LIFT")
+
+
+class TestCorrection(unittest.TestCase):
+    def test_a_sag_is_corrected_and_the_later_legs_are_replanned_with_the_learned_offset(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.037, 0.0, -0.001])                 # the arm misses its aim by 3.7 cm (measured on the hardware)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual([k for k, _ in ctx.corrective], ["PRE"])   # one corrective move at PRE, none needed after the re-planned descent
+        np.testing.assert_allclose(ctx.corrective[0][1], ctx.waypoints["PRE"] - ctx.offset, atol=1e-9)
+        self.assertEqual([legs for legs, _ in ctx.replans], [("DESCEND", "LIFT"), ("LIFT",)])
+        for _, comp in ctx.replans:
+            np.testing.assert_allclose(comp, -ctx.offset, atol=1e-9)
+        self.assertEqual([n for n, _ in ctx.started], ["PRE", "DESCEND", "LIFT"])
+        self.assertIn("CORRECTING", ctx.states)
+        self.assertIn("REPLANNING", ctx.states)
+
+    def test_the_order_is_move_correct_replan_recheck_descend_correct_close_replan_lift(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.02, 0.0, 0.0])
+        run(ctx, tree)
+        self.assertEqual(ctx.states, ["OPENING", "MOVING_PRE", "CORRECTING", "REPLANNING", "RECHECK", "DESCENDING", "CORRECTING", "CLOSING", "REPLANNING", "LIFTING"])
+
+    def test_no_error_means_no_corrective_move_and_no_replanning(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual((ctx.corrective, ctx.replans), ([], []))
+        self.assertNotIn("REPLANNING", ctx.states)
+
+    def test_correction_steps_zero_keeps_the_original_sequence(self):
+        ctx, spec, root, tree = make(correction_steps=0)
+        ctx.offset = np.array([0.037, 0.0, 0.0])
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual(ctx.states, ["OPENING", "MOVING_PRE", "RECHECK", "DESCENDING", "CLOSING", "LIFTING"])
+
+    def test_an_arm_that_does_not_respond_fails_before_the_descent(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.08, 0.0, 0.0])                     # 8 cm off and the corrective moves have no effect
+        ctx.arm_responds = False
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("not reached", ctx.reason)
+        self.assertEqual(len(ctx.corrective), 2)                    # exactly the two steps
+        self.assertNotIn("DESCEND", [n for n, _ in ctx.started])
+
+    def test_a_replan_that_is_not_feasible_aborts_before_descending(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.037, 0.0, 0.0])
+        ctx.replan_problem = "DESCEND: not reachable (goal pose did not converge)"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("re-planning", ctx.reason)
+        self.assertNotIn("DESCENDING", ctx.states)
+        self.assertEqual(ctx.gripper_started, ["open"])             # the gripper was never asked to close
+
+    def test_no_end_effector_measurement_fails_closed(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.measure_none = True
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("cannot measure", ctx.reason)
+        self.assertNotIn("DESCENDING", ctx.states)
+
+    def test_a_corrective_move_that_cannot_be_planned_fails(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.037, 0.0, 0.0])
+        ctx.corrective_error = "PRE: not reachable"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("correction step 1", ctx.reason)
+
+    def test_an_estop_during_a_corrective_move_cancels_it(self):
+        ctx, spec, root, tree = make(FakeContext(traj_ticks=30), correction_steps=2)
+        ctx.offset = np.array([0.037, 0.0, 0.0])
+        run(ctx, tree, until=lambda i: bool(ctx.corrective))
+        before = ctx.cancelled
+        ctx.violation = "e-stop engaged or its state unknown"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertEqual(ctx.cancelled, before + 1)
+
+    def test_the_offset_after_the_descent_is_corrected_too(self):
+        class Sagging(FakeContext):
+            def start_trajectory(self, name, slow):
+                out = super(Sagging, self).start_trajectory(name, slow)
+                if name == "DESCEND":
+                    self.offset = np.array([0.0, 0.0, 0.012])                    # from the low pose on the arm sits 1.2 cm high (more sag there)
+                return out
+        ctx, spec, root, tree = make(Sagging(), correction_steps=2)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual([k for k, _ in ctx.corrective], ["GRASP"])
+        np.testing.assert_allclose(ctx.corrective[0][1][2], ctx.waypoints["GRASP"][2] - 0.012, atol=1e-9)
+        self.assertEqual([legs for legs, _ in ctx.replans], [("LIFT",)])        # only the lift is re-planned (nothing to re-plan before the descent)
 
 
 if __name__ == "__main__":

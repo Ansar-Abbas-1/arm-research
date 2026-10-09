@@ -31,7 +31,7 @@ def main():
     br = tf2_ros.TransformBroadcaster()
     pub = rospy.Publisher("~status", String, queue_size=1, latch=True)
     last = None                                                   # the latest marker transform (a TransformStamped)
-    rate = rospy.Rate(10)
+    rate = rospy.Rate(2)                                          # re-broadcast at 2 Hz: tf2 warns about every repeat of a timestamp
     rospy.logwarn("grasp_target: %s = %s + offset %s (in the marker frame); nothing is published until the marker has been seen", target, marker, offset)
     while not rospy.is_shutdown():
         try:

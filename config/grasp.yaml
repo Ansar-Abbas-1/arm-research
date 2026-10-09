@@ -23,7 +23,7 @@ require_object: false     # true: closing completely below the load target ('thi
 descent_slow_factor: 3.0  # the descent takes this many times the planner's time (>= 1)
 lift_slow_factor: 2.0
 max_cartesian_deviation: 0.005   # m: a straight leg that is only followed to worse than this refuses the whole sequence
-endpoint_tolerance_rad: 0.03     # a leg that ends further than this from its goal aborts
+endpoint_tolerance_rad: 0.03     # a leg that ends further than this from its goal aborts (relaxed to correction_endpoint_tolerance_rad when correction_steps > 0)
 
 # Target
 target_max_age: 5.0       # s: the target TF must be this fresh (marker_localizer publishes only while the camera is still)
@@ -60,3 +60,15 @@ close:
   closed_settle: 0.6      # s after reaching fully closed before calling it 'thin'. FLAGGED
   lost_time: 0.3          # s below contact_load, once settled, before the grip counts as LOST (status GRIP_LOST). FLAGGED
   over_time: 2.0          # s at or above load_limit, once settled, before the hold fails. FLAGGED
+
+# Correction steps (arm_grasp/correction.py): the arm SAGS under gravity at a far reach, so a commanded pose is missed (hardware, 2026-10-09: joint 3
+# 0.053 rad off at the PRE pose, the end effector 3.7 cm away; the 0.03 rad endpoint check correctly aborted the first real run). After PRE and after
+# the descent the end effector is measured (TF from the measured joints) and re-aimed, adding the measured error to a running compensation, up to
+# correction_steps times; the descent and the lift are then re-planned from the actual joints with the compensation. 0 disables all of it.
+correction_steps: 2            # re-aims per position (PRE, GRASP). Operator: 2. FLAGGED
+correction_trigger: 0.006      # m: at or below this error nothing is corrected (the reach node's default). FLAGGED
+correction_gain: 1.0           # fraction of the measured error added to the compensation per step. FLAGGED
+correction_max_total: 0.06     # m: cap on the compensation. FLAGGED
+correction_max_error: 0.05     # m: after the steps, a pose still further off than this aborts the sequence. FLAGGED
+correction_settle: 0.8         # s to wait after a move before measuring the end effector. FLAGGED
+correction_endpoint_tolerance_rad: 0.12   # rad: the joint-space endpoint check while correction is on (the Cartesian check above replaces it). FLAGGED

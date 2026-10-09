@@ -11,6 +11,10 @@ COMMANDS THE REAL ARM (through the trajectory executor and /joint_states_out). S
   * the descent and the lift are slowed down (descent_slow_factor, lift_slow_factor) beyond the planner's timing
   * the target must be a fresh TF (target_max_age); before the descent it is looked up again and the sequence aborts
     if it moved
+  * correction_steps > 0: the arm sags under gravity (3.7 cm at the PRE pose on the hardware), so after PRE and after the descent
+    the end effector is measured and re-aimed up to correction_steps times; the descent and the lift are then re-planned from the
+    actual joints with the learned offset, and the sequence aborts before descending if that is infeasible or the pose is not
+    reached within correction_max_error
   * the gripper belongs to the gripper_control node (roslaunch arm_grasp gripper_control.launch must be running for a real
     grasp): this node asks it to open and to close on load, and watches its grip status. Its load PI keeps regulating after
     the close, through the lift and after the sequence ends; a lost grip aborts the lift. Closing completely below the target
@@ -37,6 +41,7 @@ from trajectory_msgs.msg import JointTrajectory, JointTrajectoryPoint
 
 from actionlib_msgs.msg import GoalStatus
 
+from arm_grasp import correction as corr
 from arm_grasp import grasp_plan as gp
 from arm_grasp import grasp_tree as gt
 from arm_grasp.srv import Grasp, GraspResponse
@@ -71,10 +76,17 @@ class Node(gt.GraspContext):
         self.gripper_settle = float(P("~gripper_settle", 0.6))
         self.require_object = bool(P("~require_object", False))
         self.endpoint_tol = float(P("~endpoint_tolerance_rad", 0.03))
+        steps = int(P("~correction_steps", 0))
+        self.correction = corr.PositionCorrection(steps=steps, trigger=float(P("~correction_trigger", 0.006)), gain=float(P("~correction_gain", 1.0)),
+                                                  max_total=float(P("~correction_max_total", 0.06)), max_error=float(P("~correction_max_error", 0.05)))
+        if steps > 0:                                                  # the sag is corrected in Cartesian space: a joint-space endpoint check at 0.03 rad would abort first
+            self.endpoint_tol = max(self.endpoint_tol, float(P("~correction_endpoint_tolerance_rad", 0.12)))
         self.tick_rate = float(P("~tick_rate", 20.0))
         d_close = gp.CloseParams()
         self.close = gp.CloseParams(**{k: type(getattr(d_close, k))(P("~close/" + k, getattr(d_close, k))) for k in vars(d_close)})
-        self.params = gt.SequenceParams(recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg, require_object=self.require_object)
+        self.params = gt.SequenceParams(recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg, require_object=self.require_object,
+                                        correction=self.correction, correction_settle=float(P("~correction_settle", 0.8)))
+        self.wps = []
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
         self.q = None
@@ -146,17 +158,21 @@ class Node(gt.GraspContext):
     def plan_legs(self, wps):
         """Plan PRE (joint space), DESCEND and LIFT (straight lines) with chained start configurations. Returns
         (legs, trajectories)."""
+        return self.plan_chain(list(self.q), (("PRE", wps[0].position, wps[0].R, False), ("DESCEND", wps[1].position, wps[1].R, True),
+                                              ("LIFT", wps[2].position, wps[2].R, True)))
+
+    def plan_chain(self, start, items):
+        """Plan the (name, position, R, cartesian) items one after the other, each from the end of the previous one."""
         legs, trajs = [], {}
-        start = list(self.q)
-        for name, wp, cartesian in (("PRE", wps[0], False), ("DESCEND", wps[1], True), ("LIFT", wps[2], True)):
+        for name, position, R, cartesian in items:
             if start is None:
                 legs.append(gp.Leg(name, False, "not planned: an earlier leg failed", cartesian=cartesian))
                 continue
             req = GenerateTrajectoryRequest()
             req.start_joint_positions = start
             pose = Pose()
-            pose.position.x, pose.position.y, pose.position.z = [float(v) for v in wp.position]
-            qx, qy, qz, qw = gp.quaternion_from_matrix(wp.R)
+            pose.position.x, pose.position.y, pose.position.z = [float(v) for v in position]
+            qx, qy, qz, qw = gp.quaternion_from_matrix(R)
             pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w = qx, qy, qz, qw
             req.goal_pose = pose
             req.cartesian_path = cartesian
@@ -199,6 +215,7 @@ class Node(gt.GraspContext):
             self.set_state("ABORTED", str(e))
             return GraspResponse(False, "refused: " + str(e), 0.0, 0.0)
         legs, trajs = self.plan_legs(wps)
+        self.wps = wps
         problems = gp.check_plan(legs, self.spec)
         duration = gp.total_duration(legs, self.spec, gripper_time=(self.spec.gripper_open - self.spec.gripper_closed) * (1.0 / self.gripper_speed + 1.0 / self.close.close_speed) + self.gripper_settle + self.close.hold_time + 5.0)
         dev = max([l.deviation for l in legs if l.success] or [0.0])
@@ -284,7 +301,9 @@ class Node(gt.GraspContext):
         return self.grip_status.get("grip")
 
     def start_trajectory(self, name, slow):
-        traj = self.trajs[name]
+        return self._send(name, self.trajs[name], slow)
+
+    def _send(self, name, traj, slow):
         stretched = gp.stretch_times([(p.time_from_start.to_sec(), p.positions, p.velocities, p.accelerations) for p in traj.points], slow)
         out = JointTrajectory()
         out.joint_names = traj.joint_names
@@ -320,6 +339,39 @@ class Node(gt.GraspContext):
     def cancel_trajectory(self):
         self.client.cancel_all_goals()
 
+    # ---- correction (measure, re-aim, re-plan) ---------------------------------------------------------------
+    def measure_ee(self):
+        try:
+            t = self.buf.lookup_transform(self.base, "end_effector", rospy.Time(0), rospy.Duration(0.3))
+        except tf2_ros.TransformException:
+            return None
+        if (rospy.Time.now() - t.header.stamp).to_sec() > 1.0:         # the joint states stopped: no measurement
+            return None
+        return np.array([t.transform.translation.x, t.transform.translation.y, t.transform.translation.z])
+
+    def waypoint(self, key):
+        return np.array(self.wps[{"PRE": 0, "GRASP": 1, "LIFT": 2}[key]].position)
+
+    def start_corrective(self, key, aim):
+        wp = self.wps[{"PRE": 0, "GRASP": 1, "LIFT": 2}[key]]
+        cartesian = key != "PRE"
+        legs, trajs = self.plan_chain(list(self.q), (("CORR_" + key, aim, wp.R, cartesian),))
+        problems = gp.check_plan(legs, self.spec)
+        if problems:
+            return "; ".join(problems)
+        return self._send("CORR_" + key, trajs["CORR_" + key], self.spec.descent_slow_factor if cartesian else 1.0)
+
+    def replan_legs(self, comp, legs):
+        """Re-plan `legs` from the CURRENT joints with `comp` added to their waypoints; keep them only if they pass the same checks."""
+        comp = np.asarray(comp, float)
+        items = [(name, self.wps[{"DESCEND": 1, "LIFT": 2}[name]].position + comp, self.wps[{"DESCEND": 1, "LIFT": 2}[name]].R, True) for name in legs]
+        planned, trajs = self.plan_chain(list(self.q), items)
+        problems = gp.check_plan(planned, self.spec)
+        if problems:
+            return "; ".join(problems)
+        self.trajs.update(trajs)
+        return None
+
     def target_drift(self):
         T_now, stamp_now, _ = self.lookup_target()
         if stamp_now == self.plan_stamp:                              # nothing newer to compare with
@@ -334,6 +386,7 @@ class Node(gt.GraspContext):
     def run(self):
         """Tick the behavior tree at tick_rate until it succeeds or fails. The leaves report the states."""
         self.abort_reason, self.outcome = None, None
+        self.correction.reset()                                          # the offset learned in an earlier grasp does not apply to this one
         self.tree.root.stop(py_trees.common.Status.INVALID)
         rate = rospy.Rate(self.tick_rate)
         last_path = None
@@ -346,6 +399,7 @@ class Node(gt.GraspContext):
                     last_path = path
                     self.publish()
                 if status == py_trees.common.Status.SUCCESS:
+                    self.plan_info["correction_mm"] = [round(1000.0 * float(v), 1) for v in self.correction.comp]
                     self.set_state("DONE", "grasp outcome: %s" % self.outcome)
                     return
                 if status == py_trees.common.Status.FAILURE:

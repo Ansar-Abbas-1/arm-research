@@ -197,7 +197,8 @@ def main():
         for _, st in history:
             if not seen or seen[-1] != st:
                 seen.append(st)
-        check("through the states OPENING, MOVING_PRE, RECHECK, DESCENDING, CLOSING, LIFTING, DONE", [s for s in seen if s not in ("PLANNING", "IDLE")] == ["OPENING", "MOVING_PRE", "RECHECK", "DESCENDING", "CLOSING", "LIFTING", "DONE"])
+        check("through OPENING, MOVING_PRE, CORRECTING, RECHECK, DESCENDING, CORRECTING, CLOSING, LIFTING, DONE (no sag in the sim: no re-planning) %s" % [s for s in seen if s not in ("PLANNING", "IDLE")],
+              [s for s in seen if s not in ("PLANNING", "IDLE")] == ["OPENING", "MOVING_PRE", "CORRECTING", "RECHECK", "DESCENDING", "CORRECTING", "CLOSING", "LIFTING", "DONE"])
         pts = np.array([p for _, p in trace])
         zmin = pts[:, 2].min()
         i = int(np.argmin(pts[:, 2]))
