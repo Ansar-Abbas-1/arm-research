@@ -122,10 +122,10 @@ class GripperTest(unittest.TestCase):
 
 class Plant(object):
     """Gripper whose closing is blocked at `obj` (a joint_6 position; None: it closes freely). The load is
-    baseline + gain x (how far the command is past the block), sampled at 10 Hz (the driver's rate); the
+    baseline + gain [%/mm] x (how far the command is past the block); the default gain is the first real measurement (about 80 %/mm), sampled at 10 Hz (the driver's rate); the
     controller runs at 20 Hz."""
 
-    def __init__(self, obj=None, gain=5.0, base=2.5, params=None, start=0.025):
+    def __init__(self, obj=None, gain=80.0, base=0.8, params=None, start=0.025):
         self.obj, self.gain, self.base = obj, gain, base
         self.p = params or gp.CloseParams()
         self.closer = gp.LoadLimitedCloser(start, 0.0, 0.025, self.p)
@@ -156,7 +156,7 @@ class Plant(object):
 class LoadLimitedCloserTest(unittest.TestCase):
     def test_closes_slowly_until_the_load_target_and_holds_there(self):
         pl = Plant(obj=0.012)
-        step = pl.run(30)
+        step = pl.run(60)
         self.assertTrue(step.done)
         self.assertEqual(step.outcome, "object")
         self.assertLess(abs(pl.load - 40.0), 5.0 + 1e-9)                         # held in the band around the target
@@ -167,27 +167,31 @@ class LoadLimitedCloserTest(unittest.TestCase):
 
     def test_fully_closed_below_the_load_target_is_thin(self):
         pl = Plant(obj=None)
-        step = pl.run(30)
+        step = pl.run(60)
         self.assertTrue(step.done)
         self.assertEqual(step.outcome, "thin")
         self.assertEqual(pl.cmd, 0.0)
 
     def test_a_stiff_contact_overshoots_but_the_hold_relaxes_back_into_the_band(self):
-        pl = Plant(obj=0.012, gain=20.0)                                          # 4x stiffer than the nominal model
-        step = pl.run(30)
+        pl = Plant(obj=0.012, gain=240.0)                                         # 3x stiffer than the measured one
+        step = pl.run(60)
         self.assertEqual(step.outcome, "object")
         self.assertLess(abs(pl.load - 40.0), 5.0 + 1e-9)
         self.assertLess(max(pl.loads), pl.p.load_abort)
 
-    def test_a_single_load_spike_does_not_stop_the_close(self):
-        pl = Plant(obj=None)
-        for k in range(40):                                                       # 2 s of closing, then one spike sample
+    def _spike(self, confirm):
+        pl = Plant(obj=None, params=gp.CloseParams(confirm_samples=confirm))
+        for _ in range(40):                                                       # 2 s of closing, then one spike sample
             pl.run(0.05)
-        before = pl.cmd
         pl.closer.step(pl.t + 0.05, pl.measured(), 60.0, pl.t + 0.05)
-        step = pl.closer.step(pl.t + 0.10, pl.measured(), 3.0, pl.t + 0.10)       # next NEW sample is low again
-        self.assertEqual(step.phase, "CLOSING")
-        self.assertLessEqual(step.cmd, before)
+        return pl.closer.step(pl.t + 0.10, pl.measured(), 3.0, pl.t + 0.10)       # the next NEW sample is low again
+
+    def test_with_two_confirm_samples_a_single_load_spike_does_not_stop_the_close(self):
+        self.assertEqual(self._spike(2).phase, "CLOSING")
+
+    def test_with_the_default_one_confirm_sample_the_first_load_at_target_stops_the_close(self):
+        self.assertEqual(gp.CloseParams().confirm_samples, 1)
+        self.assertEqual(self._spike(1).phase, "HOLDING")
 
     def test_no_or_stale_load_is_a_fault_and_the_command_does_not_move(self):
         pl = Plant(obj=0.012)
@@ -200,19 +204,19 @@ class LoadLimitedCloserTest(unittest.TestCase):
 
     def test_a_load_that_stays_over_the_limit_fails_after_the_hold_timeout(self):
         pl = Plant(obj=0.012)
-        step = pl.run(30, load_override=90.0)
+        step = pl.run(60, load_override=90.0)
         self.assertIn("stays at", step.fault)
 
     def test_the_command_stays_inside_the_open_and_closed_limits(self):
         for obj in (None, 0.012, 0.0):
             pl = Plant(obj=obj)
-            pl.run(30)
+            pl.run(60)
             self.assertGreaterEqual(min(pl.cmds), 0.0)
             self.assertLessEqual(max(pl.cmds), 0.025)
 
     def test_require_nothing_in_the_closer_itself_thin_is_reported_not_judged(self):
         pl = Plant(obj=None, params=gp.CloseParams(closed_settle=0.2))
-        self.assertEqual(pl.run(30).outcome, "thin")
+        self.assertEqual(pl.run(60).outcome, "thin")
 
 
 if __name__ == "__main__":

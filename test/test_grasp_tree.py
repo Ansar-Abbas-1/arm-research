@@ -20,7 +20,7 @@ class FakeContext(gt.GraspContext):
         self.t = 0.0
         self.gripper = 0.0
         self.contact = None              # joint_6 position at which closing is blocked (None: closes freely)
-        self.load_gain = 5.0             # % per mm of squeeze
+        self.load_gain = 80.0            # % per mm the command is past the contact (first real measurement)
         self.no_load = False             # the load topic is silent
         self.cmd = 0.0
         self.cmds = []
@@ -54,7 +54,7 @@ class FakeContext(gt.GraspContext):
         if self.no_load:
             return None, None
         squeeze = 0.0 if self.contact is None else max(0.0, self.contact - self.cmd) * 1000.0
-        return 2.5 + self.load_gain * squeeze, int(self.t / 0.1) * 0.1           # a new sample every 0.1 s
+        return 0.8 + self.load_gain * squeeze, int(self.t / 0.1) * 0.1           # a new sample every 0.1 s
 
     def start_trajectory(self, name, slow):
         self.started.append((name, slow))
@@ -109,7 +109,7 @@ class TestGraspTree(unittest.TestCase):
         run(ctx, tree)
         steps = [b - a for a, b in zip(ctx.cmds, ctx.cmds[1:])]
         self.assertLessEqual(max(steps), 0.02 * DT + 1e-9)                         # opening ramp
-        self.assertLessEqual(max(-x for x in steps), 0.004 * DT + 1e-9)            # closing at close_speed, much slower
+        self.assertLessEqual(max(-x for x in steps), 0.001 * DT + 1e-9)            # closing at close_speed, much slower
         self.assertAlmostEqual(max(ctx.cmds), spec.gripper_open)
         self.assertAlmostEqual(ctx.cmds[-1], spec.gripper_closed)
 

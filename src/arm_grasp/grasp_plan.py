@@ -149,11 +149,11 @@ def gripper_ramp(current, target, max_speed, dt):
 @dataclass
 class CloseParams:
     """Load-limited closing. Every value is a FLAGGED DEFAULT except load_target (the user's 40 %), see config/grasp.yaml."""
-    close_speed: float = 0.004       # m/s: slow constant-speed close (the open ramp is gripper_speed)
+    close_speed: float = 0.001       # m/s: slow constant-speed close (the open ramp is gripper_speed). Set from the first real data: the load rises ~80 %/mm of command lead, one 10 Hz sample is 0.1 mm at 1 mm/s
     load_target: float = 40.0        # % of max torque to close to and hold
     load_band: float = 5.0           # % deadband of the hold regulation
-    trim_speed: float = 0.001        # m/s: speed of the hold regulation (load too high: open, too low: close)
-    confirm_samples: int = 2         # consecutive NEW load samples >= load_target before the close stops
+    trim_speed: float = 0.0003       # m/s: speed of the hold regulation (load too high: open, too low: close); at ~80 %/mm this is ~24 %/s
+    confirm_samples: int = 1         # consecutive NEW load samples >= load_target before the close stops (measured load noise: 0.05 %)
     load_max_age: float = 0.5        # s: an older load sample is no measurement (the driver publishes at 10 Hz)
     load_abort: float = 75.0         # % at or above which the hold regulation opens at close_speed and, if it persists, fails
     hold_time: float = 1.0           # s in the band and still before the grasp counts as done

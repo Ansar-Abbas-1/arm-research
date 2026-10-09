@@ -38,10 +38,10 @@ tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (vi
 # The load is /arm_interface/motor_load joint_6, |% of max torque|, published by the driver at status_rate_hz (10 Hz).
 close:
   load_target: 40.0       # % of max torque: close until the load reaches this, then hold
-  close_speed: 0.004      # m/s: slow constant-speed close. FLAGGED
+  close_speed: 0.001      # m/s: slow constant-speed close (25 mm of travel takes 25 s). From the first real data: load rises ~80 %/mm of command lead, one 10 Hz sample at 1 mm/s is ~0.1 mm = ~9 %. FLAGGED
   load_band: 5.0          # % deadband of the hold regulation. FLAGGED
-  trim_speed: 0.001       # m/s of the hold regulation (load too high: open, too low: close). FLAGGED
-  confirm_samples: 2      # consecutive NEW samples >= target before the close stops. FLAGGED
+  trim_speed: 0.0003      # m/s of the hold regulation (load too high: open, too low: close); ~24 %/s at 80 %/mm. FLAGGED
+  confirm_samples: 1      # consecutive NEW samples >= target before the close stops (measured load noise 0.05 %). FLAGGED
   load_max_age: 0.5       # s: older load = no measurement = abort. FLAGGED
   load_abort: 75.0        # %: at or above it the hold opens at close_speed; if it persists for hold_timeout the grasp aborts. FLAGGED
   hold_time: 1.0          # s in the band and still before it counts as done. FLAGGED
