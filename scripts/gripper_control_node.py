@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Load-limited gripper close as its own ROS node: service ~close (arm_grasp/GripperClose), ~stop, latched ~status.
+"""Gripper control as its own ROS node: services ~open (Trigger), ~close (arm_grasp/GripperClose, the load-limited close), ~stop, latched ~status.
 
 COMMANDS THE GRIPPER (joint_6 only, through /joint_states_out) when ~close is called with execute:=true; with
 execute:=false it only watches the load. No planner, trajectory executor or arm motion is involved. Safety:
@@ -11,8 +11,9 @@ execute:=false it only watches the load. No planner, trajectory executor or arm 
     load_target, then it holds there); ~stop ends it, the gripper stays where the last command put it
 The same law runs inside the grasp sequence (grasp_tree.CloseOnLoad). Parameters: config/grasp.yaml.
 
-    rosservice call /gripper_close/close "{execute: false, open_first: false}"     # watch only
-    rosservice call /gripper_close/close "{execute: true, open_first: false}"      # close from where it is
+    rosservice call /gripper_control/close "{execute: false, open_first: false}"     # watch only
+    rosservice call /gripper_control/close "{execute: true, open_first: false}"      # close from where it is
+    rosservice call /gripper_control/open                                            # ramp to gripper_open (COMMANDS the gripper)
 """
 import json
 import threading
@@ -48,8 +49,9 @@ class Node(object):
         self.pub_status = rospy.Publisher("~status", String, queue_size=1, latch=True)
         rospy.Service("~close", GripperClose, self.on_close)
         rospy.Service("~stop", Trigger, self.on_stop)
+        rospy.Service("~open", Trigger, self.on_open)
         self.publish("IDLE", "")
-        rospy.logwarn("gripper_close ready (IDLE): load target %.0f %%, close speed %.4f m/s (config/grasp.yaml). Nothing moves until ~close with execute:=true.",
+        rospy.logwarn("gripper_control ready (IDLE): load target %.0f %%, close speed %.4f m/s (config/grasp.yaml). Nothing moves until ~close with execute:=true.",
                       self.params.load_target, self.params.close_speed)
 
     def on_joints(self, m):
@@ -85,30 +87,58 @@ class Node(object):
         finally:
             self.busy.release()
 
-    def close(self, req):
+    def preflight(self):
+        """None when it is safe to command the gripper, else the reason it is refused."""
         self.stop_requested.clear()
         t0 = time.time()
         while (self.pos is None or self.load_time is None or self.estop is None) and time.time() - t0 < 4.0:
             time.sleep(0.05)
         if self.pos is None or self.load_time is None:
-            return self.refuse("no joint_6 measurement or no /arm_interface/motor_load (is the driver or the simulator running?)")
+            return "no joint_6 measurement or no /arm_interface/motor_load (is the driver or the simulator running?)"
         if self.estop is not False:
-            return self.refuse("e-stop engaged or its state unknown")
+            return "e-stop engaged or its state unknown"
+        return None
+
+    def ramp_open(self):
+        """Ramp the command to gripper_open at gripper_speed and wait for the measurement to settle there. (ok, message)."""
+        rate, cmd, reached, t_start = rospy.Rate(20), self.pos, None, time.time()
+        self.publish("OPENING", "to %.3f" % self.open)
+        while not rospy.is_shutdown() and time.time() - t_start < self.timeout:
+            if self.stop_requested.is_set() or self.estop is not False:
+                return False, "stopped or e-stop while opening"
+            cmd = gp.gripper_ramp(cmd, self.open, self.open_speed, 0.05)
+            self.command(cmd)
+            if cmd == self.open and abs(self.pos - self.open) <= self.open_tol:
+                reached = reached or time.time()
+                if time.time() - reached >= self.open_settle:
+                    return True, "open (joint_6 %.4f)" % self.pos
+            rate.sleep()
+        return False, "timed out opening (joint_6 %.4f, target %.4f)" % (self.pos, self.open)
+
+    def on_open(self, _):
+        if not self.busy.acquire(False):
+            return TriggerResponse(False, "refused: a gripper move is already in progress")
+        try:
+            why = self.preflight()
+            if why:
+                self.publish("IDLE", "refused: " + why)
+                return TriggerResponse(False, "refused: " + why)
+            ok, message = self.ramp_open()
+            self.publish("DONE" if ok else "ABORTED", message)
+            rospy.logwarn("gripper_control: open %s", message)
+            return TriggerResponse(ok, message)
+        finally:
+            self.busy.release()
+
+    def close(self, req):
+        why = self.preflight()
+        if why:
+            return self.refuse(why)
         rate = rospy.Rate(20)
-        t_start = time.time()
         if req.open_first and req.execute:
-            cmd, reached = self.pos, None
-            self.publish("OPENING", "to %.3f" % self.open)
-            while not rospy.is_shutdown() and time.time() - t_start < self.timeout:
-                if self.stop_requested.is_set() or self.estop is not False:
-                    return self.finish(False, "", "stopped or e-stop while opening")
-                cmd = gp.gripper_ramp(cmd, self.open, self.open_speed, 0.05)
-                self.command(cmd)
-                if cmd == self.open and abs(self.pos - self.open) <= self.open_tol:
-                    reached = reached or time.time()
-                    if time.time() - reached >= self.open_settle:
-                        break
-                rate.sleep()
+            ok, message = self.ramp_open()
+            if not ok:
+                return self.finish(False, "", message)
         closer = gp.LoadLimitedCloser(self.pos, self.closed, self.open, self.params)
         phase, t_close = None, time.time()
         while not rospy.is_shutdown() and time.time() - t_close < self.timeout:
@@ -133,12 +163,12 @@ class Node(object):
 
     def finish(self, ok, outcome, message):
         self.publish("DONE" if ok else "ABORTED", message)
-        rospy.logwarn("gripper_close: %s %s", "done:" if ok else "failed:", message)
+        rospy.logwarn("gripper_control: %s %s", "done:" if ok else "failed:", message)
         return GripperCloseResponse(ok, outcome, message, self.load or 0.0)
 
 
 def main():
-    rospy.init_node("gripper_close")
+    rospy.init_node("gripper_control")
     Node()
     rospy.spin()
 
