@@ -40,16 +40,17 @@ tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (vi
 # must stay under 40 %, hence the +-2 % band. Everything else is a FLAGGED, UNVALIDATED default: tune it on the hardware, stepwise,
 # watching the peak and held load in the recorded bags (gripper_load_report.py).
 close:
-  load_limit: 45.0        # %: PEAK CEILING (operator). At or above it the command opens at once (at contact_speed); persisting for hold_timeout aborts
+  load_limit: 45.0        # %: PEAK CEILING (operator). At or above it the command opens at once (at relief_speed); persisting for hold_timeout aborts
   load_target: 38.5       # %: STEADY-STATE load to hold the grasp at (operator's 37.5, raised on request; with the band it stays at or under 39.5); the close stops when the PREDICTED load reaches it
   load_lead_s: 0.25       # s: look-ahead of the stop decision: predicted = load + (rate of rise) x this (10 Hz samples and lag). FLAGGED
   load_band: 1.0          # %: the grasp counts as settled within this band of load_target (so it stays at or under 39.5 %). FLAGGED
   hold_kp: 3.0e-6         # m per % of load error: proportional gain of the hold PI (it keeps the load as close as possible to load_target). FLAGGED
   hold_ki: 1.4e-5         # m per (% s): integral gain of the hold PI; from the measured 65-80 %/mm, loop time constant ~1 s. FLAGGED
-  close_speed: 0.003      # m/s: APPROACH speed of the close (until the load first rises). Operator: at least 3 mm/s. Set it here or with the close_speed launch arg. FLAGGED
-  contact_speed: 0.001    # m/s: speed after the load has risen to contact_load (the final approach). Operator: at least 1 mm/s. FLAGGED
-  contact_load: 4.0       # %: first sign of contact (free closing measured 0.8 to 1.7 %). FLAGGED
-  trim_speed: 0.001       # m/s: rate limit of the hold PI's command, the final trim. Operator: at least 1 mm/s. FLAGGED
+  close_speed: 0.004      # m/s: APPROACH speed of the close, until the load reaches contact_load. Operator: 4 mm/s. Set it here or with the close_speed launch arg. FLAGGED
+  contact_speed: 0.002    # m/s: speed after the load has reached contact_load (the final trim approach). Operator: 2 mm/s. FLAGGED
+  relief_speed: 0.001     # m/s: how fast the command opens at the peak limit (apart from contact_speed so the relief stays gentle). FLAGGED
+  contact_load: 15.0      # %: the load at which the close slows from close_speed to contact_speed. Operator: raised from 4 %. A higher value keeps the fast approach longer; the PREDICTED-load stop and the 45 % peak relief still apply. FLAGGED
+  trim_speed: 0.002       # m/s: rate limit of the hold PI's command, the final trim. Operator: 2 mm/s. FLAGGED
   confirm_samples: 1      # consecutive NEW samples with predicted load >= target before the close stops. FLAGGED
   load_max_age: 0.5       # s: older load = no measurement = abort. FLAGGED
   hold_time: 1.0          # s in the band and still before it counts as done. FLAGGED

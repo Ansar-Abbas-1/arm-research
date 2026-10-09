@@ -151,16 +151,17 @@ class CloseParams:
     """Load-limited closing. EVERY value is a FLAGGED, UNVALIDATED default (see config/grasp.yaml) except the operator's two
     numbers (2026-10-09): peak load 45 % (load_limit); steady state 37.5 %, raised to 38.5 % on request (load_target). The gripper motor tripped its
     overload protection (error 0x20) holding 43 to 48 %, so the STEADY state must stay under 40 %: target 38.5 +- 1 % (raised from 37.5)."""
-    close_speed: float = 0.003       # m/s: APPROACH speed of the close (until the load first rises; operator: at least 3 mm/s); set it from outside via close/close_speed
-    contact_speed: float = 0.001     # m/s: speed once the load has risen to contact_load (the final approach; operator: at least 1 mm/s)
-    contact_load: float = 4.0        # % of max torque: the first sign of contact (free closing measured 0.8 to 1.7 %)
+    close_speed: float = 0.004       # m/s: APPROACH speed of the close (until the load reaches contact_load; operator: 4 mm/s); set it from outside via close/close_speed
+    contact_speed: float = 0.002     # m/s: speed once the load has risen to contact_load (the final trim approach; operator: 2 mm/s)
+    relief_speed: float = 0.001      # m/s: how fast the command opens when the load is at the peak limit (kept apart from contact_speed so a faster approach does not make the relief coarse)
+    contact_load: float = 15.0       # % of max torque: the load at which the close slows from close_speed to contact_speed (operator: raised from 4 %; free closing measured 0.8 to 1.8 %)
     load_target: float = 38.5        # % of max torque: the STEADY-STATE load to hold the grasp at (raised from the operator's 37.5 on request, still under 40 with the band)
-    load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at contact_speed); if it persists for hold_timeout the grasp fails
+    load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at relief_speed); if it persists for hold_timeout the grasp fails
     load_lead_s: float = 0.25        # s: look-ahead of the stop decision, predicted load = load + (load rate) x load_lead_s (covers the 10 Hz sampling and the lag)
     load_band: float = 1.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
     hold_kp: float = 3e-6            # m per % of load error: proportional gain of the hold PI (command increment = -(kp d(e) + ki e Ts), e = target - load)
     hold_ki: float = 1.4e-5          # m per (% s): integral gain of the hold PI. From the measured 65 to 80 %/mm: loop time constant ~1 s, well above the load delay
-    trim_speed: float = 0.001        # m/s: the PI's command rate limit, the final trim (operator: at least 1 mm/s)
+    trim_speed: float = 0.002        # m/s: the PI's command rate limit, the final trim (operator: 2 mm/s)
     confirm_samples: int = 1         # consecutive NEW load samples with predicted load >= load_target before the close stops
     load_max_age: float = 0.5        # s: an older load sample is no measurement (the driver publishes at 10 Hz)
     hold_time: float = 1.0           # s in the band and still before the grasp counts as done
@@ -188,7 +189,7 @@ class LoadLimitedCloser:
     Command law (cmd decreases toward `closed`; load is |motor load| in %; predicted = load + rate x load_lead_s):
       CLOSING   cmd -= close_speed dt (approach), contact_speed dt once the load has reached contact_load,
                 until `confirm_samples` consecutive NEW samples have predicted >= load_target
-      HOLDING   load >= load_limit:       cmd += contact_speed dt (relief)
+      HOLDING   load >= load_limit:       cmd += relief_speed dt (relief)
                 otherwise a PI on e = target - load keeps the load AS CLOSE AS POSSIBLE to the target, above and below it:
                   once per new load sample  d = -(kp (e - e_prev) + ki e Ts)      (incremental form: no windup; d < 0 closes)
                   d < 0 is dropped while the PREDICTED load is already >= target (look-ahead against overshoot)
@@ -284,7 +285,7 @@ class LoadLimitedCloser:
                 if self.t_low is not None and t - self.t_low >= p.lost_time:
                     return CloseStep(self.cmd, self.phase, fault="the contact was lost while holding (load %.1f %%)" % load)
         if load >= p.load_limit:
-            self.cmd = min(self.opened, self.cmd + p.contact_speed * dt)              # relief: at 65-80 %/mm this already sheds ~40 %/s, and does not lose the contact
+            self.cmd = min(self.opened, self.cmd + p.relief_speed * dt)               # relief: at 65-80 %/mm this already sheds ~65 %/s, and does not lose the contact
             self.pending, self.in_band_since = 0.0, None
             self.e_prev = e
         else:
