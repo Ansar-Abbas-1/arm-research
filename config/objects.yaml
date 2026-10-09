@@ -10,10 +10,12 @@ threads: 8                      # onnxruntime intra-op threads
 image_topic: /usb_cam/image_raw
 camera_info_topic: /usb_cam/camera_info
 base_frame: base_link
-# Floor: the plane the detections are intersected with. marker_0 (the 100 mm ground marker) gives its z when it was seen in the last 60 s
-# (accuracy about 1 to 2 cm); otherwise floor_z. 3D position from ONE camera is only exact for a point IN that plane.
+# Floor: the horizontal plane the detections are intersected with. Preferred source: the ground marker (ArUco id 0, 100 mm, lying on the floor):
+# its z in base_link is remembered each time the camera sees it (accuracy about 1 to 2 cm) and used for floor_max_age_s afterwards, since the floor
+# does not move. Fallback, or with floor_from_marker0: false: the floor_z parameter. 3D position from ONE camera is only exact for a point IN that plane.
 floor_from_marker0: true
-floor_z: -0.60                  # FLAGGED: floor z in base_link when marker_0 is not seen (marker_0 was at z = -0.598 on 2026-10-09)
+floor_max_age_s: 600.0          # FLAGGED: how long a remembered marker_0 height stays valid
+floor_z: -0.60                  # FLAGGED: floor z in base_link when marker_0 has not been seen (marker_0 was at z = -0.598 on 2026-10-09)
 default_grasp_height: 0.03      # UNKNOWN: m above the floor of the point to grasp, for classes not listed below
 grasp_heights: {}               # UNKNOWN: per class, e.g. {cup: 0.04, bottle: 0.08}: the height of the point the gripper should reach
 max_range: 1.5                  # m: a floor hit farther than this from the camera is rejected

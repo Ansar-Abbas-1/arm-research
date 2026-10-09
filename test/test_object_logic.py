@@ -81,6 +81,14 @@ class DecodeTest(unittest.TestCase):
         np.testing.assert_allclose(boxes, [[10, 20, 110, 220]])
         self.assertEqual(cls[0], 3)
 
+    def test_end_to_end_segmentation_head_reads_only_the_box_score_and_class(self):
+        out = np.zeros((1, 300, 38), np.float32)
+        out[0, 0, :6] = [10, 20, 110, 220, 0.8, 0]
+        out[0, 0, 6:] = 9.0                                                         # mask coefficients: not read as anything
+        boxes, scores, cls = ol.decode(out, "auto", conf=0.25, num_classes=1)
+        np.testing.assert_allclose(boxes, [[10, 20, 110, 220]])
+        self.assertEqual((len(scores), cls[0]), (1, 0))
+
     def test_format_detection(self):
         self.assertEqual(ol.detect_format((1, 84, 8400)), "v8")
         self.assertEqual(ol.detect_format((1, 300, 6)), "e2e")
@@ -88,6 +96,7 @@ class DecodeTest(unittest.TestCase):
         self.assertEqual(ol.detect_format((1, 8400, 84), 80), "v8_t")
         self.assertEqual(ol.detect_format((1, 38, 8400), 2), "v8")                 # a segmentation head (4 + 2 + 32 channels)
         self.assertEqual(ol.detect_format((1, 7, 50), 3), "v8")
+        self.assertEqual(ol.detect_format((1, 300, 38), 1), "e2e")                 # a YOLO26 -seg end-to-end head: box, score, class, 32 coefficients
 
 
 class NmsTest(unittest.TestCase):
@@ -140,6 +149,25 @@ class GeometryTest(unittest.TestCase):
         d0 = ol.pixel_ray(100, 100, K, None)
         d1 = ol.pixel_ray(100, 100, K, D)
         self.assertGreater(np.linalg.norm(d0 - d1), 1e-3)                # the edge pixel moves when the distortion is applied
+
+
+class FloorMemoryTest(unittest.TestCase):
+    def test_the_ground_marker_height_is_used_while_it_is_fresh_then_the_parameter(self):
+        f = ol.FloorMemory(max_age=600.0)
+        self.assertEqual(f.get(100.0, -0.60), (-0.60, "param", None))               # never seen: the parameter
+        f.update(-0.598, 100.0)
+        z, source, age = f.get(160.0, -0.60)
+        self.assertEqual((z, source), (-0.598, "marker_0"))
+        self.assertAlmostEqual(age, 60.0)
+        self.assertEqual(f.get(100.0 + 601.0, -0.60)[:2], (-0.60, "param"))         # too old
+        self.assertEqual(f.get(99.0, -0.60)[:2], (-0.60, "param"))                   # a clock that went backwards is not trusted
+
+    def test_a_newer_observation_replaces_and_an_older_one_does_not(self):
+        f = ol.FloorMemory()
+        f.update(-0.60, 10.0)
+        f.update(-0.59, 20.0)
+        f.update(-0.70, 15.0)
+        self.assertEqual(f.get(21.0, 0.0)[0], -0.59)
 
 
 if __name__ == "__main__":

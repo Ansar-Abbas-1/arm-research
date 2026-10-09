@@ -5,8 +5,8 @@ the arm or the gripper.
 
 Per processed frame (max_rate_hz): letterbox -> ONNX -> decode -> NMS -> boxes in image pixels (arm_perception/object_logic.py); the
 camera pose comes from TF AT THE IMAGE STAMP (no pose, no detection: the arm is moving or TF is missing); each box centre ray is
-intersected with the plane z = floor_z + grasp_height[class] in the base frame. The floor is marker_0's z when that marker was seen
-recently (floor_from_marker0), else the floor_z parameter. The position is exact for a point lying in that plane: set each class's
+intersected with the plane z = floor_z + grasp_height[class] in the base frame. The floor is marker_0's z (the 100 mm ground marker, ArUco id 0) as remembered from the last time it was seen,
+up to floor_max_age_s ago (floor_from_marker0), else the floor_z parameter. The position is exact for a point lying in that plane: set each class's
 grasp_height to the height of the point to grasp (config/objects.yaml: UNKNOWN until you measure them).
 
 Publishes (private names):
@@ -80,6 +80,7 @@ class Node(object):
         self.prefix = P("~tf_prefix", "object_")
         self.floor_z_param = float(P("~floor_z", -0.60))
         self.floor_from_marker0 = bool(P("~floor_from_marker0", True))
+        self.floor_mem = ol.FloorMemory(float(P("~floor_max_age_s", 600.0)))
         self.marker0 = P("~marker0_frame", "marker_0")
         self.heights = {str(k): float(v) for k, v in P("~grasp_heights", {}).items()}
         self.default_height = float(P("~default_grasp_height", 0.03))
@@ -93,6 +94,7 @@ class Node(object):
         self.K = self.D = None
         self.last_t, self.lock = 0.0, threading.Lock()
         self.target = None                                            # (position, stamp, class, confidence)
+        self.floor_age = None
         self.stats = {"frames": 0, "inference_ms": 0.0, "skipped_no_tf": 0, "last_error": ""}
         self.pub = rospy.Publisher("~detections", ObjectDetectionArray, queue_size=1)
         self.pub_img = rospy.Publisher("~image", Image, queue_size=1)
@@ -115,13 +117,18 @@ class Node(object):
         self.D = np.array(m.D, float) if len(m.D) else None
 
     def floor(self):
+        """(z, source): marker_0's height, remembered while the marker was seen in the last floor_max_age_s, else the floor_z parameter."""
+        now = rospy.Time.now().to_sec()
         if self.floor_from_marker0:
             try:
                 t = self.buf.lookup_transform(self.base, self.marker0, rospy.Time(0), rospy.Duration(0.0))
-                if (rospy.Time.now() - t.header.stamp).to_sec() < 60.0:
-                    return t.transform.translation.z, "marker_0"
+                self.floor_mem.update(t.transform.translation.z, t.header.stamp.to_sec())
             except tf2_ros.TransformException:
                 pass
+            z, source, age = self.floor_mem.get(now, self.floor_z_param)
+            self.floor_age = age
+            return z, source
+        self.floor_age = None
         return self.floor_z_param, "param"
 
     def on_image(self, msg):
@@ -209,7 +216,7 @@ class Node(object):
         age = None if self.target is None else (rospy.Time.now() - self.target[1]).to_sec()
         self.pub_status.publish(String(json.dumps(dict(self.stats, grasp_class=self.grasp_class, target=None if self.target is None else
                                                        {"class": self.target[2], "confidence": self.target[3], "xyz": [float(v) for v in self.target[0]], "age_s": age},
-                                                       classes=self.names, floor_z_param=self.floor_z_param))))
+                                                       classes=self.names, floor_z_param=self.floor_z_param, floor_marker_age_s=self.floor_age))))
 
 
 def main():

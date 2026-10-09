@@ -4,7 +4,8 @@ floor-plane geometry that turns a detection in ONE image into a 3D position (the
 Layouts of the first ONNX output, `fmt` (auto picks from the shape and the class count):
     v8   (1, 4+nc, N)   YOLOv8 / YOLO11: cx, cy, w, h, then one score per class (a -seg model has 32 extra mask coefficients, dropped)
     v5   (1, N, 5+nc)   YOLOv5:          cx, cy, w, h, objectness, then one score per class
-    e2e  (1, N, 6)      NMS-free export:  x1, y1, x2, y2, score, class        (already suppressed)
+    e2e  (1, N, 6)      NMS-free export:  x1, y1, x2, y2, score, class        (already suppressed; a YOLO26 -seg export has 32 more columns of mask
+                        coefficients, 38 in all, which are not read: only the box is used)
 
 Geometry: the camera ray through a pixel (undistorted with the calibration) is intersected with the horizontal plane z = z_plane in the
 base frame. That is exact for a point lying in that plane, so the detector reports the point of the object at `grasp_height` above the floor
@@ -31,7 +32,7 @@ def detect_format(shape, num_classes=None):
     """'v8' (channels first), 'v8_t' (the same, transposed), 'v5' or 'e2e' from the output shape (1, A, B); the class count, when known,
     decides first (a real model has far more candidates than channels, but a count is unambiguous)."""
     _, a, b = shape
-    if b == 6 and a <= 1000:
+    if b in (6, 6 + 32) and a <= 1000:                  # NMS-free: (x1, y1, x2, y2, score, class[, 32 mask coefficients of a -seg model])
         return "e2e"
     if num_classes is not None:
         if a in (4 + num_classes, 4 + num_classes + 32):
@@ -137,3 +138,22 @@ def object_position(box_xyxy, T_base_camera, K, D, z_plane, max_range=3.0):
     d_cam = pixel_ray(u, v, K, D)
     R, o = T_base_camera[:3, :3], T_base_camera[:3, 3]
     return intersect_plane(o, R.dot(d_cam), z_plane, max_range)
+
+
+class FloorMemory(object):
+    """The floor height remembered from the ground marker (marker 0): the floor does not move, so the last value is used for max_age seconds
+    after the marker was last seen, then the fallback parameter."""
+
+    def __init__(self, max_age=600.0):
+        self.max_age = max_age
+        self.z, self.t = None, None
+
+    def update(self, z, t):
+        if self.t is None or t >= self.t:
+            self.z, self.t = float(z), float(t)
+
+    def get(self, now, fallback):
+        """(z, source, age): source is 'marker_0' while the remembered value is fresh enough, else 'param'."""
+        if self.z is not None and 0.0 <= now - self.t <= self.max_age:
+            return self.z, "marker_0", now - self.t
+        return fallback, "param", None

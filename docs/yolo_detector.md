@@ -16,8 +16,12 @@ supports this RTX 5070; CPU inference of a YOLO nano/small is tens of ms, plenty
 ## The model
 Export your trained weights to ONNX (opset 12 to 17, 640 input; layouts v8/v11, v5 and NMS-free end-to-end are recognised) and put the file
 somewhere under the workspace, e.g. `/home/dev/models/`. Class names are read from the ONNX metadata (ultralytics stores them) or from `names`
-in `config/objects.yaml`. The folder `claude_ros_ws/yolo` is a COPY of the operator's `dev/yolo` (cow, vine and PRISMA datasets and weights;
-3.7 GB, untracked): none of those weights is a detector for the arm's objects.
+in `config/objects.yaml`. The folder `claude_ros_ws/yolo` is a COPY of the operator's `dev/yolo` (cow, vigna and PRISMA datasets and weights; 3.7 GB, untracked).
+The newest model is `yolo/VignaX-3/weights/best.pt`: a SEGMENTATION model (`yolo26x-seg`, the largest size, 140 MB, 640 px, 300 epochs), one class
+`Vigna` (the legume genus, not grapevine); validation box mAP50 0.79 and mask mAP50 0.79, precision about 0.89 and recall about 0.73 (608 matched,
+76 false positives, 221 missed). A YOLO26 export is NMS-free: the node reads layout `e2e` (box, score, class; the 32 mask coefficients of a -seg head
+are not read yet, only the box is used). Exporting needs an environment with a recent ultralytics (the operator's `dev/yolo/docker` image
+`ultralytics/ultralytics:latest`); the host conda env `ultralytics` is empty.
 `test/make_stub_onnx.py` writes a stub model that always "detects" one object at the image centre, to check the plumbing without a real model.
 
 ## Run
@@ -28,8 +32,8 @@ rostopic echo /object_detector/detections
 rostopic pub -1 /object_detector/select_class std_msgs/String "data: <class>"      # publish that class as the frame grasp_target
 rosservice call /grasp_sequencer/grasp "{target_frame: grasp_target, dry_run: true}"
 ```
-Needs the camera (`arm_camera camera.launch` and its static mount TF) and, for the floor, `marker_localizer` seeing marker_0 in the last 60 s
-(otherwise `floor_z`). Detections need the camera pose at the IMAGE stamp: while the arm moves, or at a pose where the camera ray does not reach the
+Needs the camera (`arm_camera camera.launch` and its static mount TF) and, for the floor, `marker_localizer` having seen the ground marker (ArUco id 0)
+at least once in the last `floor_max_age_s` (600 s): its height is remembered, the floor does not move; otherwise the `floor_z` parameter. Detections need the camera pose at the IMAGE stamp: while the arm moves, or at a pose where the camera ray does not reach the
 plane (a horizontal camera at the rest pose), a detection is `valid: false` and gets no TF.
 
 ## 3D position and its limits
