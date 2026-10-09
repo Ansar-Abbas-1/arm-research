@@ -100,12 +100,13 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   gripper_layout->addWidget(gripper_label_);
   auto* gripper_row = new QHBoxLayout();
   gripper_open_button_ = new QPushButton("Open...");
-  gripper_open_button_->setToolTip("Open the gripper (releases whatever it holds)");
+  gripper_open_button_->setToolTip("Open the gripper (releases whatever it holds and ends the load regulation)");
   gripper_close_button_ = new QPushButton("Close on load...");
   gripper_close_button_->setToolTip(
-      "Close slowly until the motor load reaches its target, then hold (load limits: config/grasp.yaml of arm_grasp)");
+      "Close slowly until the motor load reaches its target, then keep regulating it (until opened or stopped); "
+      "a lost grip shows in red (limits: config/grasp.yaml of arm_grasp)");
   gripper_stop_button_ = new QPushButton("Stop gripper");
-  gripper_stop_button_->setToolTip("Stop the open/close in progress; the gripper keeps the last command (no confirmation)");
+  gripper_stop_button_->setToolTip("End the open/close in progress AND the load regulation; the gripper keeps its last command (no confirmation)");
   gripper_row->addWidget(gripper_open_button_);
   gripper_row->addWidget(gripper_close_button_);
   gripper_row->addWidget(gripper_stop_button_);
@@ -244,6 +245,7 @@ void ArmControlPanel::on_gripper_status(const QString& json) {
   const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
   gripper_phase_ = o["phase"].toString();
   gripper_message_ = o["message"].toString();
+  gripper_grip_ = o["grip"].toString();
   update_gripper_label();
 }
 
@@ -254,6 +256,10 @@ void ArmControlPanel::update_gripper_label() {
   gripper_label_->setText(QString::fromStdString(GripperText(state_.gripper_backend_present, pos != joints_.end(),
                                                              pos != joints_.end() ? pos->second : 0.0, has_load, load_percent_,
                                                              gripper_phase_.toStdString(), gripper_message_.toStdString())));
+  // A lost grip must be impossible to miss: the object is gone and the arm should not keep carrying on.
+  const bool lost = state_.gripper_backend_present && (gripper_grip_ == "lost" || gripper_phase_ == "GRIP_LOST");
+  gripper_label_->setAutoFillBackground(lost);
+  gripper_label_->setStyleSheet(lost ? "QLabel { background-color: #c62828; color: white; font-weight: bold; padding: 3px; }" : "");
 }
 
 void ArmControlPanel::on_gripper_result(const QString& text, bool error) {

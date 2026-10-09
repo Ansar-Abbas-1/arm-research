@@ -224,6 +224,16 @@ TEST_F(PanelTest, GripperLabelShowsPositionLoadAndPhase) {
   EXPECT_TRUE(panel->gripper_label()->text().contains("load n/a"));
 }
 
+TEST_F(PanelTest, ALostGripTurnsTheGripperLabelRedAndRecovers) {
+  Ready();
+  std_msgs::String s; s.data = R"j({"phase":"GRIP_LOST","message":"the contact was lost while holding (load 0.6 %)","grip":"lost"})j"; gripper_status_pub.publish(s);
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("GRIP_LOST"); }));
+  EXPECT_TRUE(panel->gripper_label()->styleSheet().contains("c62828"));
+  s.data = R"j({"phase":"HOLDING","message":"load 38.5 %","grip":"held"})j"; gripper_status_pub.publish(s);
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("HOLDING"); }));
+  EXPECT_FALSE(panel->gripper_label()->styleSheet().contains("c62828"));
+}
+
 TEST_F(PanelTest, WithoutGripperControlTheButtonsStayDisabledAndTheLabelSaysWhy) {
   gripper_open_srv.shutdown(); gripper_close_srv.shutdown(); gripper_stop_srv.shutdown();
   Ready();

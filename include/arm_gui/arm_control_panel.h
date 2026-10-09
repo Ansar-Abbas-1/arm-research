@@ -34,7 +34,8 @@ namespace arm_gui {
 /// buttons stay disabled and the status bar says so. ROS callbacks are forwarded to the GUI thread.
 ///
 /// Gripper: talks to the gripper_control node (arm_grasp: /gripper_control/open, close_on_load, stop, the status topic) and
-/// reads /arm_interface/motor_load for the live load. Open and close ask for confirmation; Stop never does. The close can
+/// reads /arm_interface/motor_load for the live load. The node keeps regulating the load after a close; a lost grip turns the
+/// label red. Open and close ask for confirmation; Stop never does. The close can
 /// take tens of seconds, so open/close run in a worker thread and the buttons are disabled until the call returns.
 class ArmControlPanel : public rviz::Panel {
   Q_OBJECT
@@ -111,7 +112,7 @@ class ArmControlPanel : public rviz::Panel {
   ros::WallTime last_load_;        ///< when the last joint_6 load arrived (zero: never)
   double load_percent_ = 0.0;
   double shown_joint6_ = 1e9;      ///< joint_6 as last drawn in the gripper label
-  QString gripper_phase_, gripper_message_;
+  QString gripper_phase_, gripper_message_, gripper_grip_;
   ros::WallTime last_motors_;      ///< when the last motor_status arrived (zero: never)
   int motors_count_ = 0;           ///< motor_status messages received
   QTimer service_timer_;  ///< polls which services exist (the driver or backend may start later)
