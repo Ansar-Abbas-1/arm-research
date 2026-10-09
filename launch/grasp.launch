@@ -1,6 +1,7 @@
 <launch>
   <!-- TF-driven grasp sequence. Needs the arm stack (arm_trajectory/interactive_reach.launch: planner, executor, driver or
-       simulator). The target is any TF frame in base_link whose +z is the surface normal, for example marker_118 from
+       simulator) AND the gripper_control node (roslaunch arm_grasp gripper_control.launch, or gripper_monitor.launch, which
+       also records): the gripper belongs to that node and a real grasp is refused without it. Start it only once, never twice. The target is any TF frame in base_link whose +z is the surface normal, for example marker_118 from
        marker_localizer. Nothing moves until you call the service. First PLAN ONLY (nothing moves):
          rosservice call /grasp_sequencer/grasp "target_frame: 'marker_118'
          dry_run: true"

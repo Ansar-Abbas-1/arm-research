@@ -3,37 +3,33 @@
 
     Guarded "stop / e-stop"            (fails and interrupts the running leaf the moment stop or e-stop is seen)
     └─ Sequence "grasp"
-       ├─ open gripper                 OPENING
+       ├─ open gripper                 OPENING         (the gripper_control node ramps it open)
        ├─ PRE                          MOVING_PRE      (joint-space move above the target)
        ├─ recheck target               RECHECK         (fails if the target moved since planning)
        ├─ DESCEND                      DESCENDING      (straight down, slowed)
-       ├─ close on load                CLOSING         (slow close until the motor load reaches the target, then hold)
-       └─ LIFT                         LIFTING         (straight up, slowed)
+       ├─ close on load                CLOSING         (the gripper_control node closes slowly to the load target and keeps regulating it)
+       └─ Parallel "lift while holding"
+          ├─ LIFT                      LIFTING         (straight up, slowed)
+          └─ grip watch                                (fails if the grip is lost or no longer regulated)
 
+The gripper is owned by the gripper_control node: the leaves only ask it to open / close and watch its status. Its load PI keeps
+running after the close, through the lift and after the sequence ends, until the gripper is opened or stopped.
 The leaves publish their state name through `ctx.set_state`, which is what `~status` reports. A leaf that fails calls
-`ctx.fail(reason)`; the first reason wins and becomes the ABORTED message. Interrupting a running trajectory leaf
-(guard failure, tree stop) cancels the trajectory goal in `terminate`.
+`ctx.fail(reason)`; the first reason wins and becomes the ABORTED message. Interrupting a running leaf (guard failure, tree
+stop, a failed sibling) cancels its trajectory goal or gripper action in `terminate`.
 """
 import py_trees
 from py_trees.common import Status
 
-from arm_grasp import grasp_plan as gp
 
 
 class SequenceParams(object):
-    """Timing and threshold parameters of the leaves (the geometry and heights live in `grasp_plan.GraspSpec`)."""
+    """Thresholds of the leaves (the geometry and heights live in `grasp_plan.GraspSpec`, the gripper's law in the gripper_control node)."""
 
-    def __init__(self, gripper_speed=0.02, gripper_settle=0.6, gripper_tolerance=0.002, gripper_timeout=5.0,
-                 recheck_mm=5.0, recheck_deg=3.0, require_object=False, close=None, max_dt=0.2):
-        self.gripper_speed = gripper_speed          # m/s ramp of the joint_6 command
-        self.gripper_settle = gripper_settle        # s to wait once the measurement is at the target
-        self.gripper_tolerance = gripper_tolerance  # m
-        self.gripper_timeout = gripper_timeout      # s after the ramp ended before giving up (jaws blocked)
+    def __init__(self, recheck_mm=5.0, recheck_deg=3.0, require_object=False):
         self.recheck_mm = recheck_mm
         self.recheck_deg = recheck_deg
         self.require_object = require_object        # 'thin' (closed completely below the load target) fails instead of counting as grasped
-        self.close = close or gp.CloseParams()      # load-limited closing (grasp_plan.CloseParams)
-        self.max_dt = max_dt                        # s: cap of the ramp step after a long gap between ticks
 
 
 class GraspContext(object):
@@ -58,15 +54,20 @@ class GraspContext(object):
         """None when it is safe to continue, else the reason (operator stop, e-stop engaged or unknown)."""
         raise NotImplementedError
 
-    def gripper_position(self):
-        """Measured joint_6, or None when there is no measurement."""
+    def start_gripper(self, action):
+        """Ask the gripper_control node to 'open' or 'close' (the load-limited close). Returns None or an error message."""
         raise NotImplementedError
 
-    def command_gripper(self, position):
+    def poll_gripper(self):
+        """('running' | 'succeeded' | 'failed', message, outcome, load [%]); outcome is 'object' or 'thin' for a close."""
         raise NotImplementedError
 
-    def gripper_load(self):
-        """(|motor load| of the gripper in % of max torque, the time it was received on the now() clock), or (None, None)."""
+    def cancel_gripper(self):
+        """Stop the running gripper action (and the load regulation: the command stays where it is)."""
+        raise NotImplementedError
+
+    def grip_state(self):
+        """The node's view of the grip: 'held', 'thin', 'lost', 'none', or None when its status is missing or stale."""
         raise NotImplementedError
 
     def start_trajectory(self, name, slow):
@@ -123,40 +124,57 @@ class _Leaf(py_trees.behaviour.Behaviour):
         self.ctx.set_state(state, message() if callable(message) else message)
 
 
-class MoveGripper(_Leaf):
-    """Ramps the joint_6 command to `target` at gripper_speed. SUCCESS once the measurement is at the target and has
-    settled, or gripper_timeout after the ramp ended (jaws blocked by an object, or no measurement): the grasp
-    outcome leaf decides what the final position means."""
+class GripperAction(_Leaf):
+    """Asks the gripper_control node to open, or to close on load, and waits for the action to end. The node keeps regulating the
+    load after a close; this leaf only reports the outcome ('object' | 'thin') and, with require_object, fails on 'thin'."""
 
-    def __init__(self, name, ctx, params, target, other_end, state, message):
-        super(MoveGripper, self).__init__(name, ctx)
-        self.params, self.target, self.other_end, self.state, self.message = params, target, other_end, state, message
+    def __init__(self, name, ctx, params, action, state, message):
+        super(GripperAction, self).__init__(name, ctx)
+        self.params, self.action, self.state, self.message = params, action, state, message
+        self.error = None
 
     def initialise(self):
         self._state(self.state, self.message)
-        measured = self.ctx.gripper_position()
-        self.cmd = measured if measured is not None else self.other_end
-        self.t0 = self.last = self.ctx.now()
-        self.ramp_time = abs(self.target - self.cmd) / self.params.gripper_speed
-        self.reached_at = None
+        self.error = self.ctx.start_gripper(self.action)
 
     def update(self):
-        now = self.ctx.now()
-        dt = min(max(now - self.last, 0.0), self.params.max_dt)
-        self.last = now
-        self.cmd = gp.gripper_ramp(self.cmd, self.target, self.params.gripper_speed, dt)
-        self.ctx.command_gripper(self.cmd)
-        if self.cmd != self.target:
+        if self.error:
+            self.ctx.fail("gripper %s: %s" % (self.action, self.error))
+            return Status.FAILURE
+        status, message, outcome, load = self.ctx.poll_gripper()
+        if status == "running":
             return Status.RUNNING
-        measured = self.ctx.gripper_position()
-        if measured is None or abs(measured - self.target) <= self.params.gripper_tolerance:
-            if self.reached_at is None:
-                self.reached_at = now
-            if now - self.reached_at >= self.params.gripper_settle:
-                return Status.SUCCESS
-        if now - self.t0 > self.ramp_time + self.params.gripper_timeout:
-            return Status.SUCCESS
-        return Status.RUNNING
+        if status == "failed":
+            self.feedback_message = message
+            self.ctx.fail(message)
+            return Status.FAILURE
+        if self.action == "close":
+            self.ctx.record_outcome(outcome, load)
+            if outcome == "thin" and self.params.require_object:
+                self.ctx.fail("closed completely without reaching the load target and require_object is set")
+                return Status.FAILURE
+        return Status.SUCCESS
+
+    def terminate(self, new_status):
+        if new_status == Status.INVALID and self.status == Status.RUNNING:
+            self.ctx.cancel_gripper()
+
+
+class GripWatch(_Leaf):
+    """Runs alongside the lift: RUNNING while the gripper_control node reports the grip held (or 'thin', counted as grasped), FAILURE if
+    it is lost, no longer regulated or its status is missing. It never succeeds: the lift ending ends the Parallel."""
+
+    def __init__(self, ctx):
+        super(GripWatch, self).__init__("grip watch", ctx)
+
+    def update(self):
+        grip = self.ctx.grip_state()
+        if grip in ("held", "thin"):
+            return Status.RUNNING
+        reason = {"lost": "the grip was lost during the lift", "none": "the gripper is no longer regulating its grip",
+                  None: "no gripper_control status: the grip is not being supervised"}.get(grip, "unexpected grip state %r" % grip)
+        self.ctx.fail(reason)
+        return Status.FAILURE
 
 
 class FollowTrajectory(_Leaf):
@@ -214,53 +232,20 @@ class RecheckTarget(_Leaf):
         return Status.SUCCESS
 
 
-class CloseOnLoad(_Leaf):
-    """Slow load-limited close (grasp_plan.LoadLimitedCloser), separate from the open ramp: closes at close_speed until
-    the gripper's motor load reaches load_target, holds there, and succeeds when the load is stable in the band.
-    Closing completely below the target is 'thin' (a thinner element than expected: counts as grasped unless
-    require_object). A missing load measurement is a failure; the command then stays where it was (the driver holds)."""
-
-    def __init__(self, ctx, spec, params):
-        super(CloseOnLoad, self).__init__("close on load", ctx)
-        self.spec, self.params = spec, params
-
-    def initialise(self):
-        self.ctx.set_state("CLOSING", "slowly to a load of %.0f %%" % self.params.close.load_target)
-        measured = self.ctx.gripper_position()
-        self.closer = gp.LoadLimitedCloser(measured if measured is not None else self.spec.gripper_open,
-                                           self.spec.gripper_closed, self.spec.gripper_open, self.params.close)
-        self.phase = self.closer.phase
-
-    def update(self):
-        load, stamp = self.ctx.gripper_load()
-        step = self.closer.step(self.ctx.now(), self.ctx.gripper_position(), load, stamp)
-        if step.fault:
-            self.ctx.fail(step.fault)
-            return Status.FAILURE
-        self.ctx.command_gripper(step.cmd)
-        if step.phase != self.phase:
-            self.phase = step.phase
-            self.ctx.set_state("CLOSING", {"HOLDING": "load %.0f %% reached: holding" % (load or 0.0),
-                                           "CLOSED": "closed completely, load below the target"}.get(step.phase, ""))
-        if not step.done:
-            return Status.RUNNING
-        self.ctx.record_outcome(step.outcome, load)
-        if step.outcome == "thin" and self.params.require_object:
-            self.ctx.fail("closed completely without reaching the load target and require_object is set")
-            return Status.FAILURE
-        return Status.SUCCESS
-
-
 def build_tree(ctx, spec, params, outcome_text=lambda: ""):
     """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome)."""
+    lift = py_trees.composites.Parallel(name="lift while holding", policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE, children=[
+        FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", lambda: "grasp outcome: %s" % outcome_text()),
+        GripWatch(ctx),
+    ])
     mission = py_trees.composites.Sequence(name="grasp", children=[
-        MoveGripper("open gripper", ctx, params, spec.gripper_open, spec.gripper_closed, "OPENING", "gripper to %.3f" % spec.gripper_open),
+        GripperAction("open gripper", ctx, params, "open", "OPENING", "gripper to %.3f" % spec.gripper_open),
         FollowTrajectory("PRE", ctx, "PRE", 1.0, "MOVING_PRE", "above the target"),
         RecheckTarget(ctx, params),
         FollowTrajectory("DESCEND", ctx, "DESCEND", spec.descent_slow_factor, "DESCENDING",
                          "straight down, %.1f times slower than planned" % spec.descent_slow_factor),
-        CloseOnLoad(ctx, spec, params),
-        FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", lambda: "grasp outcome: %s" % outcome_text()),
+        GripperAction("close on load", ctx, params, "close", "CLOSING", "the gripper closes to its load target and keeps regulating it"),
+        lift,
     ])
     return Guarded(mission, ctx)
 

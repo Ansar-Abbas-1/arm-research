@@ -61,7 +61,7 @@ def main():
     ap.add_argument("bag", help="a .bag file or 'latest'")
     ap.add_argument("--dir", default=DEFAULT_DIR)
     ap.add_argument("--png")
-    ap.add_argument("--target", type=float, default=37.5, help="load_target of config/grasp.yaml")
+    ap.add_argument("--target", type=float, default=38.5, help="load_target of config/grasp.yaml")
     ap.add_argument("--limit", type=float, default=45.0, help="load_limit (peak) of config/grasp.yaml")
     a = ap.parse_args()
     path = a.bag

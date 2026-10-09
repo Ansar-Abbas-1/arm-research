@@ -1,12 +1,16 @@
 <launch>
-  <!-- The load-limited gripper close BY ITSELF: no planner, executor, behavior tree or arm motion. Needs only the driver
-       (arm_interface robot_interface) or the simulator (arm_sim_validator_node) publishing /joint_states_in and
-       /arm_interface/motor_load. Nothing moves until you call the service with execute: true. First WATCH ONLY:
+  <!-- The gripper_control node: it OWNS joint_6. Open, slow load-limited close, and then it KEEPS REGULATING the load (PI) until the
+       gripper is opened or stopped, also while the arm moves and after a grasp sequence ends. A load that collapses after the grasp
+       settled is GRIP_LOST (the command freezes, /gripper_control/grip_lost goes true). Needs only the driver (arm_interface
+       robot_interface) or the simulator publishing /joint_states_in and /arm_interface/motor_load. Nothing moves until you call it.
+       First WATCH ONLY:
          rosservice call /gripper_control/close "{execute: false, open_first: false}"
        then, with the e-stop in reach:
-         rosservice call /gripper_control/close "{execute: true, open_first: false}"
-         rostopic echo /gripper_control/status        (rosservice call /gripper_control/stop ends it; the driver holds)
-       Parameters (load target, speeds, band) come from config/grasp.yaml; every value there except load_target is flagged. -->
+         rosservice call /gripper_control/open
+         rosservice call /gripper_control/close_on_load        (returns when the grasp has settled; the regulation goes on)
+         rostopic echo /gripper_control/status                 (phase, grip held|thin|lost|none, load)
+         rosservice call /gripper_control/stop                 (ends the action AND the regulation; the driver holds the last goal)
+       Parameters (load target, speeds, PI gains) come from config/grasp.yaml; every value there except the operator's numbers is flagged. -->
   <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
   <!-- close_speed: m/s approach speed of the close, overriding the yaml (empty: keep the yaml value). The node reads it at
        startup, so a change needs a restart of this launch. Example: roslaunch arm_grasp gripper_control.launch close_speed:=0.003 -->

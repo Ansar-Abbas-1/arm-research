@@ -41,9 +41,9 @@ tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (vi
 # watching the peak and held load in the recorded bags (gripper_load_report.py).
 close:
   load_limit: 45.0        # %: PEAK CEILING (operator). At or above it the command opens at once (at contact_speed); persisting for hold_timeout aborts
-  load_target: 37.5       # %: STEADY-STATE load to hold the grasp at (operator); the close stops when the PREDICTED load reaches it
+  load_target: 38.5       # %: STEADY-STATE load to hold the grasp at (operator's 37.5, raised on request; with the band it stays at or under 39.5); the close stops when the PREDICTED load reaches it
   load_lead_s: 0.25       # s: look-ahead of the stop decision: predicted = load + (rate of rise) x this (10 Hz samples and lag). FLAGGED
-  load_band: 2.0          # %: the grasp counts as settled within this band of load_target (so it stays at or under 39.5 %). FLAGGED
+  load_band: 1.0          # %: the grasp counts as settled within this band of load_target (so it stays at or under 39.5 %). FLAGGED
   hold_kp: 3.0e-6         # m per % of load error: proportional gain of the hold PI (it keeps the load as close as possible to load_target). FLAGGED
   hold_ki: 1.4e-5         # m per (% s): integral gain of the hold PI; from the measured 65-80 %/mm, loop time constant ~1 s. FLAGGED
   close_speed: 0.002      # m/s: APPROACH speed of the close (until the load first rises); set it here or with the close_speed launch arg. FLAGGED
@@ -57,3 +57,5 @@ close:
   still_time: 0.5         # s of the jaws within still_tol. FLAGGED
   still_tol: 0.0003       # m. FLAGGED
   closed_settle: 0.6      # s after reaching fully closed before calling it 'thin'. FLAGGED
+  lost_time: 0.3          # s below contact_load, once settled, before the grip counts as LOST (status GRIP_LOST). FLAGGED
+  over_time: 2.0          # s at or above load_limit, once settled, before the hold fails. FLAGGED

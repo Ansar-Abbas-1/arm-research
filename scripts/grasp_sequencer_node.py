@@ -11,9 +11,10 @@ COMMANDS THE REAL ARM (through the trajectory executor and /joint_states_out). S
   * the descent and the lift are slowed down (descent_slow_factor, lift_slow_factor) beyond the planner's timing
   * the target must be a fresh TF (target_max_age); before the descent it is looked up again and the sequence aborts
     if it moved
-  * the gripper opens at gripper_speed and CLOSES slowly (close_speed) until its motor load (/arm_interface/motor_load,
-    10 Hz) reaches load_target, then holds there; with no fresh load reading it stops and aborts. Closing completely below
-    the target load is 'thin' (counted as grasped; aborts if require_object)
+  * the gripper belongs to the gripper_control node (roslaunch arm_grasp gripper_control.launch must be running for a real
+    grasp): this node asks it to open and to close on load, and watches its grip status. Its load PI keeps regulating after
+    the close, through the lift and after the sequence ends; a lost grip aborts the lift. Closing completely below the target
+    load is 'thin' (counted as grasped; aborts if require_object)
 The target frame is any TF in base_link whose +z is the surface normal (e.g. marker_<id> from marker_localizer).
 Parameters: config/grasp.yaml (every default flagged there).
 """
@@ -68,22 +69,17 @@ class Node(gt.GraspContext):
         self.recheck_deg = float(P("~recheck_rotation_deg", 3.0))
         self.gripper_speed = float(P("~gripper_speed", 0.02))
         self.gripper_settle = float(P("~gripper_settle", 0.6))
-        self.gripper_tol = float(P("~gripper_tolerance", 0.002))
-        self.gripper_timeout = float(P("~gripper_timeout", 5.0))
         self.require_object = bool(P("~require_object", False))
         self.endpoint_tol = float(P("~endpoint_tolerance_rad", 0.03))
         self.tick_rate = float(P("~tick_rate", 20.0))
         d_close = gp.CloseParams()
         self.close = gp.CloseParams(**{k: type(getattr(d_close, k))(P("~close/" + k, getattr(d_close, k))) for k in vars(d_close)})
-        self.params = gt.SequenceParams(
-            gripper_speed=self.gripper_speed, gripper_settle=self.gripper_settle, gripper_tolerance=self.gripper_tol,
-            gripper_timeout=self.gripper_timeout, recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg,
-            require_object=self.require_object, close=self.close)
+        self.params = gt.SequenceParams(recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg, require_object=self.require_object)
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
         self.q = None
-        self.gripper = None
-        self.load, self.load_time = None, None                        # |gripper motor load| [%] and when it was received
+        self.grip_status, self.grip_status_time = {}, 0.0             # the gripper_control node's latest ~status (JSON) and when it arrived
+        self.gripper_call = {"state": "idle"}                         # the gripper_control call in a worker thread
         self.estop = None
         self.lock = threading.Lock()
         self.stop_requested = threading.Event()
@@ -100,9 +96,8 @@ class Node(gt.GraspContext):
         if not self.tree.setup(timeout=5.0):
             rospy.logwarn("grasp: the behavior tree's ROS interfaces did not set up in time (the tree still runs)")
         rospy.Subscriber("/joint_states_in", JointState, self.on_joints, queue_size=1)
-        rospy.Subscriber("/arm_interface/motor_load", JointState, self.on_load, queue_size=1)
+        rospy.Subscriber("/gripper_control/status", String, self.on_grip_status, queue_size=1)
         rospy.Subscriber("/arm_interface/estop_state", Bool, lambda m: setattr(self, "estop", bool(m.data)), queue_size=1)
-        self.pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
         self.pub_status = rospy.Publisher("~status", String, queue_size=1, latch=True)
         self.client = actionlib.SimpleActionClient("follow_joint_trajectory", FollowJointTrajectoryAction)
         self.plan_srv = rospy.ServiceProxy("/generate_trajectory", GenerateTrajectory)
@@ -118,21 +113,19 @@ class Node(gt.GraspContext):
         d = dict(zip(m.name, m.position))
         if all(j in d for j in JOINTS):
             self.q = [d[j] for j in JOINTS]
-        if "joint_6" in d:
-            self.gripper = d["joint_6"]
 
-    def on_load(self, m):
-        if "joint_6" in m.name:
-            i = m.name.index("joint_6")
-            if i < len(m.effort):
-                self.load, self.load_time = abs(float(m.effort[i])), time.time()      # sign follows the motor, not the joint
+    def on_grip_status(self, m):
+        try:
+            self.grip_status, self.grip_status_time = json.loads(m.data), time.time()
+        except ValueError:
+            pass
 
     def estop_allows(self):
         return self.estop is False
 
     def publish(self):
         self.pub_status.publish(String(json.dumps({"state": self.state, "message": self.message, "target_frame": self.target_frame,
-                                                   "plan": self.plan_info, "gripper": self.gripper, "gripper_load_percent": self.load,
+                                                   "plan": self.plan_info, "gripper": self.grip_status,
                                                    "active_path": gt.active_path(self.tree.root)})))
 
     def set_state(self, state, message=""):
@@ -190,6 +183,8 @@ class Node(gt.GraspContext):
             return GraspResponse(False, "refused: no /joint_states_in", 0.0, 0.0)
         if not req.dry_run and not self.estop_allows():
             return GraspResponse(False, "refused: e-stop engaged or its state unknown", 0.0, 0.0)
+        if not req.dry_run and self.grip_state() is None:
+            return GraspResponse(False, "refused: no /gripper_control/status (start it: roslaunch arm_grasp gripper_control.launch)", 0.0, 0.0)
         self.target_frame = req.target_frame
         try:
             T, stamp, age = self.lookup_target()
@@ -205,7 +200,7 @@ class Node(gt.GraspContext):
             return GraspResponse(False, "refused: " + str(e), 0.0, 0.0)
         legs, trajs = self.plan_legs(wps)
         problems = gp.check_plan(legs, self.spec)
-        duration = gp.total_duration(legs, self.spec, gripper_time=(self.spec.gripper_open - self.spec.gripper_closed) * (1.0 / self.gripper_speed + 1.0 / self.close.close_speed) + self.gripper_settle + self.close.hold_time)
+        duration = gp.total_duration(legs, self.spec, gripper_time=(self.spec.gripper_open - self.spec.gripper_closed) * (1.0 / self.gripper_speed + 1.0 / self.close.close_speed) + self.gripper_settle + self.close.hold_time + 5.0)
         dev = max([l.deviation for l in legs if l.success] or [0.0])
         self.plan_info = {"legs": [{"name": l.name, "ok": l.success, "duration": l.duration, "deviation_mm": 1000 * l.deviation, "message": l.message} for l in legs],
                           "duration": duration, "problems": problems, "waypoints": {w.name: [float(v) for v in w.position] for w in wps}}
@@ -246,17 +241,47 @@ class Node(gt.GraspContext):
             return "e-stop engaged or its state unknown (during %s)" % self.state
         return None
 
-    def gripper_position(self):
-        return self.gripper
+    def start_gripper(self, action):
+        service = {"open": "/gripper_control/open", "close": "/gripper_control/close_on_load"}[action]
+        call = {"state": "running", "message": "", "outcome": "", "load": 0.0}
+        self.gripper_call = call
 
-    def gripper_load(self):
-        return self.load, self.load_time
+        def work():
+            try:
+                client = rospy.ServiceProxy(service, Trigger)
+                rospy.wait_for_service(service, 3.0)
+                res = client()
+                call["message"] = res.message
+                if res.success and action == "close":
+                    head, _, rest = res.message.partition(": ")
+                    call["outcome"] = head if head in ("object", "thin") else "object"
+                    try:
+                        call["load"] = float(rest.split("load")[1].split("%")[0]) if "load" in rest else float(self.grip_status.get("load_percent") or 0.0)
+                    except (IndexError, ValueError):
+                        call["load"] = float(self.grip_status.get("load_percent") or 0.0)
+                call["state"] = "succeeded" if res.success else "failed"
+            except (rospy.ServiceException, rospy.ROSException) as e:
+                call["message"], call["state"] = "gripper_control call failed: %s" % e, "failed"
 
-    def command_gripper(self, position):
-        js = JointState()
-        js.header.stamp = rospy.Time.now()
-        js.name, js.position = ["joint_6"], [float(position)]
-        self.pub_out.publish(js)
+        threading.Thread(target=work, daemon=True).start()
+        return None
+
+    def poll_gripper(self):
+        c = self.gripper_call
+        return c["state"] if c["state"] in ("running", "succeeded", "failed") else "failed", c.get("message", ""), c.get("outcome", ""), c.get("load", 0.0)
+
+    def cancel_gripper(self):
+        def work():
+            try:
+                rospy.ServiceProxy("/gripper_control/stop", Trigger)()
+            except (rospy.ServiceException, rospy.ROSException):
+                pass
+        threading.Thread(target=work, daemon=True).start()
+
+    def grip_state(self):
+        if time.time() - self.grip_status_time > 2.0:
+            return None
+        return self.grip_status.get("grip")
 
     def start_trajectory(self, name, slow):
         traj = self.trajs[name]

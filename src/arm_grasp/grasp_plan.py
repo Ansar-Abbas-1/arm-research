@@ -149,15 +149,15 @@ def gripper_ramp(current, target, max_speed, dt):
 @dataclass
 class CloseParams:
     """Load-limited closing. EVERY value is a FLAGGED, UNVALIDATED default (see config/grasp.yaml) except the operator's two
-    numbers (2026-10-09): peak load 45 % (load_limit) and steady-state load 37.5 % (load_target). The gripper motor tripped its
-    overload protection (error 0x20) holding 43 to 48 %, so the STEADY state must stay under 40 %: the hold band is +-2 %."""
+    numbers (2026-10-09): peak load 45 % (load_limit); steady state 37.5 %, raised to 38.5 % on request (load_target). The gripper motor tripped its
+    overload protection (error 0x20) holding 43 to 48 %, so the STEADY state must stay under 40 %: target 38.5 +- 1 % (raised from 37.5)."""
     close_speed: float = 0.002       # m/s: APPROACH speed of the close (until the load first rises); set it from outside via close/close_speed
     contact_speed: float = 0.0005    # m/s: speed once the load has risen to contact_load (the final approach)
     contact_load: float = 4.0        # % of max torque: the first sign of contact (free closing measured 0.8 to 1.7 %)
-    load_target: float = 37.5        # % of max torque: the STEADY-STATE load to hold the grasp at (the close stops when the PREDICTED load reaches it)
+    load_target: float = 38.5        # % of max torque: the STEADY-STATE load to hold the grasp at (raised from the operator's 37.5 on request, still under 40 with the band)
     load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at contact_speed); if it persists for hold_timeout the grasp fails
     load_lead_s: float = 0.25        # s: look-ahead of the stop decision, predicted load = load + (load rate) x load_lead_s (covers the 10 Hz sampling and the lag)
-    load_band: float = 2.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
+    load_band: float = 1.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
     hold_kp: float = 3e-6            # m per % of load error: proportional gain of the hold PI (command increment = -(kp d(e) + ki e Ts), e = target - load)
     hold_ki: float = 1.4e-5          # m per (% s): integral gain of the hold PI. From the measured 65 to 80 %/mm: loop time constant ~1 s, well above the load delay
     trim_speed: float = 0.0003       # m/s: the PI's command rate limit (load too high: open, too low: close)
@@ -168,6 +168,8 @@ class CloseParams:
     still_time: float = 0.5          # s the jaw position must stay within still_tol
     still_tol: float = 0.0003        # m
     closed_settle: float = 0.6       # s after the command reached fully closed before calling it 'thin'
+    lost_time: float = 0.3           # s the load must stay below contact_load, after the grasp settled, to call the grip LOST
+    over_time: float = 2.0           # s the load must stay at or above load_limit, after the grasp settled, to fail
 
 
 @dataclass
@@ -196,6 +198,10 @@ class LoadLimitedCloser:
       CLOSED    the command reached `closed` without the load target: after closed_settle with the jaws still the
                 outcome is 'thin' (closed completely at a lower load). By the user's decision this counts as a successful
                 grasp of a thinner element, although the load cannot tell it from an empty closure.
+    CONTINUOUS: the caller keeps calling step() after the first `done`; the PI keeps regulating for as long as it does (the
+    gripper_control node does, until the gripper is opened or stopped), and after the first settle step() also supervises:
+    the load below contact_load for lost_time is a fault "the contact was lost" (the grip is gone), at or above load_limit
+    for over_time a fault "stays at"; a 'thin' settle is exempt from the loss check.
     A load at or above load_limit in any phase switches to HOLDING (relief). No fresh load sample (older than load_max_age)
     is a fault: the gripper is never driven without a load reading. The heuristic parts (speeds, band, look-ahead) are not
     identified on the hardware.
@@ -218,6 +224,11 @@ class LoadLimitedCloser:
         self.pending = 0.0                   # command increment not yet applied (rate-limited)
         self.sample_dt = 0.1
         self.new_sample = False
+        self.settled = False                 # the grasp has settled once: from then on the PI runs for as long as the caller keeps stepping
+        self.settled_outcome = ""
+        self.thin = False                    # settled as 'thin': nothing to lose, so no loss detection
+        self.t_low = None                    # since when the load has been below contact_load (loss detection)
+        self.t_over = None                   # since when the load has been at or above load_limit
 
     def _still(self, t, measured):
         if self.ref is None or abs(measured - self.ref[0]) > self.p.still_tol:
@@ -259,10 +270,19 @@ class LoadLimitedCloser:
             return CloseStep(self.cmd, self.phase)
         if self.phase == "CLOSED":
             if t - self.t_closed >= p.closed_settle and still:
+                self.settled, self.settled_outcome, self.thin = True, "thin", True
                 return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
             return CloseStep(self.cmd, self.phase)
         # HOLDING
         e = p.load_target - load
+        if self.settled:                                                              # continuous supervision after the first settle
+            self.t_over = (t if self.t_over is None else self.t_over) if load >= p.load_limit else None
+            if self.t_over is not None and t - self.t_over >= p.over_time:
+                return CloseStep(self.cmd, self.phase, fault="the gripper load stays at %.0f %% (limit %.0f %%)" % (load, p.load_limit))
+            if not self.thin:
+                self.t_low = (t if self.t_low is None else self.t_low) if load < p.contact_load else None
+                if self.t_low is not None and t - self.t_low >= p.lost_time:
+                    return CloseStep(self.cmd, self.phase, fault="the contact was lost while holding (load %.1f %%)" % load)
         if load >= p.load_limit:
             self.cmd = min(self.opened, self.cmd + p.contact_speed * dt)              # relief: at 65-80 %/mm this already sheds ~40 %/s, and does not lose the contact
             self.pending, self.in_band_since = 0.0, None
@@ -287,6 +307,7 @@ class LoadLimitedCloser:
                 if self.in_band_since is None:
                     self.in_band_since = t
                 if t - self.in_band_since >= p.hold_time and still:
+                    self.settled, self.settled_outcome = True, "object"
                     return CloseStep(self.cmd, self.phase, done=True, outcome="object")
             else:
                 self.in_band_since = None
@@ -294,13 +315,15 @@ class LoadLimitedCloser:
                     if self.t_closed is None:
                         self.t_closed = t
                     elif t - self.t_closed >= p.closed_settle and still:
+                        self.settled, self.settled_outcome, self.thin = True, "thin", True
                         return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
                 else:
                     self.t_closed = None
-        if t - self.t_hold > p.hold_timeout:
+        if not self.settled and t - self.t_hold > p.hold_timeout:
             if load >= p.load_limit:
                 return CloseStep(self.cmd, self.phase, fault="the gripper load stays at %.0f %% (limit %.0f %%)" % (load, p.load_limit))
             if load < p.contact_load:
                 return CloseStep(self.cmd, self.phase, fault="the contact was lost while holding (load %.1f %%)" % load)
-            return CloseStep(self.cmd, self.phase, done=True, outcome="object")   # in contact, load not in the band: report it
-        return CloseStep(self.cmd, self.phase)
+            self.settled, self.settled_outcome = True, "object"                  # in contact, load not in the band: report it and keep regulating
+            return CloseStep(self.cmd, self.phase, done=True, outcome="object")
+        return CloseStep(self.cmd, self.phase, done=self.settled, outcome=self.settled_outcome)

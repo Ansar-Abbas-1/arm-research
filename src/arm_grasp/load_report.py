@@ -43,7 +43,7 @@ def segments(mask, t, min_len=0.0):
     return out
 
 
-def analyse(measured, command, load, target=37.5, speed_eps=2e-4, static_min_s=1.0):
+def analyse(measured, command, load, target=38.5, speed_eps=2e-4, static_min_s=1.0):
     """Facts from one recording. `measured`, `command`, `load` are (t, values); times in one clock."""
     tl, ll = np.asarray(load[0], float), np.abs(np.asarray(load[1], float))
     rate, gap = rate_and_gap(tl)
@@ -92,7 +92,7 @@ def analyse(measured, command, load, target=37.5, speed_eps=2e-4, static_min_s=1
     return out
 
 
-def format_report(facts, target=37.5, limit=45.0, steady_max=40.0):
+def format_report(facts, target=38.5, limit=45.0, steady_max=40.0):
     """Human-readable lines for the facts, with the parameter each one informs."""
     f = facts
     lines = ["load samples: %d at %.1f Hz, largest gap %.3f s   (close/load_max_age must be larger than the gap)" % (f["load_samples"], f["load_rate_hz"], f["load_max_gap_s"])]

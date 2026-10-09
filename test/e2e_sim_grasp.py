@@ -64,7 +64,9 @@ def main():
         start(["roslaunch", "arm_trajectory", "interactive_reach.launch", "use_hardware:=false", "use_rviz:=%s" % ("true" if VISUAL else "false"),
                "presets:=false"] + (["velocity_scale:=0.1"] if VISUAL else []), "sim")
         wait_for(lambda: "/trajectory_executor_node" in subprocess.check_output(["rosnode", "list"]).decode(), 40, "the planner stack")
+        start(["roslaunch", "arm_grasp", "gripper_control.launch"], "gripper")
         start(["roslaunch", "arm_grasp", "grasp.launch"], "grasp")
+        wait_for(lambda: "/gripper_control/open" in subprocess.check_output(["rosservice", "list"]).decode(), 40, "the gripper_control services")
         wait_for(lambda: "/grasp_sequencer/grasp" in subprocess.check_output(["rosservice", "list"]).decode(), 40, "the grasp service")
         if VISUAL:
             start(["rqt_py_trees"], "rqt")
@@ -190,6 +192,7 @@ def main():
         check("the status carries the tree's active path (%s)" % sorted(p for p in paths if "DESCEND" in p), any(p.endswith("grasp/DESCEND") for p in paths) and any(p.endswith("grasp/open gripper") for p in paths))
         check("the tree is published for rqt_py_trees on ~log/tree", "/grasp_sequencer/log/tree" in subprocess.check_output(["rostopic", "list"]).decode())
         check("it ends DONE (%s %s)" % state(), state()[0] == "DONE")
+        check("and the gripper node still holds the grasp afterwards, regulating (grip %s)" % status["v"]["gripper"].get("grip"), status["v"]["gripper"].get("grip") in ("thin", "held"))
         seen = []
         for _, st in history:
             if not seen or seen[-1] != st:
