@@ -14,6 +14,7 @@
 
 #include <QGroupBox>
 #include <QLabel>
+#include <QPointer>
 #include <QPushButton>
 #include <QString>
 #include <QTimer>
@@ -23,14 +24,18 @@
 
 namespace arm_gui {
 
-/// rviz panel: status bar, E-STOP / RESET E-STOP, preset poses (go, save current pose), torque enable/disable,
-/// motor report table and "Reset failed motors".
+/// rviz panel: status bar, E-STOP / RESET E-STOP, preset poses (go, save current pose), gripper (open, close on load, stop),
+/// torque enable/disable, motor report table and "Reset failed motors".
 ///
 /// Talks to the driver directly (/arm_interface/estop, estop_reset, set_torque, reenable_failed_motors and the
 /// latched estop_state / drive_state / motor_status topics) and to preset_manager_node for presets
 /// (/preset_manager/command, /preset_manager/state). The E-STOP button never asks for confirmation; everything
 /// that moves the arm, releases torque or reboots a motor does. Without a driver or backend the corresponding
 /// buttons stay disabled and the status bar says so. ROS callbacks are forwarded to the GUI thread.
+///
+/// Gripper: talks to the gripper_control node (arm_grasp: /gripper_control/open, close_on_load, stop, the status topic) and
+/// reads /arm_interface/motor_load for the live load. Open and close ask for confirmation; Stop never does. The close can
+/// take tens of seconds, so open/close run in a worker thread and the buttons are disabled until the call returns.
 class ArmControlPanel : public rviz::Panel {
   Q_OBJECT
 
@@ -52,6 +57,10 @@ class ArmControlPanel : public rviz::Panel {
   QPushButton* motors_reset_button() const { return motors_reset_button_; }
   QPushButton* save_button() const { return save_button_; }
   QPushButton* cancel_button() const { return cancel_button_; }
+  QPushButton* gripper_open_button() const { return gripper_open_button_; }
+  QPushButton* gripper_close_button() const { return gripper_close_button_; }
+  QPushButton* gripper_stop_button() const { return gripper_stop_button_; }
+  QLabel* gripper_label() const { return gripper_label_; }
   QPushButton* preset_button(const QString& name) const;
   QStringList preset_names() const;
   QLabel* status_label() const { return status_label_; }
@@ -68,6 +77,10 @@ class ArmControlPanel : public rviz::Panel {
   void on_motors(const std::vector<MotorRow>& rows);
   void on_presets(const QString& json);
   void on_joints(const std::map<std::string, double>& positions);
+  void on_load(double load_percent);
+  void on_gripper_status(const QString& json);
+  void on_gripper_result(const QString& text, bool error);
+  void update_gripper_label();
   void refresh();
   void update_motor_age();   ///< title of the Motors box; greys the table when the data is stale
   void rebuild_preset_buttons(const QStringList& names);
@@ -81,15 +94,24 @@ class ArmControlPanel : public rviz::Panel {
   void click_cancel();
   void click_torque();
   void click_motors_reset();
+  void click_gripper_open();
+  void click_gripper_close();
+  void click_gripper_stop();
+  void run_gripper_call(const std::string& service, const QString& what);   ///< Trigger call in a worker thread
   bool preset_command(const std::string& action, const std::string& name);
 
   ConfirmFn confirm_;
   NameFn name_prompt_;
 
   ros::NodeHandle nh_;
-  ros::Subscriber estop_sub_, drive_sub_, motors_sub_, presets_sub_, joints_sub_;
+  ros::Subscriber estop_sub_, drive_sub_, motors_sub_, presets_sub_, joints_sub_, load_sub_, gripper_status_sub_;
   ros::Publisher estop_trigger_pub_;  ///< fire-and-forget e-stop, sent alongside the service call
   ros::ServiceClient estop_client_, reset_client_, torque_client_, motors_reset_client_, preset_client_;
+  ros::ServiceClient gripper_open_client_, gripper_close_client_, gripper_stop_client_;   ///< only for exists(); calls use fresh clients
+  ros::WallTime last_load_;        ///< when the last joint_6 load arrived (zero: never)
+  double load_percent_ = 0.0;
+  double shown_joint6_ = 1e9;      ///< joint_6 as last drawn in the gripper label
+  QString gripper_phase_, gripper_message_;
   ros::WallTime last_motors_;      ///< when the last motor_status arrived (zero: never)
   int motors_count_ = 0;           ///< motor_status messages received
   QTimer service_timer_;  ///< polls which services exist (the driver or backend may start later)
@@ -117,6 +139,10 @@ class ArmControlPanel : public rviz::Panel {
   QPushButton* motors_reset_button_;
   QPushButton* save_button_;
   QPushButton* cancel_button_;
+  QPushButton* gripper_open_button_;
+  QPushButton* gripper_close_button_;
+  QPushButton* gripper_stop_button_;
+  QLabel* gripper_label_;
   QWidget* preset_area_;
   QLabel* motor_label_;
   QGroupBox* motors_box_;

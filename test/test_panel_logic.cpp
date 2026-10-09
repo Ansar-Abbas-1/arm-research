@@ -107,6 +107,39 @@ TEST(Enables, ReenableOnlyOnMotorError) {
   EXPECT_TRUE(ComputeEnables(s).reenable);
 }
 
+TEST(GripperEnables, OpenCloseNeedBackendReleasedEStopAndTorque) {
+  PanelState s;
+  s.gripper_backend_present = true; s.estop = EStop::kReleased; s.torque = Torque::kOn;
+  EXPECT_TRUE(ComputeEnables(s).gripper_move);
+  EXPECT_FALSE(ComputeEnables(s).gripper_stop);                 // nothing to stop
+  s.estop = EStop::kUnknown;
+  EXPECT_FALSE(ComputeEnables(s).gripper_move);                 // unknown e-stop fails closed
+  s.estop = EStop::kEngaged;
+  EXPECT_FALSE(ComputeEnables(s).gripper_move);
+  s.estop = EStop::kReleased; s.torque = Torque::kOff;
+  EXPECT_FALSE(ComputeEnables(s).gripper_move);
+  s.torque = Torque::kOn; s.gripper_backend_present = false;
+  EXPECT_FALSE(ComputeEnables(s).gripper_move);
+}
+
+TEST(GripperEnables, BusyDisablesMovesAndEnablesStopEvenUnderAnEStop) {
+  PanelState s;
+  s.gripper_backend_present = true; s.estop = EStop::kReleased; s.torque = Torque::kOn; s.gripper_busy = true;
+  EXPECT_FALSE(ComputeEnables(s).gripper_move);
+  EXPECT_TRUE(ComputeEnables(s).gripper_stop);
+  s.estop = EStop::kEngaged;
+  EXPECT_TRUE(ComputeEnables(s).gripper_stop);                  // like the E-STOP, never blocked
+  s.gripper_backend_present = false;
+  EXPECT_FALSE(ComputeEnables(s).gripper_stop);
+}
+
+TEST(GripperText, ShowsPositionLoadAndPhase) {
+  EXPECT_EQ(GripperText(true, true, 0.0056, true, 37.54, "CLOSING", "holding"), "joint_6 5.6 mm | load 37.5 % | CLOSING: holding");
+  EXPECT_EQ(GripperText(true, true, 0.025, true, 0.8, "", ""), "joint_6 25.0 mm | load 0.8 %");
+  EXPECT_EQ(GripperText(true, false, 0.0, false, 0.0, "IDLE", ""), "joint_6 n/a | load n/a | IDLE");
+  EXPECT_NE(GripperText(false, true, 0.0, true, 0.0, "", "").find("not running"), std::string::npos);
+}
+
 TEST(Move, LargestJointMove) {
   EXPECT_DOUBLE_EQ(LargestJointMove({0, 0, 0}, {0.1, -0.5, 0.2}), 0.5);
   EXPECT_DOUBLE_EQ(LargestJointMove({}, {}), 0.0);

@@ -8,6 +8,7 @@
 #include <ros/ros.h>
 #include <std_msgs/Bool.h>
 #include <std_msgs/Empty.h>
+#include <sensor_msgs/JointState.h>
 #include <std_msgs/String.h>
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
@@ -59,6 +60,16 @@ class PanelTest : public ::testing::Test {
     torque_srv = nh.advertiseService("/arm_interface/set_torque", &PanelTest::OnTorque, this);
     reenable_srv = nh.advertiseService("/arm_interface/reenable_failed_motors", &PanelTest::OnReenable, this);
     preset_srv = nh.advertiseService("/preset_manager/command", &PanelTest::OnPreset, this);
+    gripper_open_calls = gripper_close_calls = gripper_stop_calls = 0;
+    gripper_close_ms = 0;
+    load_pub = nh.advertise<sensor_msgs::JointState>("/arm_interface/motor_load", 1, true);
+    gripper_status_pub = nh.advertise<std_msgs::String>("/gripper_control/status", 1, true);
+    joints_pub = nh.advertise<sensor_msgs::JointState>("/joint_states_in", 1, true);
+    if (!no_gripper) {
+      gripper_open_srv = nh.advertiseService("/gripper_control/open", &PanelTest::OnGripperOpen, this);
+      gripper_close_srv = nh.advertiseService("/gripper_control/close_on_load", &PanelTest::OnGripperClose, this);
+      gripper_stop_srv = nh.advertiseService("/gripper_control/stop", &PanelTest::OnGripperStop, this);
+    }
     estop_trigger_sub = nh.subscribe<std_msgs::Empty>("/arm_interface/estop_trigger", 5, [this](const std_msgs::Empty::ConstPtr&) { ++estop_topic; });
     panel = new ArmControlPanel();
     panel->set_confirm([this](const QString&, const QString& text) { ++confirm_calls; last_confirm_text = text; return confirm_answer.load(); });
@@ -67,6 +78,8 @@ class PanelTest : public ::testing::Test {
 
   void TearDown() override {
     delete panel;
+    gripper_open_srv.shutdown(); gripper_close_srv.shutdown(); gripper_stop_srv.shutdown();
+    load_pub.shutdown(); gripper_status_pub.shutdown(); joints_pub.shutdown();
     estop_srv.shutdown(); reset_srv.shutdown(); torque_srv.shutdown(); reenable_srv.shutdown(); preset_srv.shutdown();
     estop_pub.shutdown(); drive_pub.shutdown(); motors_pub.shutdown(); presets_pub.shutdown();
   }
@@ -74,6 +87,13 @@ class PanelTest : public ::testing::Test {
   bool OnEStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++estop_calls; r.success = true; r.message = "estop engaged"; return true; }
   bool OnReset(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++reset_calls; r.success = true; r.message = "released"; return true; }
   bool OnReenable(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++reenable_calls; r.success = true; r.message = "re-enabled 1"; return true; }
+  bool OnGripperOpen(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++gripper_open_calls; r.success = true; r.message = "open (joint_6 0.0250)"; return true; }
+  bool OnGripperClose(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) {
+    ++gripper_close_calls;
+    ros::WallDuration(gripper_close_ms / 1000.0).sleep();
+    r.success = true; r.message = "object: load 37 %"; return true;
+  }
+  bool OnGripperStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++gripper_stop_calls; r.success = true; r.message = "stop requested"; return true; }
   bool OnTorque(std_srvs::SetBool::Request& q, std_srvs::SetBool::Response& r) { ++torque_calls; torque_requested = q.data; r.success = true; r.message = "ok"; return true; }
   bool OnPreset(arm_gui::PresetCommand::Request& q, arm_gui::PresetCommand::Response& r) {
     std::lock_guard<std::mutex> l(m);
@@ -99,6 +119,12 @@ class PanelTest : public ::testing::Test {
     }
     motors_pub.publish(a);
   }
+  void PublishLoad(double effort) {
+    sensor_msgs::JointState m; m.name = {"joint_5", "joint_6"}; m.effort = {3.0, effort}; load_pub.publish(m);
+  }
+  void PublishJoint6(double position) {
+    sensor_msgs::JointState m; m.name = {"joint_1", "joint_6"}; m.position = {0.0, position}; joints_pub.publish(m);
+  }
   /// Brings the panel to "driver present, e-stop released, torque on, presets loaded, motors OK".
   void Ready() {
     Publish(false, "HOLDING");
@@ -110,7 +136,10 @@ class PanelTest : public ::testing::Test {
   static ros::AsyncSpinner* spinner_;
   ros::NodeHandle nh;
   ros::Publisher estop_pub, drive_pub, motors_pub, presets_pub;
-  ros::ServiceServer estop_srv, reset_srv, torque_srv, reenable_srv, preset_srv;
+  ros::ServiceServer estop_srv, reset_srv, torque_srv, reenable_srv, preset_srv, gripper_open_srv, gripper_close_srv, gripper_stop_srv;
+  ros::Publisher load_pub, gripper_status_pub, joints_pub;
+  std::atomic<int> gripper_open_calls, gripper_close_calls, gripper_stop_calls, gripper_close_ms;
+  bool no_gripper = false;
   ros::Subscriber estop_trigger_sub;
   ArmControlPanel* panel = nullptr;
   std::atomic<int> estop_calls, reset_calls, reenable_calls, torque_calls, estop_topic, confirm_calls, preset_calls{0};
@@ -123,6 +152,86 @@ class PanelTest : public ::testing::Test {
 ros::AsyncSpinner* PanelTest::spinner_ = nullptr;
 
 }  // namespace
+
+TEST_F(PanelTest, GripperButtonsAreDisabledUntilReadyAndEnabledWhenTheServicesExist) {
+  Publish(false, "HOLDING");
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_open_button()->isEnabled(); }, 4000));
+  EXPECT_TRUE(panel->gripper_close_button()->isEnabled());
+  EXPECT_FALSE(panel->gripper_stop_button()->isEnabled());      // nothing to stop
+  Publish(true, "ESTOPPED");
+  ASSERT_TRUE(WaitUntil([&] { return !panel->gripper_open_button()->isEnabled(); }));
+  EXPECT_FALSE(panel->gripper_close_button()->isEnabled());
+  Publish(false, "TORQUE_OFF");
+  ASSERT_TRUE(WaitUntil([&] { return panel->status_label()->text().contains("TORQUE_OFF"); }));
+  EXPECT_FALSE(panel->gripper_open_button()->isEnabled());
+}
+
+TEST_F(PanelTest, GripperOpenAsksForConfirmationAndCallsTheService) {
+  Ready();
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_open_button()->isEnabled(); }, 4000));
+  confirm_answer = false;
+  panel->gripper_open_button()->click();
+  EXPECT_EQ(confirm_calls, 1);
+  EXPECT_TRUE(last_confirm_text.contains("fall"));
+  QTest::qWait(200);
+  EXPECT_EQ(gripper_open_calls, 0);
+  confirm_answer = true;
+  panel->gripper_open_button()->click();
+  ASSERT_TRUE(WaitUntil([&] { return gripper_open_calls == 1; }));
+  ASSERT_TRUE(WaitUntil([&] { return panel->message_label()->text().contains("Gripper open: open"); }));
+  EXPECT_TRUE(WaitUntil([&] { return panel->gripper_open_button()->isEnabled(); }));
+}
+
+TEST_F(PanelTest, GripperCloseRunsInTheBackgroundAndStopNeedsNoConfirmation) {
+  Ready();
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_close_button()->isEnabled(); }, 4000));
+  gripper_close_ms = 1500;
+  confirm_answer = true;
+  panel->gripper_close_button()->click();
+  EXPECT_TRUE(last_confirm_text.contains("40 %"));
+  EXPECT_FALSE(panel->gripper_close_button()->isEnabled());     // busy at once, before the service has even answered
+  EXPECT_FALSE(panel->gripper_open_button()->isEnabled());
+  ASSERT_TRUE(WaitUntil([&] { return gripper_close_calls == 1; }));
+  ASSERT_TRUE(panel->gripper_stop_button()->isEnabled());
+  const int confirms = confirm_calls;
+  panel->gripper_stop_button()->click();                        // the GUI thread is not blocked by the 1.5 s call
+  EXPECT_EQ(gripper_stop_calls, 1);
+  EXPECT_EQ(confirm_calls, confirms);                           // Stop never asks
+  ASSERT_TRUE(WaitUntil([&] { return panel->message_label()->text().contains("Gripper close: object: load 37 %") ; }, 6000));
+  EXPECT_TRUE(WaitUntil([&] { return panel->gripper_close_button()->isEnabled(); }));
+  EXPECT_FALSE(panel->gripper_stop_button()->isEnabled());
+}
+
+TEST_F(PanelTest, GripperCloseCancelledSendsNothing) {
+  Ready();
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_close_button()->isEnabled(); }, 4000));
+  confirm_answer = false;
+  panel->gripper_close_button()->click();
+  QTest::qWait(300);
+  EXPECT_EQ(gripper_close_calls, 0);
+  EXPECT_TRUE(panel->gripper_close_button()->isEnabled());
+}
+
+TEST_F(PanelTest, GripperLabelShowsPositionLoadAndPhase) {
+  Ready();
+  PublishJoint6(0.0056);
+  PublishLoad(-37.5);                                            // the sign follows the motor
+  std_msgs::String s; s.data = R"({"phase":"CLOSING","message":"holding","load_percent":37.5})"; gripper_status_pub.publish(s);
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("CLOSING: holding"); }));
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("load 37.5 %"); }));
+  EXPECT_TRUE(panel->gripper_label()->text().contains("joint_6 5.6 mm"));
+  QTest::qWait(1600);                                            // no new load sample: shown as n/a, never a stale number
+  EXPECT_TRUE(panel->gripper_label()->text().contains("load n/a"));
+}
+
+TEST_F(PanelTest, WithoutGripperControlTheButtonsStayDisabledAndTheLabelSaysWhy) {
+  gripper_open_srv.shutdown(); gripper_close_srv.shutdown(); gripper_stop_srv.shutdown();
+  Ready();
+  QTest::qWait(1500);
+  EXPECT_FALSE(panel->gripper_open_button()->isEnabled());
+  EXPECT_FALSE(panel->gripper_close_button()->isEnabled());
+  EXPECT_TRUE(panel->gripper_label()->text().contains("not running"));
+}
 
 TEST_F(PanelTest, PresetButtonsFollowTheBackendState) {
   std_msgs::String s; s.data = kPresetsJson; presets_pub.publish(s);

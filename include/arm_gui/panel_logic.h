@@ -103,10 +103,13 @@ struct PanelState {
   Health motors = Health::kUnknown;
   bool backend_present = false;  ///< the preset service exists
   bool move_active = false;
+  bool gripper_backend_present = false;  ///< the gripper_control services exist
+  bool gripper_busy = false;             ///< an open/close call is in progress
 };
 
 struct ButtonEnables {
   bool go, save, cancel, reset, torque, reenable;
+  bool gripper_move, gripper_stop;
 };
 
 /// Which buttons are usable. E-STOP itself is always enabled and is not listed.
@@ -119,7 +122,33 @@ inline ButtonEnables ComputeEnables(const PanelState& s) {
   e.reset = EStopBlocks(s.estop);
   e.torque = s.estop == EStop::kReleased && s.torque != Torque::kUnknown && !s.move_active;
   e.reenable = s.motors == Health::kError;
+  // Gripper: open/close need the e-stop released and torque on (the driver would refuse otherwise); stop is always allowed while a
+  // call is running, even under an e-stop, like the E-STOP button itself.
+  e.gripper_move = s.gripper_backend_present && !s.gripper_busy && s.estop == EStop::kReleased && s.torque == Torque::kOn;
+  e.gripper_stop = s.gripper_backend_present && s.gripper_busy;
   return e;
+}
+
+/// One line for the gripper box: position (mm), load (% of max torque), and the gripper_control phase/message.
+inline std::string GripperText(bool backend_present, bool has_position, double position_m, bool has_load, double load_percent,
+                               const std::string& phase, const std::string& message) {
+  if (!backend_present) return "gripper_control is not running (roslaunch arm_grasp gripper_control.launch)";
+  char buf[64];
+  std::string text;
+  if (has_position) {
+    std::snprintf(buf, sizeof(buf), "joint_6 %.1f mm", 1000.0 * position_m);
+    text = buf;
+  } else {
+    text = "joint_6 n/a";
+  }
+  if (has_load) {
+    std::snprintf(buf, sizeof(buf), " | load %.1f %%", load_percent);
+    text += buf;
+  } else {
+    text += " | load n/a";
+  }
+  if (!phase.empty()) text += " | " + phase + (message.empty() ? "" : ": " + message);
+  return text;
 }
 
 /// True when no motor_status has arrived for longer than max_age_s (or never): the table must not be trusted.

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <thread>
 
 #include <pluginlib/class_list_macros.h>
 #include <std_msgs/Empty.h>
@@ -18,6 +19,7 @@
 #include <QJsonObject>
 #include <QMessageBox>
 #include <QMetaObject>
+#include <QPointer>
 #include <QVBoxLayout>
 
 namespace arm_gui {
@@ -44,7 +46,8 @@ bool CallService(ros::ServiceClient* client, Srv* srv, QString* error) {
   return true;
 }
 
-constexpr double kMotorDataMaxAgeS = 3.0;   ///< motor_status comes at 2 Hz
+constexpr double kMotorDataMaxAgeS = 3.0;   ///< motor_status comes at 10 Hz (status_rate_hz)
+constexpr double kGripperLoadMaxAgeS = 1.0;  ///< the gripper load is shown as n/a when older
 
 }  // namespace
 
@@ -90,6 +93,25 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   presets_layout->addWidget(move_label_);
   layout->addWidget(presets_box);
 
+  auto* gripper_box = new QGroupBox("Gripper");
+  auto* gripper_layout = new QVBoxLayout(gripper_box);
+  gripper_label_ = new QLabel("gripper_control is not running");
+  gripper_label_->setWordWrap(true);
+  gripper_layout->addWidget(gripper_label_);
+  auto* gripper_row = new QHBoxLayout();
+  gripper_open_button_ = new QPushButton("Open...");
+  gripper_open_button_->setToolTip("Open the gripper (releases whatever it holds)");
+  gripper_close_button_ = new QPushButton("Close on load...");
+  gripper_close_button_->setToolTip(
+      "Close slowly until the motor load reaches its target, then hold (load limits: config/grasp.yaml of arm_grasp)");
+  gripper_stop_button_ = new QPushButton("Stop gripper");
+  gripper_stop_button_->setToolTip("Stop the open/close in progress; the gripper keeps the last command (no confirmation)");
+  gripper_row->addWidget(gripper_open_button_);
+  gripper_row->addWidget(gripper_close_button_);
+  gripper_row->addWidget(gripper_stop_button_);
+  gripper_layout->addLayout(gripper_row);
+  layout->addWidget(gripper_box);
+
   auto* torque_box = new QGroupBox("Torque");
   auto* torque_layout = new QHBoxLayout(torque_box);
   torque_button_ = new QPushButton("Torque: unknown");
@@ -120,6 +142,9 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   connect(save_button_, &QPushButton::clicked, this, [this] { click_save(); });
   connect(cancel_button_, &QPushButton::clicked, this, [this] { click_cancel(); });
   connect(torque_button_, &QPushButton::clicked, this, [this] { click_torque(); });
+  connect(gripper_open_button_, &QPushButton::clicked, this, [this] { click_gripper_open(); });
+  connect(gripper_close_button_, &QPushButton::clicked, this, [this] { click_gripper_close(); });
+  connect(gripper_stop_button_, &QPushButton::clicked, this, [this] { click_gripper_stop(); });
   connect(motors_reset_button_, &QPushButton::clicked, this, [this] { click_motors_reset(); });
 
   // ROS callbacks run on whatever thread spins the queue: forward everything to the GUI thread.
@@ -150,6 +175,20 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
     for (size_t i = 0; i < m->name.size() && i < m->position.size(); ++i) p[m->name[i]] = m->position[i];
     QMetaObject::invokeMethod(this, [this, p] { on_joints(p); }, Qt::QueuedConnection);
   });
+  load_sub_ = nh_.subscribe<sensor_msgs::JointState>("/arm_interface/motor_load", 1, [this](const sensor_msgs::JointState::ConstPtr& m) {
+    for (size_t i = 0; i < m->name.size() && i < m->effort.size(); ++i) {
+      if (m->name[i] != "joint_6") continue;
+      const double load = std::abs(m->effort[i]);   // the sign follows the motor, not the joint
+      QMetaObject::invokeMethod(this, [this, load] { on_load(load); }, Qt::QueuedConnection);
+    }
+  });
+  gripper_status_sub_ = nh_.subscribe<std_msgs::String>("/gripper_control/status", 1, [this](const std_msgs::String::ConstPtr& m) {
+    const QString json = QString::fromStdString(m->data);
+    QMetaObject::invokeMethod(this, [this, json] { on_gripper_status(json); }, Qt::QueuedConnection);
+  });
+  gripper_open_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/open");
+  gripper_close_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/close_on_load");
+  gripper_stop_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/stop");
   estop_trigger_pub_ = nh_.advertise<std_msgs::Empty>("/arm_interface/estop_trigger", 1);
   estop_client_ = nh_.serviceClient<std_srvs::Trigger>("/arm_interface/estop");
   reset_client_ = nh_.serviceClient<std_srvs::Trigger>("/arm_interface/estop_reset");
@@ -160,6 +199,8 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   connect(&service_timer_, &QTimer::timeout, this, [this] {
     driver_present_ = estop_client_.exists();
     state_.backend_present = preset_client_.exists();
+    state_.gripper_backend_present = gripper_open_client_.exists() && gripper_close_client_.exists() && gripper_stop_client_.exists();
+    update_gripper_label();
     update_motor_age();
     refresh();
   });
@@ -187,7 +228,39 @@ void ArmControlPanel::on_drive(const std::string& drive) {
   refresh();
 }
 
-void ArmControlPanel::on_joints(const std::map<std::string, double>& positions) { joints_ = positions; }
+void ArmControlPanel::on_joints(const std::map<std::string, double>& positions) {
+  joints_ = positions;
+  const auto j6 = joints_.find("joint_6");
+  if (j6 != joints_.end() && std::abs(j6->second - shown_joint6_) >= 5e-5) update_gripper_label();   // 0.05 mm: no repaint at the full joint rate
+}
+
+void ArmControlPanel::on_load(double load_percent) {
+  load_percent_ = load_percent;
+  last_load_ = ros::WallTime::now();
+  update_gripper_label();
+}
+
+void ArmControlPanel::on_gripper_status(const QString& json) {
+  const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+  gripper_phase_ = o["phase"].toString();
+  gripper_message_ = o["message"].toString();
+  update_gripper_label();
+}
+
+void ArmControlPanel::update_gripper_label() {
+  const auto pos = joints_.find("joint_6");
+  if (pos != joints_.end()) shown_joint6_ = pos->second;
+  const bool has_load = !last_load_.isZero() && (ros::WallTime::now() - last_load_).toSec() <= kGripperLoadMaxAgeS;
+  gripper_label_->setText(QString::fromStdString(GripperText(state_.gripper_backend_present, pos != joints_.end(),
+                                                             pos != joints_.end() ? pos->second : 0.0, has_load, load_percent_,
+                                                             gripper_phase_.toStdString(), gripper_message_.toStdString())));
+}
+
+void ArmControlPanel::on_gripper_result(const QString& text, bool error) {
+  state_.gripper_busy = false;
+  say(text, error);
+  refresh();
+}
 
 void ArmControlPanel::update_motor_age() {
   const double age = last_motors_.isZero() ? -1.0 : (ros::WallTime::now() - last_motors_).toSec();
@@ -282,6 +355,9 @@ void ArmControlPanel::refresh() {
     const bool moving = state_.move_active && kv.first == move_name_;
     kv.second->setStyleSheet(moving ? "QPushButton { background-color: #f9c846; font-weight: bold; }" : "");
   }
+  gripper_open_button_->setEnabled(en.gripper_move);
+  gripper_close_button_->setEnabled(en.gripper_move);
+  gripper_stop_button_->setEnabled(en.gripper_stop);
   save_button_->setEnabled(en.save);
   cancel_button_->setEnabled(en.cancel);
   reset_button_->setEnabled(en.reset && driver_present_);
@@ -393,6 +469,52 @@ void ArmControlPanel::click_torque() {
   QString error;
   if (!CallService(&torque_client_, &srv, &error)) return say(error, true);
   say(QString("Torque: %1").arg(QString::fromStdString(srv.response.message)), !srv.response.success);
+}
+
+void ArmControlPanel::run_gripper_call(const std::string& service, const QString& what) {
+  state_.gripper_busy = true;
+  refresh();
+  QPointer<ArmControlPanel> self(this);
+  // A fresh client in a worker thread: the close can take tens of seconds and must not freeze rviz.
+  std::thread([self, service, what] {
+    ros::NodeHandle nh;
+    ros::ServiceClient client = nh.serviceClient<std_srvs::Trigger>(service);
+    std_srvs::Trigger srv;
+    QString text;
+    bool error = true;
+    if (!client.exists()) {
+      text = QString("service %1 is not available").arg(QString::fromStdString(service));
+    } else if (!client.call(srv)) {
+      text = QString("call to %1 failed").arg(QString::fromStdString(service));
+    } else {
+      text = QString("%1: %2").arg(what, QString::fromStdString(srv.response.message));
+      error = !srv.response.success;
+    }
+    if (self) QMetaObject::invokeMethod(self.data(), [self, text, error] { if (self) self->on_gripper_result(text, error); }, Qt::QueuedConnection);
+  }).detach();
+}
+
+void ArmControlPanel::click_gripper_open() {
+  if (!confirm_("Open gripper",
+                "Open the gripper?\n\nAnything it holds is released and may fall. Keep the workspace clear and the E-STOP within reach."))
+    return;
+  run_gripper_call("/gripper_control/open", "Gripper open");
+}
+
+void ArmControlPanel::click_gripper_close() {
+  if (!confirm_("Close gripper on load",
+                "Close the gripper until its motor load reaches the target, then hold?\n\nIt closes slowly and the close can take up to "
+                "half a minute. Keep fingers out of the jaws and the E-STOP within reach. The motor trips its overload protection "
+                "above about 40 % held load: if the load display climbs past it, press Stop gripper or the E-STOP."))
+    return;
+  run_gripper_call("/gripper_control/close_on_load", "Gripper close");
+}
+
+void ArmControlPanel::click_gripper_stop() {
+  std_srvs::Trigger srv;
+  QString error;
+  if (!CallService(&gripper_stop_client_, &srv, &error)) return say(error, true);
+  say(QString("Gripper stop: %1").arg(QString::fromStdString(srv.response.message)), !srv.response.success);
 }
 
 void ArmControlPanel::click_motors_reset() {
