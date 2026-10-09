@@ -37,14 +37,16 @@ def series(bag):
     return [(np.array(s[0]) - t0, np.array(s[1])) for s in (meas, cmd, load)]
 
 
-def plot(png, meas, cmd, load, target):
+def plot(png, meas, cmd, load, target, limit=45.0):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(3, 1, figsize=(10, 9))
     ax[0].plot(*meas, label="measured"); ax[0].step(*cmd, where="post", label="command", alpha=0.7)
     ax[0].set_ylabel("joint_6 [m]"); ax[0].legend(); ax[0].grid(True)
-    ax[1].plot(*load, ".-"); ax[1].axhline(target, color="r", ls="--", label="target %.0f %%" % target)
+    ax[1].plot(*load, ".-"); ax[1].axhline(target, color="g", ls="--", label="target %.0f %%" % target)
+    ax[1].axhline(limit, color="r", ls="--", label="limit %.0f %%" % limit)
+    ax[1].axhline(40.0, color="k", ls=":", label="steady state must stay under 40 %")
     ax[1].set_ylabel("|load| [%]"); ax[1].set_xlabel("t [s]"); ax[1].legend(); ax[1].grid(True)
     tl = load[0]
     err = 1000.0 * (np.interp(tl, *meas) - np.interp(tl, *cmd))
@@ -59,7 +61,8 @@ def main():
     ap.add_argument("bag", help="a .bag file or 'latest'")
     ap.add_argument("--dir", default=DEFAULT_DIR)
     ap.add_argument("--png")
-    ap.add_argument("--target", type=float, default=40.0)
+    ap.add_argument("--target", type=float, default=37.5, help="load_target of config/grasp.yaml")
+    ap.add_argument("--limit", type=float, default=45.0, help="load_limit (peak) of config/grasp.yaml")
     a = ap.parse_args()
     path = a.bag
     if path == "latest":
@@ -74,10 +77,10 @@ def main():
     if len(load[0]) < 3 or len(meas[0]) < 3:
         print("not enough joint_6 / motor_load data in the bag (is the driver publishing /arm_interface/motor_load?)")
         return 1
-    for line in lr.format_report(lr.analyse(meas, cmd if len(cmd[0]) else meas, load, a.target), a.target):
+    for line in lr.format_report(lr.analyse(meas, cmd if len(cmd[0]) else meas, load, a.target), a.target, a.limit):
         print(line)
     if a.png:
-        plot(a.png, meas, cmd if len(cmd[0]) else meas, load, a.target)
+        plot(a.png, meas, cmd if len(cmd[0]) else meas, load, a.target, a.limit)
         print("plot:", a.png)
     return 0
 

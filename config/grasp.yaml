@@ -34,20 +34,22 @@ base_frame: base_link
 # Behavior tree
 tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (view it with rqt_py_trees)
 
-# Load-limited closing (arm_grasp/grasp_plan.py LoadLimitedCloser). load_target is the user's 40 %; the rest are FLAGGED DEFAULTS.
-# The load is /arm_interface/motor_load joint_6, |% of max torque|, published by the driver at status_rate_hz (10 Hz).
+# Load-limited closing (arm_grasp/grasp_plan.py LoadLimitedCloser). The motor load is /arm_interface/motor_load joint_6, |% of max torque|,
+# published by the driver at status_rate_hz (10 Hz). HARD FACT (2026-10-09): the gripper motor tripped its overload protection (error 0x20,
+# software e-stop) holding 43 to 48 %. The operator's numbers: PEAK 45 % (load_limit), STEADY STATE 37.5 % (load_target); the steady state
+# must stay under 40 %, hence the +-2 % band. Everything else is a FLAGGED, UNVALIDATED default: tune it on the hardware, stepwise,
+# watching the peak and held load in the recorded bags (gripper_load_report.py).
 close:
-  load_target: 40.0       # % of max torque: close until the load reaches this, then hold
-  close_speed: 0.002      # m/s: APPROACH speed of the close (the fast part; set it here). UNVALIDATED estimate: from one soft-object run at
-                          # 1 mm/s and one hard-stop run, plus a simple model of the 10 Hz load delay. Find the real limit on the hardware by
-                          # raising it step by step while recording the peak load (gripper_monitor.launch, gripper_load_report.py). FLAGGED
-  contact_speed: 0.001    # m/s: speed after the load has risen to contact_load (the final approach to the target). FLAGGED
-  contact_load: 4.0       # % of max torque: first sign of contact (free closing measured 0.8 to 1.7 %). FLAGGED
-  load_band: 5.0          # % deadband of the hold regulation. FLAGGED
-  trim_speed: 0.0003      # m/s of the hold regulation (load too high: open, too low: close); ~24 %/s at 80 %/mm. FLAGGED
-  confirm_samples: 1      # consecutive NEW samples >= target before the close stops (measured load noise 0.05 %). FLAGGED
+  load_limit: 45.0        # %: PEAK CEILING (operator). At or above it the command opens at once (at close_speed); persisting for hold_timeout aborts
+  load_target: 37.5       # %: STEADY-STATE load to hold the grasp at (operator); the close stops when the PREDICTED load reaches it
+  load_lead_s: 0.25       # s: look-ahead of the stop decision: predicted = load + (rate of rise) x this (10 Hz samples and lag). FLAGGED
+  load_band: 2.0          # %: deadband of the hold regulation around load_target: the hold stays at or under 39.5 %. FLAGGED
+  close_speed: 0.002      # m/s: APPROACH speed of the close (until the load first rises); set it here or with the close_speed launch arg. FLAGGED
+  contact_speed: 0.0005   # m/s: speed after the load has risen to contact_load (the final approach). FLAGGED
+  contact_load: 4.0       # %: first sign of contact (free closing measured 0.8 to 1.7 %). FLAGGED
+  trim_speed: 0.0003      # m/s of the hold regulation (load too high: open, too low: close). FLAGGED
+  confirm_samples: 1      # consecutive NEW samples with predicted load >= target before the close stops. FLAGGED
   load_max_age: 0.5       # s: older load = no measurement = abort. FLAGGED
-  load_abort: 75.0        # %: at or above it the hold opens at close_speed; if it persists for hold_timeout the grasp aborts. FLAGGED
   hold_time: 1.0          # s in the band and still before it counts as done. FLAGGED
   hold_timeout: 6.0       # s. FLAGGED
   still_time: 0.5         # s of the jaws within still_tol. FLAGGED

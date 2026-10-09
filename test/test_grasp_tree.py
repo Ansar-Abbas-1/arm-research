@@ -181,7 +181,8 @@ class TestGraspTree(unittest.TestCase):
         ctx.contact = 0.012
         self.assertEqual(run(ctx, tree), Status.SUCCESS)
         self.assertEqual(ctx.outcome, "object")
-        self.assertLess(abs(ctx.final_load - 40.0), 5.0 + 1e-9)
+        p = gp.CloseParams()
+        self.assertLessEqual(abs(ctx.final_load - p.load_target), p.load_band + 1e-9)
         self.assertGreater(ctx.cmd, spec.gripper_closed)                           # stopped before fully closed
         self.assertEqual(ctx.states[-1], "LIFTING")
 
