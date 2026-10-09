@@ -146,7 +146,110 @@ def gripper_ramp(current, target, max_speed, dt):
     return current + step * np.sign(target - current)
 
 
-def grasp_outcome(measured_closed, spec, object_threshold=0.002):
-    """What the closed gripper position says: 'object' if it stopped short of fully closed by more than the
-    threshold (something is between the jaws), 'empty' if it closed all the way."""
-    return "object" if measured_closed > spec.gripper_closed + object_threshold else "empty"
+@dataclass
+class CloseParams:
+    """Load-limited closing. Every value is a FLAGGED DEFAULT except load_target (the user's 40 %), see config/grasp.yaml."""
+    close_speed: float = 0.004       # m/s: slow constant-speed close (the open ramp is gripper_speed)
+    load_target: float = 40.0        # % of max torque to close to and hold
+    load_band: float = 5.0           # % deadband of the hold regulation
+    trim_speed: float = 0.001        # m/s: speed of the hold regulation (load too high: open, too low: close)
+    confirm_samples: int = 2         # consecutive NEW load samples >= load_target before the close stops
+    load_max_age: float = 0.5        # s: an older load sample is no measurement (the driver publishes at 10 Hz)
+    load_abort: float = 75.0         # % at or above which the hold regulation opens at close_speed and, if it persists, fails
+    hold_time: float = 1.0           # s in the band and still before the grasp counts as done
+    hold_timeout: float = 6.0        # s of holding without getting in the band
+    still_time: float = 0.5          # s the jaw position must stay within still_tol
+    still_tol: float = 0.0003        # m
+    closed_settle: float = 0.6       # s after the command reached fully closed before calling it 'thin'
+
+
+@dataclass
+class CloseStep:
+    cmd: float                       # joint_6 command to send
+    phase: str                       # CLOSING | HOLDING | CLOSED
+    done: bool = False
+    outcome: str = ""                # 'object' (load target reached and held) | 'thin' (closed completely below the target load)
+    fault: str = ""                  # non-empty: stop, the sequence must not continue
+
+
+class LoadLimitedCloser:
+    """Closes the gripper slowly at constant speed until the motor load reaches `load_target`, then holds there.
+
+    Command law (cmd decreases toward `closed`; load is |motor load| in %):
+      CLOSING   cmd -= close_speed dt              until `confirm_samples` consecutive NEW load samples >= load_target
+      HOLDING   load > target + band: cmd += v dt  (open; v = trim_speed, close_speed once load >= load_abort)
+                load < target - band: cmd -= trim_speed dt (never past `closed`)
+                done once the load stayed within the band for hold_time and the jaws are still
+      CLOSED    the command reached `closed` without the load target: after closed_settle with the jaws still the
+                outcome is 'thin' (closed completely at a lower load). By the user's decision this counts as a successful
+                grasp of a thinner element, although the load cannot tell it from an empty closure.
+    No fresh load sample (older than load_max_age) is a fault: the gripper is never driven without a load reading.
+    The heuristic parts (trim_speed, band, confirm_samples, the 10 Hz load delay vs close_speed) are not identified on hardware.
+    """
+
+    def __init__(self, start, closed, opened, params):
+        self.p, self.closed, self.opened = params, closed, opened
+        self.cmd = start
+        self.phase = "CLOSING"
+        self.t_last = None
+        self.hits = 0
+        self.last_stamp = None
+        self.t_hold = None
+        self.in_band_since = None
+        self.t_closed = None
+        self.ref = None                      # (position, time) the jaws have been within still_tol of
+
+    def _still(self, t, measured):
+        if self.ref is None or abs(measured - self.ref[0]) > self.p.still_tol:
+            self.ref = (measured, t)
+        return t - self.ref[1] >= self.p.still_time
+
+    def step(self, t, measured, load, load_stamp):
+        """One control step. `measured` jaw position or None, `load` |motor load| in % or None, `load_stamp` its reception time."""
+        p = self.p
+        if load is None or load_stamp is None or t - load_stamp > p.load_max_age:
+            age = "none" if load_stamp is None else "%.2f s old" % (t - load_stamp)
+            return CloseStep(self.cmd, self.phase, fault="no fresh gripper load (%s)" % age)
+        dt = 0.0 if self.t_last is None else min(max(t - self.t_last, 0.0), 0.2)
+        self.t_last = t
+        pos = self.cmd if measured is None else measured
+        still = self._still(t, pos)
+        if load_stamp != self.last_stamp:
+            self.last_stamp = load_stamp
+            self.hits = self.hits + 1 if load >= p.load_target else 0
+        if self.phase in ("CLOSING", "CLOSED") and self.hits >= p.confirm_samples:
+            self.phase, self.t_hold, self.in_band_since = "HOLDING", t, None     # freeze the command where it is
+            return CloseStep(self.cmd, self.phase)
+        if self.phase == "CLOSING":
+            self.cmd = max(self.closed, self.cmd - p.close_speed * dt)
+            if self.cmd <= self.closed:
+                self.phase, self.t_closed = "CLOSED", t
+            return CloseStep(self.cmd, self.phase)
+        if self.phase == "CLOSED":
+            if t - self.t_closed >= p.closed_settle and still:
+                return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
+            return CloseStep(self.cmd, self.phase)
+        # HOLDING
+        err = load - p.load_target
+        if err > p.load_band:
+            self.cmd = min(self.opened, self.cmd + (p.close_speed if load >= p.load_abort else p.trim_speed) * dt)
+            self.in_band_since = None
+        elif err < -p.load_band:
+            if self.cmd > self.closed:
+                self.cmd = max(self.closed, self.cmd - p.trim_speed * dt)
+                self.t_closed = None
+            elif self.t_closed is None:
+                self.t_closed = t
+            elif t - self.t_closed >= p.closed_settle and still:               # regulated all the way to closed, load still low
+                return CloseStep(self.cmd, self.phase, done=True, outcome="thin")
+            self.in_band_since = None
+        else:
+            if self.in_band_since is None:
+                self.in_band_since = t
+            if t - self.in_band_since >= p.hold_time and still:
+                return CloseStep(self.cmd, self.phase, done=True, outcome="object")
+        if t - self.t_hold > p.hold_timeout:
+            if load >= p.load_abort:
+                return CloseStep(self.cmd, self.phase, fault="the gripper load stays at %.0f %% (limit %.0f %%)" % (load, p.load_abort))
+            return CloseStep(self.cmd, self.phase, done=True, outcome="object")   # in contact, load not in the band: report it
+        return CloseStep(self.cmd, self.phase)

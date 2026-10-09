@@ -1,0 +1,14 @@
+<launch>
+  <!-- The load-limited gripper close BY ITSELF: no planner, executor, behavior tree or arm motion. Needs only the driver
+       (arm_interface robot_interface) or the simulator (arm_sim_validator_node) publishing /joint_states_in and
+       /arm_interface/motor_load. Nothing moves until you call the service with execute: true. First WATCH ONLY:
+         rosservice call /gripper_close/close "{execute: false, open_first: false}"
+       then, with the e-stop in reach:
+         rosservice call /gripper_close/close "{execute: true, open_first: false}"
+         rostopic echo /gripper_close/status        (rosservice call /gripper_close/stop ends it; the driver holds)
+       Parameters (load target, speeds, band) come from config/grasp.yaml; every value there except load_target is flagged. -->
+  <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <node name="gripper_close" pkg="arm_grasp" type="gripper_close_node.py" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+  </node>
+</launch>

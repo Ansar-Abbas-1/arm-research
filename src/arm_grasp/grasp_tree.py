@@ -7,8 +7,7 @@
        ├─ PRE                          MOVING_PRE      (joint-space move above the target)
        ├─ recheck target               RECHECK         (fails if the target moved since planning)
        ├─ DESCEND                      DESCENDING      (straight down, slowed)
-       ├─ close gripper                CLOSING
-       ├─ grasp outcome                                (fails if require_object and the jaws closed on nothing)
+       ├─ close on load                CLOSING         (slow close until the motor load reaches the target, then hold)
        └─ LIFT                         LIFTING         (straight up, slowed)
 
 The leaves publish their state name through `ctx.set_state`, which is what `~status` reports. A leaf that fails calls
@@ -25,15 +24,15 @@ class SequenceParams(object):
     """Timing and threshold parameters of the leaves (the geometry and heights live in `grasp_plan.GraspSpec`)."""
 
     def __init__(self, gripper_speed=0.02, gripper_settle=0.6, gripper_tolerance=0.002, gripper_timeout=5.0,
-                 recheck_mm=5.0, recheck_deg=3.0, require_object=False, object_threshold=0.002, max_dt=0.2):
+                 recheck_mm=5.0, recheck_deg=3.0, require_object=False, close=None, max_dt=0.2):
         self.gripper_speed = gripper_speed          # m/s ramp of the joint_6 command
         self.gripper_settle = gripper_settle        # s to wait once the measurement is at the target
         self.gripper_tolerance = gripper_tolerance  # m
         self.gripper_timeout = gripper_timeout      # s after the ramp ended before giving up (jaws blocked)
         self.recheck_mm = recheck_mm
         self.recheck_deg = recheck_deg
-        self.require_object = require_object
-        self.object_threshold = object_threshold
+        self.require_object = require_object        # 'thin' (closed completely below the load target) fails instead of counting as grasped
+        self.close = close or gp.CloseParams()      # load-limited closing (grasp_plan.CloseParams)
         self.max_dt = max_dt                        # s: cap of the ramp step after a long gap between ticks
 
 
@@ -66,6 +65,10 @@ class GraspContext(object):
     def command_gripper(self, position):
         raise NotImplementedError
 
+    def gripper_load(self):
+        """(|motor load| of the gripper in % of max torque, the time it was received on the now() clock), or (None, None)."""
+        raise NotImplementedError
+
     def start_trajectory(self, name, slow):
         """Send the planned trajectory `name` stretched by `slow`. Returns None or an error message."""
         raise NotImplementedError
@@ -82,8 +85,8 @@ class GraspContext(object):
         observation than the planning one. Raises if the TF is unavailable."""
         raise NotImplementedError
 
-    def record_outcome(self, outcome):
-        """'object' or 'empty'."""
+    def record_outcome(self, outcome, load):
+        """'object' (load target reached and held) or 'thin' (closed completely below it), with the final load [%]."""
         raise NotImplementedError
 
 
@@ -211,19 +214,39 @@ class RecheckTarget(_Leaf):
         return Status.SUCCESS
 
 
-class GraspOutcome(_Leaf):
-    """Reads the jaw position after closing: 'empty' (closed all the way) or 'object'."""
+class CloseOnLoad(_Leaf):
+    """Slow load-limited close (grasp_plan.LoadLimitedCloser), separate from the open ramp: closes at close_speed until
+    the gripper's motor load reaches load_target, holds there, and succeeds when the load is stable in the band.
+    Closing completely below the target is 'thin' (a thinner element than expected: counts as grasped unless
+    require_object). A missing load measurement is a failure; the command then stays where it was (the driver holds)."""
 
     def __init__(self, ctx, spec, params):
-        super(GraspOutcome, self).__init__("grasp outcome", ctx)
+        super(CloseOnLoad, self).__init__("close on load", ctx)
         self.spec, self.params = spec, params
 
-    def update(self):
+    def initialise(self):
+        self.ctx.set_state("CLOSING", "slowly to a load of %.0f %%" % self.params.close.load_target)
         measured = self.ctx.gripper_position()
-        outcome = gp.grasp_outcome(measured if measured is not None else self.spec.gripper_closed, self.spec, self.params.object_threshold)
-        self.ctx.record_outcome(outcome)
-        if outcome == "empty" and self.params.require_object:
-            self.ctx.fail("nothing between the jaws (closed all the way) and require_object is set")
+        self.closer = gp.LoadLimitedCloser(measured if measured is not None else self.spec.gripper_open,
+                                           self.spec.gripper_closed, self.spec.gripper_open, self.params.close)
+        self.phase = self.closer.phase
+
+    def update(self):
+        load, stamp = self.ctx.gripper_load()
+        step = self.closer.step(self.ctx.now(), self.ctx.gripper_position(), load, stamp)
+        if step.fault:
+            self.ctx.fail(step.fault)
+            return Status.FAILURE
+        self.ctx.command_gripper(step.cmd)
+        if step.phase != self.phase:
+            self.phase = step.phase
+            self.ctx.set_state("CLOSING", {"HOLDING": "load %.0f %% reached: holding" % (load or 0.0),
+                                           "CLOSED": "closed completely, load below the target"}.get(step.phase, ""))
+        if not step.done:
+            return Status.RUNNING
+        self.ctx.record_outcome(step.outcome, load)
+        if step.outcome == "thin" and self.params.require_object:
+            self.ctx.fail("closed completely without reaching the load target and require_object is set")
             return Status.FAILURE
         return Status.SUCCESS
 
@@ -236,8 +259,7 @@ def build_tree(ctx, spec, params, outcome_text=lambda: ""):
         RecheckTarget(ctx, params),
         FollowTrajectory("DESCEND", ctx, "DESCEND", spec.descent_slow_factor, "DESCENDING",
                          "straight down, %.1f times slower than planned" % spec.descent_slow_factor),
-        MoveGripper("close gripper", ctx, params, spec.gripper_closed, spec.gripper_open, "CLOSING", "gripper to %.3f" % spec.gripper_closed),
-        GraspOutcome(ctx, spec, params),
+        CloseOnLoad(ctx, spec, params),
         FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", lambda: "grasp outcome: %s" % outcome_text()),
     ])
     return Guarded(mission, ctx)

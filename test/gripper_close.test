@@ -1,0 +1,13 @@
+<launch>
+  <!-- Load-limited gripper close alone, in simulation: only the simulated arm (with its gripper contact model) and the
+       gripper_close node. rostest starts its own roscore on a free port, so it never touches the real arm's master:
+         rostest arm_grasp gripper_close.test      (or catkin_make run_tests_arm_grasp_rostest_test_gripper_close.test) -->
+  <param name="robot_description" command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'"/>
+  <node name="arm_sim_validator_node" pkg="arm_interface" type="arm_sim_validator_node">
+    <param name="sim_mode" value="ideal"/>
+    <param name="publish_rate" value="50.0"/>
+    <param name="num_joints" value="6"/>
+  </node>
+  <include file="$(find arm_grasp)/launch/gripper_close.launch"/>
+  <test test-name="gripper_close_alone" pkg="arm_grasp" type="rostest_gripper_close.py" time-limit="240.0"/>
+</launch>

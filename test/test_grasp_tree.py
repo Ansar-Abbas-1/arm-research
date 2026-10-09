@@ -9,16 +9,20 @@ from arm_grasp import grasp_plan as gp
 from arm_grasp import grasp_tree as gt
 
 DT = 0.05
+SPEEDS = {}
 
 
 class FakeContext(gt.GraspContext):
-    """Scripted world: time advances DT per tick, the gripper follows its command (or is blocked at `block_at`),
+    """Scripted world: time advances DT per tick, the gripper follows its command (or is blocked at `contact`) and reports a load,
     trajectories take `traj_ticks` ticks."""
 
     def __init__(self, traj_ticks=4):
         self.t = 0.0
         self.gripper = 0.0
-        self.block_at = None
+        self.contact = None              # joint_6 position at which closing is blocked (None: closes freely)
+        self.load_gain = 5.0             # % per mm of squeeze
+        self.no_load = False             # the load topic is silent
+        self.cmd = 0.0
         self.cmds = []
         self.states = []
         self.reason = None
@@ -43,7 +47,14 @@ class FakeContext(gt.GraspContext):
 
     def command_gripper(self, position):
         self.cmds.append(position)
-        self.gripper = position if self.block_at is None else max(position, self.block_at)
+        self.cmd = position
+        self.gripper = position if self.contact is None else max(position, self.contact)
+
+    def gripper_load(self):
+        if self.no_load:
+            return None, None
+        squeeze = 0.0 if self.contact is None else max(0.0, self.contact - self.cmd) * 1000.0
+        return 2.5 + self.load_gain * squeeze, int(self.t / 0.1) * 0.1           # a new sample every 0.1 s
 
     def start_trajectory(self, name, slow):
         self.started.append((name, slow))
@@ -64,7 +75,7 @@ class FakeContext(gt.GraspContext):
             raise RuntimeError(self.drift_error)
         return self.drift
 
-    def record_outcome(self, outcome): self.outcome = outcome
+    def record_outcome(self, outcome, load): self.outcome, self.final_load = outcome, load
 
 
 def make(ctx=None, **pk):
@@ -91,13 +102,14 @@ class TestGraspTree(unittest.TestCase):
         self.assertEqual(ctx.states, ["OPENING", "MOVING_PRE", "RECHECK", "DESCENDING", "CLOSING", "LIFTING"])
         self.assertEqual(ctx.started, [("PRE", 1.0), ("DESCEND", spec.descent_slow_factor), ("LIFT", spec.lift_slow_factor)])
         self.assertIsNone(ctx.reason)
-        self.assertEqual(ctx.outcome, "empty")                    # the fake jaws close all the way
+        self.assertEqual(ctx.outcome, "thin")                     # fully closed with the load below the target
 
-    def test_gripper_ramp_is_rate_limited_and_reaches_both_ends(self):
+    def test_opening_is_fast_and_closing_is_the_slow_load_limited_close(self):
         ctx, spec, root, tree = make()
         run(ctx, tree)
-        steps = [abs(b - a) for a, b in zip(ctx.cmds, ctx.cmds[1:])]
-        self.assertLessEqual(max(steps), 0.02 * DT + 1e-9)
+        steps = [b - a for a, b in zip(ctx.cmds, ctx.cmds[1:])]
+        self.assertLessEqual(max(steps), 0.02 * DT + 1e-9)                         # opening ramp
+        self.assertLessEqual(max(-x for x in steps), 0.004 * DT + 1e-9)            # closing at close_speed, much slower
         self.assertAlmostEqual(max(ctx.cmds), spec.gripper_open)
         self.assertAlmostEqual(ctx.cmds[-1], spec.gripper_closed)
 
@@ -164,17 +176,33 @@ class TestGraspTree(unittest.TestCase):
         self.assertEqual(run(ctx, tree), Status.FAILURE)
         self.assertIn("server not available", ctx.reason)
 
-    def test_blocked_jaws_time_out_and_the_outcome_is_object(self):
+    def test_load_reached_before_fully_closed_holds_it_and_the_arm_lifts(self):
         ctx, spec, root, tree = make()
-        ctx.block_at = 0.012                                      # an object stops the jaws; opening is not blocked below it
+        ctx.contact = 0.012
         self.assertEqual(run(ctx, tree), Status.SUCCESS)
         self.assertEqual(ctx.outcome, "object")
+        self.assertLess(abs(ctx.final_load - 40.0), 5.0 + 1e-9)
+        self.assertGreater(ctx.cmd, spec.gripper_closed)                           # stopped before fully closed
+        self.assertEqual(ctx.states[-1], "LIFTING")
 
-    def test_require_object_fails_on_empty_and_does_not_lift(self):
+    def test_fully_closed_below_the_load_target_is_thin_and_counts_as_grasped(self):
+        ctx, spec, root, tree = make()
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual(ctx.outcome, "thin")
+
+    def test_require_object_fails_on_thin_and_does_not_lift(self):
         ctx, spec, root, tree = make(require_object=True)
         self.assertEqual(run(ctx, tree), Status.FAILURE)
         self.assertIn("require_object", ctx.reason)
         self.assertNotIn("LIFTING", ctx.states)
+
+    def test_no_load_measurement_fails_closed_before_the_lift(self):
+        ctx, spec, root, tree = make()
+        ctx.no_load = True
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("no fresh gripper load", ctx.reason)
+        self.assertNotIn("LIFTING", ctx.states)
+        self.assertEqual(ctx.started[-1][0], "DESCEND")
 
     def test_tree_is_reusable(self):
         ctx, spec, root, tree = make()

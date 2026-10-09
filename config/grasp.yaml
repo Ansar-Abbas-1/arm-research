@@ -12,12 +12,12 @@ grasp_offset: [0.0, 0.0]  # m: x, y of the grasp point in the target frame
 # of the REAL gripper on a real object is unknown.
 gripper_open: 0.025
 gripper_closed: 0.0
-gripper_speed: 0.02       # m/s ramp of the command (URDF velocity limit 0.05)
+gripper_speed: 0.02       # m/s ramp of the OPENING command (URDF velocity limit 0.05); closing uses close/close_speed
 gripper_settle: 0.6       # s to wait after reaching the target
 gripper_tolerance: 0.002  # m
 gripper_timeout: 5.0      # s
-require_object: false     # abort if the gripper closes all the way (nothing between the jaws). False: the target may be a paper marker
-object_threshold: 0.002   # m: stopping this far short of fully closed counts as "object"
+require_object: false     # true: closing completely below the load target ('thin') aborts. False (the user's choice): it counts as a
+                          # grasp of an element thinner than expected, although the load cannot tell it from an empty closure
 
 # Motion
 descent_slow_factor: 3.0  # the descent takes this many times the planner's time (>= 1)
@@ -33,3 +33,19 @@ base_frame: base_link
 
 # Behavior tree
 tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (view it with rqt_py_trees)
+
+# Load-limited closing (arm_grasp/grasp_plan.py LoadLimitedCloser). load_target is the user's 40 %; the rest are FLAGGED DEFAULTS.
+# The load is /arm_interface/motor_load joint_6, |% of max torque|, published by the driver at status_rate_hz (10 Hz).
+close:
+  load_target: 40.0       # % of max torque: close until the load reaches this, then hold
+  close_speed: 0.004      # m/s: slow constant-speed close. FLAGGED
+  load_band: 5.0          # % deadband of the hold regulation. FLAGGED
+  trim_speed: 0.001       # m/s of the hold regulation (load too high: open, too low: close). FLAGGED
+  confirm_samples: 2      # consecutive NEW samples >= target before the close stops. FLAGGED
+  load_max_age: 0.5       # s: older load = no measurement = abort. FLAGGED
+  load_abort: 75.0        # %: at or above it the hold opens at close_speed; if it persists for hold_timeout the grasp aborts. FLAGGED
+  hold_time: 1.0          # s in the band and still before it counts as done. FLAGGED
+  hold_timeout: 6.0       # s. FLAGGED
+  still_time: 0.5         # s of the jaws within still_tol. FLAGGED
+  still_tol: 0.0003       # m. FLAGGED
+  closed_settle: 0.6      # s after reaching fully closed before calling it 'thin'. FLAGGED

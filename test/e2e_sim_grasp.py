@@ -5,6 +5,10 @@ run, unreachable target, a full grasp (open, above, descend, close, lift), e-sto
 moved after planning, operator stop. Starts its own roscore, kills only what it started. After catkin_make:
 
     python3 src/arm_grasp/test/e2e_sim_grasp.py
+
+To watch it: E2E_VISUAL=1 (needs X access from the container, `xhost +local:` on the host) also opens rviz and
+rqt_py_trees on the private master and runs the simulated arm at velocity_scale 0.1 so the motion is watchable;
+E2E_START_DELAY (default 25 s) is the time to arrange the windows before the scenarios start.
 """
 import json
 import os
@@ -22,12 +26,13 @@ import rospy  # noqa: E402
 import tf2_ros  # noqa: E402
 from geometry_msgs.msg import TransformStamped  # noqa: E402
 from sensor_msgs.msg import JointState  # noqa: E402
-from std_msgs.msg import String  # noqa: E402
+from std_msgs.msg import Float64, String  # noqa: E402
 from std_srvs.srv import Trigger  # noqa: E402
 
 from arm_grasp.srv import Grasp  # noqa: E402
 
 procs = []
+VISUAL = os.environ.get("E2E_VISUAL", "") not in ("", "0")
 PRE_APPROACH = [-0.0092, 1.8899, -1.2379, 2.7903, -1.7871]
 TARGET = {"x": 0.47, "y": 0.04, "z": float(os.environ.get("TARGET_Z", "-0.45")), "yaw": 0.5, "publish": True, "dz": 0.0}
 SPEC = {"pre": 0.10, "grasp": 0.02, "lift": 0.15}
@@ -56,10 +61,16 @@ def main():
         wait_for(lambda: subprocess.call(["rosnode", "list"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0, 20, "roscore")
         assert "/arm_interface" not in subprocess.check_output(["rosnode", "list"]).decode(), "arm_interface on this master"
         rospy.init_node("e2e_grasp")
-        start(["roslaunch", "arm_trajectory", "interactive_reach.launch", "use_hardware:=false", "use_rviz:=false", "presets:=false"], "sim")
+        start(["roslaunch", "arm_trajectory", "interactive_reach.launch", "use_hardware:=false", "use_rviz:=%s" % ("true" if VISUAL else "false"),
+               "presets:=false"] + (["velocity_scale:=0.1"] if VISUAL else []), "sim")
         wait_for(lambda: "/trajectory_executor_node" in subprocess.check_output(["rosnode", "list"]).decode(), 40, "the planner stack")
         start(["roslaunch", "arm_grasp", "grasp.launch"], "grasp")
         wait_for(lambda: "/grasp_sequencer/grasp" in subprocess.check_output(["rosservice", "list"]).decode(), 40, "the grasp service")
+        if VISUAL:
+            start(["rqt_py_trees"], "rqt")
+            delay = float(os.environ.get("E2E_START_DELAY", "25"))
+            print("visual mode: rviz and rqt_py_trees are opening on the private master (port %d); the scenarios start in %.0f s" % (PORT, delay), flush=True)
+            time.sleep(delay)
         br = tf2_ros.TransformBroadcaster()
         buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(buf)
@@ -90,6 +101,8 @@ def main():
         pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
         grasp = rospy.ServiceProxy("/grasp_sequencer/grasp", Grasp)
         stop_srv = rospy.ServiceProxy("/grasp_sequencer/stop", Trigger)
+        obj_pub = rospy.Publisher("/arm_sim/gripper_object", Float64, queue_size=1, latch=True)   # joint_6 position where the jaws touch an object
+        obj_pub.publish(Float64(float("nan")))
         estop = rospy.ServiceProxy("/arm_interface/estop", Trigger)
         estop_reset = rospy.ServiceProxy("/arm_interface/estop_reset", Trigger)
         wait_for(lambda: joints["q"] is not None and status["v"] is not None, 30, "joint states and status")
@@ -126,6 +139,7 @@ def main():
                 estop_reset()
             except Exception:
                 pass
+            obj_pub.publish(Float64(float("nan")))
             TARGET.update(publish=True, dz=0.0, x=0.47, y=0.04)
             stop_srv(); time.sleep(0.5)
 
@@ -181,12 +195,29 @@ def main():
         check("the final pose is the lift height (error %.1f mm)" % (1000 * np.linalg.norm(pts[-1] - expected(SPEC["lift"]))), np.linalg.norm(pts[-1] - expected(SPEC["lift"])) < 0.010)
         g = np.array([v for _, v in joints["g"]])
         check("the gripper opened and closed (max %.3f, final %.3f)" % (g.max(), g[-1]), g.max() > 0.024 and g[-1] < 0.002)
-        check("the grasp outcome is reported as empty (nothing between the jaws in the simulation)", status["v"]["plan"].get("grasp_outcome") == "empty")
+        check("fully closed below the load target = 'thin' (%s)" % status["v"]["plan"].get("grasp_outcome"), status["v"]["plan"].get("grasp_outcome") == "thin")
         t_desc = [t for t, s in history if s == "DESCENDING"]
         t_close = [t for t, s in history if s == "CLOSING"]
         planned = [l for l in status["v"]["plan"]["legs"] if l["name"] == "DESCEND"][0]["duration"]
         dur = t_close[0] - t_desc[0]
         check("the descent was slowed: %.1f s against %.1f s planned (x3)" % (dur, planned), dur > 2.0 * planned)
+
+        print("-- scenario 3b: load reaches the target before fully closed (load-limited close to 40 %)")
+        reset(); goto_start()
+        obj_pub.publish(Float64(0.012))
+        trace.clear(); joints["g"].clear(); history.clear()
+        r = grasp("target", False)
+        check("the sequence is accepted", r.success)
+        wait_for(lambda: status["v"]["state"] in ("DONE", "ABORTED"), 240, "the sequence to end")
+        plan = status["v"]["plan"]
+        check("it ends DONE (%s %s)" % state(), state()[0] == "DONE")
+        check("the outcome is 'object' (%s)" % plan.get("grasp_outcome"), plan.get("grasp_outcome") == "object")
+        check("closed to the 40 %% load target and held there (load %.1f %%)" % (plan.get("grasp_load_percent") or -1), plan.get("grasp_load_percent") is not None and abs(plan["grasp_load_percent"] - 40.0) <= 5.0)
+        pts = np.array([p for _, p in trace])
+        check("and the arm lifted it (final z error %.1f mm)" % (1000 * np.linalg.norm(pts[-1] - expected(SPEC["lift"]))), np.linalg.norm(pts[-1] - expected(SPEC["lift"])) < 0.010)
+        t_close = [t for t, s in history if s == "CLOSING"]
+        t_lift = [t for t, s in history if s == "LIFTING"]
+        check("the close was slow: %.1f s to the load target (>= 2 s)" % (t_lift[0] - t_close[0]), t_lift[0] - t_close[0] > 2.0)
 
         print("-- scenario 4: e-stop in the descent")
         reset(); goto_start()
