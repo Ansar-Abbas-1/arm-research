@@ -2,7 +2,8 @@
 """Builds a multi-scale crop dataset (YOLO segmentation format) from a few large Roboflow-labeled photos (NO ROS).
 
 Each photo is resized by every scale in --scales, covered with --tile px crops every --stride-frac * tile, and the polygons are clipped to each crop
-(arm_perception/dataset_tiles.py). Photos whose file name contains one of the --val strings go to the validation split, the rest to train, so the
+(arm_perception/dataset_tiles.py; run it twice with --only / --exclude to give a photo group its own scales and stride, e.g. arm-camera frames
+oversampled with a small stride). Photos whose file name contains one of the --val strings go to the validation split, the rest to train, so the
 validation crops never come from a photo the model trained on. Crops without any label are kept with probability --neg-frac (background examples).
 
     PYTHONPATH=src python3 scripts/make_tile_dataset.py --src yolo/Sorgo-Vigna.v3i.yolo26/train --out yolo/vignax_tiles \\
@@ -10,6 +11,7 @@ validation crops never come from a photo the model trained on. Crops without any
 """
 import argparse
 import glob
+import hashlib
 import os
 import random
 
@@ -37,6 +39,9 @@ def main():
     ap.add_argument("--src", required=True, help="Roboflow YOLO export split folder holding images/ and labels/")
     ap.add_argument("--out", required=True)
     ap.add_argument("--val", default="", help="comma separated strings: photos whose name contains one are the validation split")
+    ap.add_argument("--drop-val", action="store_true", help="skip the photos matching --val instead of writing them to the validation split")
+    ap.add_argument("--only", default="", help="comma separated strings: use only photos whose name contains one of them")
+    ap.add_argument("--exclude", default="", help="comma separated strings: skip photos whose name contains one of them")
     ap.add_argument("--scales", default="0.7,1.0,1.5,2.0,2.5")
     ap.add_argument("--tile", type=int, default=640)
     ap.add_argument("--stride-frac", type=float, default=0.5)
@@ -47,6 +52,7 @@ def main():
     a = ap.parse_args()
     rng = random.Random(a.seed)
     val_keys = [s for s in a.val.split(",") if s]
+    only, exclude = [s for s in a.only.split(",") if s], [s for s in a.exclude.split(",") if s]
     scales = [float(s) for s in a.scales.split(",")]
     for sp in ("train", "val"):
         os.makedirs(os.path.join(a.out, sp, "images"), exist_ok=True)
@@ -54,11 +60,15 @@ def main():
     counts = {"train": [0, 0], "val": [0, 0]}                     # crops, polygons
     for path in sorted(glob.glob(os.path.join(a.src, "images", "*"))):
         stem = os.path.splitext(os.path.basename(path))[0]
+        if (only and not any(k in stem for k in only)) or any(k in stem for k in exclude):
+            continue
         split = "val" if any(k in stem for k in val_keys) else "train"
+        if split == "val" and a.drop_val:                       # e.g. the augmented copies of a held-out photo: validation stays on the originals
+            continue
         img = cv2.imread(path)
         h, w = img.shape[:2]
         polys = read_polys(os.path.join(a.src, "labels", stem + ".txt"), w, h)
-        short = stem[:24].replace(".", "_")
+        short = stem[:24].replace(".", "_") + "_" + hashlib.md5(stem.encode()).hexdigest()[:6]     # augmented copies share their first 24 characters
         for s in scales:
             im = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA if s < 1.0 else cv2.INTER_CUBIC)
             H, W = im.shape[:2]
