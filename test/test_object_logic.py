@@ -157,6 +157,42 @@ class GeometryTest(unittest.TestCase):
         self.assertGreater(np.linalg.norm(d0 - d1), 1e-3)                # the edge pixel moves when the distortion is applied
 
 
+class SegmentationTest(unittest.TestCase):
+    def test_decode_seg_returns_the_mask_coefficients(self):
+        out = np.zeros((1, 4 + 1 + 32, 60), np.float32)
+        out[0, :4, 3] = [100, 120, 40, 60]; out[0, 4, 3] = 0.9
+        out[0, 5:, 3] = np.arange(32)
+        boxes, scores, cls, coeffs = ol.decode_seg(out, 0.25, 1)
+        self.assertEqual(len(boxes), 1)
+        np.testing.assert_allclose(boxes[0], [80, 90, 120, 150])
+        np.testing.assert_allclose(coeffs[0], np.arange(32))
+
+    def test_a_mask_is_the_blob_of_its_prototype_cropped_to_the_box(self):
+        protos = -10.0 * np.ones((32, 160, 160), np.float32)
+        protos[0, 40:80, 20:100] = 10.0                                 # a blob: rows 40-80, cols 20-100 at 160 px = rows 160-320, cols 80-400 at 640 px
+        coeffs = np.zeros((1, 32), np.float32); coeffs[0, 0] = 1.0
+        boxes = np.array([[80, 160, 240, 320]], np.float32)             # crops the blob to the left half
+        m = ol.masks_from_protos(protos, coeffs, boxes, 640)[0]
+        ys, xs = np.nonzero(m)
+        self.assertEqual((xs.min(), xs.max(), ys.min(), ys.max()), (80, 239, 160, 319))
+
+    def test_unletterbox_mask_restores_the_tile_shape(self):
+        m = np.zeros((640, 640), bool)
+        m[140:500, 0:640] = True                                        # the whole letterboxed content of a 1024 x 576 tile (scale 0.625, pad 140)
+        back = ol.unletterbox_mask(m, 0.625, (0, 140), (576, 1024))
+        self.assertEqual(back.shape, (576, 1024))
+        self.assertTrue(back.mean() > 0.99)
+
+    def test_mask_stats_centroid_area_and_axis(self):
+        m = np.zeros((100, 200), bool)
+        m[40:60, 20:180] = True                                         # a horizontal bar
+        st = ol.mask_stats(m)
+        self.assertEqual(st["area"], 20 * 160)
+        np.testing.assert_allclose(st["centroid"], (99.5, 49.5), atol=0.01)
+        self.assertLess(abs(abs(st["angle_deg"]) % 180), 1.0)           # major axis along x
+        self.assertIsNone(ol.mask_stats(np.zeros((5, 5), bool)))
+
+
 class TilingTest(unittest.TestCase):
     def test_a_small_image_is_one_tile(self):
         self.assertEqual(ol.tile_grid(400, 300, 512, 0.2), [(0, 0, 400, 300)])

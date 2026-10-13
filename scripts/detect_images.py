@@ -60,6 +60,77 @@ def detect_photo(session, in_name, size, img, tile, overlap, conf, iou, fmt, nc,
     return boxes[keep], scores[keep], cls[keep], len(tiles), t_model
 
 
+def detect_photo_seg(session, in_name, size, img, tile, overlap, conf, iou, nc, scales, merge_metric="ios", merge_thr=0.5):
+    """Multi-scale tiled inference of a -seg model with masks. The photo is resized by each factor in `scales` before tiling (a plant bigger than a tile
+    is brought to the size the model was trained on), the detections are mapped back to photo pixels and merged. -> (list of dicts, tiles, model seconds).
+    Each dict: box (photo px), score, cls, scale, mask (bool, the box region of the SCALED image), origin (x, y of that region in the scaled image)."""
+    cands, n_tiles, t_model = [], 0, 0.0
+    for sc in scales:
+        im = img if sc == 1.0 else cv2.resize(img, (max(1, int(round(img.shape[1] * sc))), max(1, int(round(img.shape[0] * sc)))), interpolation=cv2.INTER_AREA)
+        h, w = im.shape[:2]
+        tiles = ol.tile_grid(w, h, tile, overlap) if tile > 0 else [(0, 0, w, h)]
+        n_tiles += len(tiles)
+        for x0, y0, x1, y1 in tiles:
+            crop = im[y0:y1, x0:x1]
+            blob, scale, pad = ol.letterbox(crop, size)
+            t = time.time()
+            outs = session.run(None, {in_name: blob})
+            t_model += time.time() - t
+            boxes, scores, cls, coeffs = ol.decode_seg(outs[0], conf, nc)
+            keep = ol.nms(boxes, scores, cls, iou)
+            if len(keep) == 0:
+                continue
+            masks = ol.masks_from_protos(outs[1][0], coeffs[keep], boxes[keep], size)
+            tb = ol.unletterbox(boxes[keep], scale, pad, crop.shape[:2])
+            for k, i in enumerate(keep):
+                m_tile = ol.unletterbox_mask(masks[k], scale, pad, crop.shape[:2])
+                bx1, by1, bx2, by2 = [int(round(v)) for v in tb[k]]
+                local = m_tile[by1:by2, bx1:bx2]
+                if local.size == 0 or not local.any():
+                    continue
+                box_scaled = np.array([tb[k][0] + x0, tb[k][1] + y0, tb[k][2] + x0, tb[k][3] + y0], np.float32)
+                cands.append({"box": box_scaled / sc, "score": float(scores[i]), "cls": int(cls[i]), "scale": sc, "mask": local, "origin": (bx1 + x0, by1 + y0)})
+    if not cands:
+        return [], n_tiles, t_model
+    boxes = np.stack([c["box"] for c in cands])
+    keep = ol.nms(boxes, np.array([c["score"] for c in cands], np.float32), np.array([c["cls"] for c in cands]), merge_thr, merge_metric)
+    return [cands[i] for i in keep], n_tiles, t_model
+
+
+def det_stats(d):
+    """Mask statistics of a detection in PHOTO pixels (area, centroid, major axis angle)."""
+    st = ol.mask_stats(d["mask"])
+    if st is None:
+        return None
+    sc = d["scale"]
+    return {"area": int(st["area"] / (sc * sc)), "centroid": ((st["centroid"][0] + d["origin"][0]) / sc, (st["centroid"][1] + d["origin"][1]) / sc), "angle_deg": st["angle_deg"]}
+
+
+def overlay_seg(img, dets, path, width=2000):
+    f = width / float(img.shape[1])
+    small = cv2.resize(img, (width, int(img.shape[0] * f)))
+    layer = small.copy()
+    rng = np.random.RandomState(3)
+    for d in dets:
+        color = tuple(int(c) for c in rng.randint(60, 255, 3))
+        g = f / d["scale"]                                              # scaled image -> overlay
+        mh, mw = d["mask"].shape
+        m = cv2.resize(d["mask"].astype(np.uint8), (max(1, int(round(mw * g))), max(1, int(round(mh * g)))), interpolation=cv2.INTER_NEAREST).astype(bool)
+        ox, oy = int(round(d["origin"][0] * g)), int(round(d["origin"][1] * g))
+        y2, x2 = min(layer.shape[0], oy + m.shape[0]), min(layer.shape[1], ox + m.shape[1])
+        if y2 <= oy or x2 <= ox:
+            continue
+        region = layer[oy:y2, ox:x2]
+        region[m[:y2 - oy, :x2 - ox]] = color
+        b = d["box"] * f
+        cv2.rectangle(small, (int(b[0]), int(b[1])), (int(b[2]), int(b[3])), color, 2)
+        st = det_stats(d)
+        if st:
+            cv2.circle(small, (int(st["centroid"][0] * f), int(st["centroid"][1] * f)), 8, (0, 0, 255), -1)
+        cv2.putText(small, "%.2f s%.1f" % (d["score"], d["scale"]), (int(b[0]), max(14, int(b[1]) - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+    cv2.imwrite(path, cv2.addWeighted(layer, 0.4, small, 0.6, 0), [cv2.IMWRITE_JPEG_QUALITY, 85])
+
+
 def overlay(img, boxes, scores, gts, path, width=2000):
     s = width / float(img.shape[1])
     small = cv2.resize(img, (width, int(img.shape[0] * s)))
@@ -88,6 +159,8 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--every", type=int, default=1, help="take every Nth photo of the folder")
     ap.add_argument("--threads", type=int, default=16)
+    ap.add_argument("--masks", action="store_true", help="a -seg model: decode the masks and report area, centroid and axis per detection")
+    ap.add_argument("--scales", default="1.0", help="comma separated factors the photo is resized by before tiling, e.g. 1.0,0.6,0.4 (with --masks)")
     a = ap.parse_args()
 
     opts = ort.SessionOptions()
@@ -116,6 +189,18 @@ def main():
     for path in photos:
         img = cv2.imread(path)
         t0 = time.time()
+        if a.masks:
+            dets, n_tiles, t_model = detect_photo_seg(session, inp.name, size, img, a.tile, a.overlap, a.conf, a.iou, nc or 1, [float(v) for v in a.scales.split(",")], a.merge_metric, a.merge_thr)
+            base = os.path.basename(path)
+            print("%s %dx%d | scales %s | %d tiles | %d detections | %.1f s (model %.1f s)" % (base, img.shape[1], img.shape[0], a.scales, n_tiles, len(dets), time.time() - t0, t_model), flush=True)
+            overlay_seg(img, dets, os.path.join(a.out, os.path.splitext(base)[0] + "_seg.jpg"))
+            out = []
+            for d in dets:
+                st = det_stats(d) or {}
+                out.append({"box": [round(float(v), 1) for v in d["box"]], "score": round(d["score"], 3), "scale": d["scale"], "mask_area_px": st.get("area"),
+                            "centroid": [round(v, 1) for v in st["centroid"]] if st else None, "axis_deg": round(st["angle_deg"], 1) if st else None})
+            json.dump({"photo": base, "tile": a.tile, "scales": a.scales, "detections": out}, open(os.path.join(a.out, os.path.splitext(base)[0] + "_seg.json"), "w"))
+            continue
         boxes, scores, cls, n_tiles, t_model = detect_photo(session, inp.name, size, img, a.tile, a.overlap, a.conf, a.iou, a.format, nc, a.merge_metric, a.merge_thr)
         base = os.path.basename(path)
         gts = gt_by_name.get(base, [])

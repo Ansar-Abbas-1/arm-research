@@ -64,3 +64,11 @@ coefficients, NMS outside the model).
   plants (boxes with straight edges at the tile borders: a lab plant is larger than a 512 px tile); 768 and 1024 px tiles give a few large boxes covering
   groups of leaves. Not usable for a grasp point yet: the model was trained on field seedlings of about 250 px, the lab plants are bigger, overhead, on a
   white tray: a domain gap. Next levers: masks instead of boxes, multi-scale inference, a few labeled lab images to fine-tune.
+
+### Masks and multi-scale on the lab photos (2026-10-13): not enough
+`detect_images.py --masks --scales 1.0,0.6,0.4` decodes the segmentation masks (area, centroid, major axis per plant; 22 s for a 1530 x 2040 photo, 30 tiles,
+6 threads at low priority so the 100 Hz driver loop is not disturbed) and merges the three scales. On the operator's tray photo the masks are soft blobs that spill
+onto the white tray, the soil and the floor beyond the leaves, plants are covered by several overlapping boxes of different scales, boxes are still cut at
+tile borders, and there is a detection on the grass row at scale 0.6. Neither the masks nor the multi-scale tiling make VignaX-3 usable for a grasp point on the lab
+setup: it was trained on field seedlings of about 250 px in 512 px tiles and the lab scene is a different domain (larger overhead plants, tiled floor, white tray).
+The remaining lever is fine-tuning on labeled images of the lab setup, ideally taken by the arm camera at its working poses.

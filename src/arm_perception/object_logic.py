@@ -206,3 +206,56 @@ def match_detections(dets, gts, iou=0.5):
             used.add(best_i)
             tp += 1
     return tp, len(dets) - tp, len(gts) - tp
+
+
+def decode_seg(output, conf=0.25, num_classes=1):
+    """YOLOv8 / YOLO11 / YOLO26 -seg first output (1, 4 + nc + 32, N) -> boxes xyxy (input pixels), scores, class ids, mask coefficients (n, 32)."""
+    out = np.asarray(output)
+    arr = out[0].T                                                   # (N, 4 + nc + 32)
+    scores_all = arr[:, 4:4 + num_classes]
+    cls = scores_all.argmax(axis=1)
+    sc = scores_all[np.arange(len(cls)), cls]
+    keep = sc >= conf
+    arr, cls, sc = arr[keep], cls[keep], sc[keep]
+    cx, cy, w, h = arr[:, 0], arr[:, 1], arr[:, 2], arr[:, 3]
+    boxes = np.stack([cx - w / 2.0, cy - h / 2.0, cx + w / 2.0, cy + h / 2.0], axis=1).astype(np.float32)
+    return boxes, sc.astype(np.float32), cls.astype(int), arr[:, 4 + num_classes:4 + num_classes + 32].astype(np.float32)
+
+
+def masks_from_protos(protos, coeffs, boxes, input_size=640, thr=0.5):
+    """Instance masks at the input resolution: sigmoid(coeffs . protos), cropped to each box. protos (32, h, w), coeffs (n, 32), boxes (n, 4) in
+    input pixels. -> bool array (n, input_size, input_size)."""
+    n = len(coeffs)
+    if n == 0:
+        return np.zeros((0, input_size, input_size), bool)
+    c, h, w = protos.shape
+    m = 1.0 / (1.0 + np.exp(-(np.asarray(coeffs, np.float32) @ protos.reshape(c, -1)))).reshape(n, h, w)
+    out = np.zeros((n, input_size, input_size), bool)
+    for i in range(n):
+        full = cv2.resize(m[i], (input_size, input_size), interpolation=cv2.INTER_LINEAR) > thr
+        x1, y1, x2, y2 = [int(round(v)) for v in boxes[i]]
+        crop = np.zeros_like(full)
+        crop[max(0, y1):min(input_size, y2), max(0, x1):min(input_size, x2)] = True
+        out[i] = full & crop
+    return out
+
+
+def unletterbox_mask(mask, scale, pad, shape):
+    """A mask at the (square) input resolution -> a mask of the original tile or image of shape (h, w)."""
+    h, w = shape
+    px, py = pad
+    nw, nh = int(round(w * scale)), int(round(h * scale))
+    inner = mask[py:py + nh, px:px + nw].astype(np.uint8)
+    return cv2.resize(inner, (w, h), interpolation=cv2.INTER_NEAREST).astype(bool)
+
+
+def mask_stats(mask):
+    """Area (px), centroid (x, y) and the angle (deg, of the major axis from the x axis) of a boolean mask; None for an empty one."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return None
+    cx, cy = float(xs.mean()), float(ys.mean())
+    cov = np.cov(np.stack([xs - cx, ys - cy])) if len(xs) > 2 else np.eye(2)
+    w, v = np.linalg.eigh(cov)
+    major = v[:, int(np.argmax(w))]
+    return {"area": int(len(xs)), "centroid": (cx, cy), "angle_deg": float(np.degrees(np.arctan2(major[1], major[0])))}
