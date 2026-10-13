@@ -197,3 +197,5 @@ Decisions: target = the closest 50 mm marker (latched at start), end effector 10
 ## M8 — Closed loop (sketch)
 
 Detect target → transform to robot frame → plan → reach.
+
+**Detection method comparison and GPU inference (2026-10-13):** on the five labeled Testbed images a leave-one-image-out RandomForest on colour/texture features reaches pixel IoU 0.68 (plant recall 0.43 because touching plants merge), ExG/HSV 0.45 to 0.46 (they also fire on Sorgo), VignaX-3 only 0.13 (6 % of the plants): fine-tune on the Roboflow labels of the lab setup. ONNX inference now runs on the RTX 5070 through onnxruntime-gpu 1.19 + pip CUDA 12 libs in `pylibs_gpu` (`arm_perception/onnx_session.py`, `--device` / `~device`): 117 s -> 7 s per tiled lab image with identical detections, 35 ms per 640 px tile. The live detector node still does one full-frame 640 letterbox (no tiling or upscaling), so it cannot see lab-size plants yet. Details: `arm_perception/docs/yolo_detector.md`.
