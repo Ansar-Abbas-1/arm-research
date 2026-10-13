@@ -26,7 +26,7 @@ def main():
     model = YOLO(a.weights)
     model.train(data=a.data, epochs=a.epochs, imgsz=a.imgsz, batch=a.batch, device=0, workers=a.workers, patience=a.patience, project=a.project, name=a.name,
                 exist_ok=True, plots=False, scale=a.scale, flipud=0.5, fliplr=0.5, degrees=15.0, hsv_h=0.02, hsv_s=0.5, hsv_v=0.4, mosaic=1.0, close_mosaic=10)
-    best = YOLO("%s/%s/weights/best.pt" % (a.project, a.name))
+    best = YOLO(str(model.trainer.best))                 # ultralytics puts the run under runs/<task>/<project>/<name>
     print("val:", best.val(data=a.data, imgsz=a.imgsz, device=0, plots=False).results_dict)
     if a.export:
         print("onnx:", best.export(format="onnx", imgsz=a.imgsz, opset=17))
