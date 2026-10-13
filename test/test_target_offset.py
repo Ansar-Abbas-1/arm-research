@@ -35,5 +35,29 @@ class TargetOffsetTest(unittest.TestCase):
             self.assertAlmostEqual(np.linalg.norm(to.offset_target([0, 0, 0], yaw(deg), [0.03, 0.04, 0.0])), 0.05)
 
 
+class VerticalFrameTest(unittest.TestCase):
+    def test_a_tilted_marker_gives_an_upright_frame_with_the_same_heading(self):
+        q = [np.sin(np.radians(6)), 0.0, 0.0, np.cos(np.radians(6))]               # 12 deg tilt about x
+        R = to.vertical_frame(q)
+        np.testing.assert_allclose(R[:, 2], [0, 0, 1], atol=1e-12)
+        np.testing.assert_allclose(R.T.dot(R), np.eye(3), atol=1e-12)
+        np.testing.assert_allclose(R[:, 0], [1, 0, 0], atol=1e-12)                 # the heading (marker x) is kept
+
+    def test_the_heading_follows_the_marker_yaw(self):
+        R = to.vertical_frame(yaw(90))
+        np.testing.assert_allclose(R[:, 0], [0, 1, 0], atol=1e-12)
+
+    def test_z_offset_is_straight_up_even_for_a_tilted_marker(self):
+        q = [np.sin(np.radians(10)), 0.0, 0.0, np.cos(np.radians(10))]
+        p, R = to.offset_target_frame([0.4, 0.1, -0.6], q, [0, 0, 0.03], vertical=True)
+        np.testing.assert_allclose(p, [0.4, 0.1, -0.57], atol=1e-12)
+        p2, _ = to.offset_target_frame([0.4, 0.1, -0.6], q, [0, 0, 0.03], vertical=False)
+        self.assertGreater(np.linalg.norm(p2 - p), 1e-3)                            # the marker-frame offset leans with the tilt
+
+    def test_a_marker_standing_on_its_edge_falls_back_to_the_identity_heading(self):
+        q = [0.0, np.sin(np.radians(45)), 0.0, np.cos(np.radians(45))]               # x axis pointing straight up
+        np.testing.assert_allclose(to.vertical_frame(q), np.eye(3), atol=1e-9)
+
+
 if __name__ == "__main__":
     unittest.main()

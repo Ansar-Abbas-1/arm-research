@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Publishes the grasp target frame as a marker plus a hand-measured offset, for the grasp sequence (it takes only a TF frame).
 
-    p_target = p_marker + R_marker * offset      (offset in the MARKER frame, +z out of the surface; orientation = the marker's)
+    p_target = p_marker + R * offset      (offset in the frame R, +z out of the surface; R = the marker's own frame, or with ~vertical:=true
+                                           its UPRIGHT version: z = up, the marker's heading kept, so the tilt noise of the marker pose is dropped)
 
 The marker localizer publishes marker_<id> only while the camera is still and sees it. This node remembers the last marker pose and
 keeps broadcasting <target_frame> with the MARKER'S timestamp, not the current time: the target ages like the observation, so the grasp
@@ -17,6 +18,7 @@ import tf2_ros
 from geometry_msgs.msg import TransformStamped
 from std_msgs.msg import String
 
+from arm_grasp import grasp_plan as gp
 from arm_grasp import target_offset as to
 
 
@@ -25,6 +27,7 @@ def main():
     marker = rospy.get_param("~marker_frame")
     offset = [float(v) for v in rospy.get_param("~offset", [0.0, 0.0, 0.0])]
     target = rospy.get_param("~target_frame", "grasp_target")
+    vertical = bool(rospy.get_param("~vertical", False))
     base = rospy.get_param("~base_frame", "base_link")
     buf = tf2_ros.Buffer()
     tf2_ros.TransformListener(buf)
@@ -44,11 +47,14 @@ def main():
             pass
         if last is not None:
             tr, q = last.transform.translation, last.transform.rotation
-            p = to.offset_target([tr.x, tr.y, tr.z], [q.x, q.y, q.z, q.w], offset)
+            p, R = to.offset_target_frame([tr.x, tr.y, tr.z], [q.x, q.y, q.z, q.w], offset, vertical)
             m = TransformStamped()
             m.header.stamp, m.header.frame_id, m.child_frame_id = last.header.stamp, base, target
             m.transform.translation.x, m.transform.translation.y, m.transform.translation.z = [float(v) for v in p]
-            m.transform.rotation = last.transform.rotation
+            if vertical:
+                m.transform.rotation.x, m.transform.rotation.y, m.transform.rotation.z, m.transform.rotation.w = gp.quaternion_from_matrix(R)
+            else:
+                m.transform.rotation = last.transform.rotation
             br.sendTransform(m)
             pub.publish(String(json.dumps({"marker": marker, "offset": offset, "age_s": (rospy.Time.now() - last.header.stamp).to_sec(),
                                            "target_xyz": [float(v) for v in p]})))

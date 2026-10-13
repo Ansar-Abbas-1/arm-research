@@ -9,9 +9,13 @@
   <arg name="offset_y" default="0.0"/>
   <arg name="offset_z" default="0.0"/>
   <arg name="target_frame" default="grasp_target"/>
+  <!-- vertical:=true makes the target frame exactly upright (the marker's heading kept) for a marker lying on a level floor: the approach is then
+       straight down and the marker pose's tilt noise (a few degrees) cannot make the plan refuse the target. -->
+  <arg name="vertical" default="false"/>
   <node name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">
     <param name="marker_frame" value="$(arg marker)"/>
     <rosparam param="offset" subst_value="true">[$(arg offset_x), $(arg offset_y), $(arg offset_z)]</rosparam>
     <param name="target_frame" value="$(arg target_frame)"/>
+    <param name="vertical" value="$(arg vertical)"/>
   </node>
 </launch>
