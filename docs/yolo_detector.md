@@ -44,3 +44,23 @@ an approximation for a compact object, wrong for one whose box centre is not abo
 
 ## Tests
 `test/test_object_logic.py` (17 tests: letterbox, the three output layouts, NMS, pixel to plane geometry round trips).
+
+## Offline test on photos (no ROS, no robot): `scripts/detect_images.py`
+```
+docker exec claude bash -c 'cd /home/dev/src/arm_perception && PYTHONPATH=src /home/dev/venv_yolo/bin/python scripts/detect_images.py \
+    --model /home/dev/models/vignax3.onnx --source /home/dev/yolo/dataset/New_Identify --tile 512 --out /home/dev/models/test_new'
+```
+Tiled inference like the operator's SAHI script (tile and overlap in PHOTO pixels, each tile letterboxed to the model input, tiles merged by NMS with
+the IOS metric), an overlay and a JSON per photo, and with `--coco ann.json` precision and recall at IoU 0.5. `/home/dev/venv_yolo` (container, python 3.8,
+CPU torch 2.4.1, ultralytics 8.4.176, onnxruntime) is where the model was exported:
+`venv_yolo/bin/yolo export model=best.pt format=onnx imgsz=640 simplify=True` -> `(1, 37, 8400)` + `(1, 32, 160, 160)` for VignaX-3 (4 box + 1 class + 32 mask
+coefficients, NMS outside the model).
+
+### Results (2026-10-13), CPU, 0.4 s per 640 px tile
+* July field photo (3968 x 2976, labeled, plants about 250 px, 512 px tiles): 22 of 23 labeled plants found with a plain IoU merge (precision 0.40: several nested
+  boxes per plant), 17 of 23 with the IOS merge (precision 0.71, recall 0.74). These photos are probably in the training set.
+* `New_Identify` (the operator's lab scene: a tray with two rows of Vigna, a grass row, a marker, tiled floor; 1530 x 2040 and 1724 x 1293 photos, NO labels): the
+  model does not fire on the grass, the marker or the tray, but SCALE decides the result. The whole photo at once finds almost nothing; 512 px tiles cut the
+  plants (boxes with straight edges at the tile borders: a lab plant is larger than a 512 px tile); 768 and 1024 px tiles give a few large boxes covering
+  groups of leaves. Not usable for a grasp point yet: the model was trained on field seedlings of about 250 px, the lab plants are bigger, overhead, on a
+  white tray: a domain gap. Next levers: masks instead of boxes, multi-scale inference, a few labeled lab images to fine-tune.

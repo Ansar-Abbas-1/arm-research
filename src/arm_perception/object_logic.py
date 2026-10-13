@@ -79,8 +79,9 @@ def decode(output, fmt="auto", conf=0.25, num_classes=None):
     return boxes.astype(np.float32), sc.astype(np.float32), cls.astype(int)
 
 
-def nms(boxes, scores, classes, iou=0.45):
-    """Class-aware non-maximum suppression; returns the indices to keep, best first."""
+def nms(boxes, scores, classes, iou=0.45, metric="iou"):
+    """Class-aware non-maximum suppression; returns the indices to keep, best first. metric 'iou' (intersection over union) or 'ios'
+    (intersection over the SMALLER box, SAHI's default for merging tiles: it also removes a small box lying inside a bigger one)."""
     if len(boxes) == 0:
         return np.zeros(0, int)
     shifted = boxes + (classes[:, None].astype(np.float32) * 10000.0)         # boxes of different classes never overlap
@@ -98,8 +99,8 @@ def nms(boxes, scores, classes, iou=0.45):
         xx2 = np.minimum(shifted[i, 2], shifted[rest, 2])
         yy2 = np.minimum(shifted[i, 3], shifted[rest, 3])
         inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
-        union = areas[i] + areas[rest] - inter
-        order = rest[inter / np.maximum(union, 1e-9) <= iou]
+        denom = np.minimum(areas[i], areas[rest]) if metric == "ios" else areas[i] + areas[rest] - inter
+        order = rest[inter / np.maximum(denom, 1e-9) <= iou]
     return np.array(keep, int)
 
 
@@ -157,3 +158,51 @@ class FloorMemory(object):
         if self.z is not None and 0.0 <= now - self.t <= self.max_age:
             return self.z, "marker_0", now - self.t
         return fallback, "param", None
+
+
+def tile_grid(width, height, tile=512, overlap=0.2):
+    """Tiles (x0, y0, x1, y1) covering a width x height image like SAHI's slicing: `tile` px squares stepping by tile * (1 - overlap), the last
+    row and column shifted back so every tile is full size; an image smaller than a tile is one tile. Small objects keep their native scale."""
+    if width <= tile and height <= tile:
+        return [(0, 0, width, height)]
+    step = max(1, int(tile * (1.0 - overlap)))
+
+    def starts(size):
+        if size <= tile:
+            return [0]
+        out, x = [], 0
+        while x + tile < size:
+            out.append(x)
+            x += step
+        out.append(size - tile)
+        return out
+
+    return [(x, y, min(x + tile, width), min(y + tile, height)) for y in starts(height) for x in starts(width)]
+
+
+def box_iou(a, b):
+    """IoU of two xyxy boxes."""
+    iw = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    ih = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    inter = iw * ih
+    union = (a[2] - a[0]) * (a[3] - a[1]) + (b[2] - b[0]) * (b[3] - b[1]) - inter
+    return inter / union if union > 0 else 0.0
+
+
+def match_detections(dets, gts, iou=0.5):
+    """Greedy one-to-one matching of detections [(box, score)] to ground-truth boxes by decreasing score at IoU >= `iou`.
+    -> (true positives, false positives, false negatives)."""
+    used = set()
+    tp = 0
+    for box, _ in sorted(dets, key=lambda d: -d[1]):
+        best, best_i = 0.0, None
+        for i, g in enumerate(gts):
+            if i in used:
+                continue
+            v = box_iou(box, g)
+            if v > best:
+                best, best_i = v, i
+        if best_i is not None and best >= iou:
+            used.add(best_i)
+            tp += 1
+    return tp, len(dets) - tp, len(gts) - tp

@@ -110,6 +110,12 @@ class NmsTest(unittest.TestCase):
         keep = ol.nms(boxes, np.array([0.9, 0.8], np.float32), np.array([0, 1]))
         self.assertEqual(sorted(keep), [0, 1])
 
+    def test_ios_removes_a_small_box_inside_a_big_one_that_iou_keeps(self):
+        boxes = np.array([[0, 0, 100, 100], [20, 20, 50, 50]], np.float32)       # the second lies inside the first: IoU 0.09, IOS 1.0
+        scores = np.array([0.9, 0.8], np.float32)
+        self.assertEqual(sorted(ol.nms(boxes, scores, np.array([0, 0]), 0.5, "iou")), [0, 1])
+        self.assertEqual(list(ol.nms(boxes, scores, np.array([0, 0]), 0.5, "ios")), [0])
+
     def test_empty(self):
         self.assertEqual(len(ol.nms(np.zeros((0, 4), np.float32), np.zeros(0, np.float32), np.zeros(0, int))), 0)
 
@@ -149,6 +155,41 @@ class GeometryTest(unittest.TestCase):
         d0 = ol.pixel_ray(100, 100, K, None)
         d1 = ol.pixel_ray(100, 100, K, D)
         self.assertGreater(np.linalg.norm(d0 - d1), 1e-3)                # the edge pixel moves when the distortion is applied
+
+
+class TilingTest(unittest.TestCase):
+    def test_a_small_image_is_one_tile(self):
+        self.assertEqual(ol.tile_grid(400, 300, 512, 0.2), [(0, 0, 400, 300)])
+
+    def test_tiles_cover_the_image_with_the_overlap_and_the_last_one_aligned_to_the_border(self):
+        tiles = ol.tile_grid(1920, 1080, 512, 0.2)
+        xs = sorted({t[0] for t in tiles})
+        self.assertEqual(xs, [0, 409, 818, 1227, 1408])                  # step int(512 * 0.8) = 409, the last one at 1920 - 512
+        self.assertEqual(sorted({t[1] for t in tiles}), [0, 409, 568])
+        self.assertTrue(all(t[2] - t[0] == 512 and t[3] - t[1] == 512 for t in tiles))
+        covered = np.zeros((1080, 1920), bool)
+        for x0, y0, x1, y1 in tiles:
+            covered[y0:y1, x0:x1] = True
+        self.assertTrue(covered.all())
+
+    def test_a_12_megapixel_photo(self):
+        tiles = ol.tile_grid(3968, 2976, 512, 0.2)
+        self.assertEqual(len(tiles), 10 * 8)                              # 10 columns x 8 rows
+        self.assertEqual(max(t[2] for t in tiles), 3968)
+        self.assertEqual(max(t[3] for t in tiles), 2976)
+
+
+class MatchTest(unittest.TestCase):
+    def test_iou(self):
+        self.assertAlmostEqual(ol.box_iou([0, 0, 10, 10], [0, 0, 10, 10]), 1.0)
+        self.assertAlmostEqual(ol.box_iou([0, 0, 10, 10], [5, 0, 15, 10]), 1.0 / 3.0)
+        self.assertEqual(ol.box_iou([0, 0, 10, 10], [20, 20, 30, 30]), 0.0)
+
+    def test_matching_counts_tp_fp_fn_one_to_one(self):
+        gts = [[0, 0, 100, 100], [200, 200, 300, 300], [500, 500, 600, 600]]
+        dets = [([2, 2, 102, 102], 0.9), ([198, 198, 302, 302], 0.8), ([205, 205, 305, 305], 0.7), ([900, 900, 950, 950], 0.6)]
+        tp, fp, fn = ol.match_detections(dets, gts, 0.5)
+        self.assertEqual((tp, fp, fn), (2, 2, 1))                         # the second box over the same ground truth and the stray one are false positives
 
 
 class FloorMemoryTest(unittest.TestCase):
