@@ -18,9 +18,8 @@ import time
 
 import cv2
 import numpy as np
-import onnxruntime as ort
-
 from arm_perception import object_logic as ol
+from arm_perception.onnx_session import make_session
 
 
 def load_names(session, given):
@@ -159,13 +158,13 @@ def main():
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--every", type=int, default=1, help="take every Nth photo of the folder")
     ap.add_argument("--threads", type=int, default=16)
+    ap.add_argument("--device", default="auto", choices=["auto", "gpu", "cpu"], help="auto: the CUDA GPU when available (onnx_session.py)")
     ap.add_argument("--masks", action="store_true", help="a -seg model: decode the masks and report area, centroid and axis per detection")
     ap.add_argument("--scales", default="1.0", help="comma separated factors the photo is resized by before tiling, e.g. 1.0,0.6,0.4 (with --masks)")
     a = ap.parse_args()
 
-    opts = ort.SessionOptions()
-    opts.intra_op_num_threads = a.threads
-    session = ort.InferenceSession(a.model, opts, providers=["CPUExecutionProvider"])
+    session, providers = make_session(a.model, a.threads, a.device)
+    print("onnxruntime providers:", providers)
     inp = session.get_inputs()[0]
     size = int(inp.shape[2]) if isinstance(inp.shape[2], int) else 640
     names = load_names(session, a.names)

@@ -43,6 +43,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from arm_perception import object_logic as ol
+from arm_perception.onnx_session import make_session
 from arm_perception.msg import ObjectDetection, ObjectDetectionArray
 from arm_camera.geometry import make_transform, matrix_from_quat
 
@@ -54,14 +55,11 @@ def sanitize(name):
 class Node(object):
     def __init__(self):
         P = rospy.get_param
-        import onnxruntime as ort
         model = P("~model", "")
         if not model or not os.path.isfile(model):
             rospy.logfatal("object_detector: model file not found: %r (set ~model, an .onnx exported from your YOLO weights)", model)
             sys.exit(1)
-        opts = ort.SessionOptions()
-        opts.intra_op_num_threads = int(P("~threads", 8))
-        self.session = ort.InferenceSession(model, opts, providers=["CPUExecutionProvider"])
+        self.session, self.providers = make_session(model, int(P("~threads", 8)), P("~device", "auto"))
         inp = self.session.get_inputs()[0]
         self.input_name = inp.name
         shape = inp.shape
@@ -103,7 +101,7 @@ class Node(object):
         rospy.Subscriber("~select_class", String, lambda m: self.select(m.data), queue_size=1)
         rospy.Subscriber(P("~image_topic", "/usb_cam/image_raw"), Image, self.on_image, queue_size=1, buff_size=2 ** 24)
         rospy.Timer(rospy.Duration(0.5), self.on_timer)
-        rospy.logwarn("object_detector ready: %s, input %d, %d classes %s, format %s, conf %.2f, floor z %.3f (%s)", os.path.basename(model), self.size,
+        rospy.logwarn("object_detector ready: %s on %s, input %d, %d classes %s, format %s, conf %.2f, floor z %.3f (%s)", os.path.basename(model), self.providers[0], self.size,
                       len(self.names), self.names[:8], self.fmt, self.conf, self.floor_z_param, "marker_0 when seen" if self.floor_from_marker0 else "parameter")
 
     # ---- inputs ---------------------------------------------------------------------------------------------

@@ -72,3 +72,26 @@ onto the white tray, the soil and the floor beyond the leaves, plants are covere
 tile borders, and there is a detection on the grass row at scale 0.6. Neither the masks nor the multi-scale tiling make VignaX-3 usable for a grasp point on the lab
 setup: it was trained on field seedlings of about 250 px in 512 px tiles and the lab scene is a different domain (larger overhead plants, tiled floor, white tray).
 The remaining lever is fine-tuning on labeled images of the lab setup, ideally taken by the arm camera at its working poses.
+
+## GPU inference (2026-10-13)
+`onnx_session.make_session(model, threads, device)` (used by `object_detector_node.py` via `~device`, by `detect_images.py` and `eval_cv_methods.py` via `--device
+auto|gpu|cpu`) runs on the CUDA GPU when `/home/dev/pylibs_gpu` exists (onnxruntime-gpu 1.19.2 plus the pip CUDA 12.9 / cuDNN 9 libraries, installed with
+`pip install --target /home/dev/pylibs_gpu onnxruntime-gpu==1.19.2 nvidia-cudnn-cu12 nvidia-cublas-cu12 nvidia-cuda-runtime-cu12 nvidia-cufft-cu12
+nvidia-curand-cu12 nvidia-cuda-nvrtc-cu12 nvidia-nvjitlink-cu12 --no-deps`; override with `YOLO_GPULIBS`) and falls back to the CPU otherwise; `gpu` fails instead of
+falling back. The RTX 5070 (sm_120) has no precompiled kernel in this onnxruntime build, so they are JIT-compiled from PTX: the FIRST run in a fresh driver cache
+takes about 40 s, then 35 ms per 640 px tile (CPU: 0.4 s). VignaX-3 at 3.5x scale with 512 px tiles: 117 s -> 7 s per lab image, identical detections.
+Not tried: TensorRT / FP16 (the provider is listed but its engine build is slow and was not needed).
+
+## Classical methods vs VignaX-3 on the labeled lab images (2026-10-13)
+`scripts/eval_cv_methods.py` scores methods against the Roboflow COCO polygons of Testbed_1 to 5 (pixels against the union of the Vigna polygons; plants by
+centroid). Mean over the 5 images:
+
+| method | pixel P | pixel R | IoU | plants recall | plants precision | pixels on Sorgo |
+|---|---|---|---|---|---|---|
+| ExG (`classical_seg.py`, Otsu) | 0.61 | 0.75 | 0.46 | 0.53 | 0.49 | 19 % |
+| HSV | 0.64 | 0.60 | 0.45 | 0.60 | 0.60 | 32 % |
+| RandomForest, leave-one-image-out (Lab/HSV/ExG/texture) | 0.84 | 0.80 | 0.68 | 0.43 | 0.87 | 1 % |
+| VignaX-3, 3.5x, 512 px tiles | 0.72 | 0.14 | 0.13 | 0.06 | 0.85 | 1 % |
+
+VignaX-3 finds 3 to 12 of 60 to 111 labeled plants per image (scale / domain gap): fine-tune it on labels of the lab setup. The RandomForest segments well
+but merges touching plants (instance splitting is the weak point) and failed on the held-out Testbed_5 (IoU 0.18); ExG cannot tell Vigna from Sorgo.
