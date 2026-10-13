@@ -95,3 +95,24 @@ centroid). Mean over the 5 images:
 
 VignaX-3 finds 3 to 12 of 60 to 111 labeled plants per image (scale / domain gap): fine-tune it on labels of the lab setup. The RandomForest segments well
 but merges touching plants (instance splitting is the weak point) and failed on the held-out Testbed_5 (IoU 0.18); ExG cannot tell Vigna from Sorgo.
+
+## Small YOLO trained on the labeled lab photos (2026-10-13)
+Data: the Roboflow export `yolo/Sorgo-Vigna.v3i.yolo26` (9 photos: Testbed_1 to 5 and four phone photos, 539 Vigna polygons, classes `Sorgo_Row`, `Vigna`),
+cut by `scripts/make_tile_dataset.py` into 640 px crops at scales 0.7 to 2.5 (1432 train crops from 7 photos, 475 validation crops from the 2 held-out photos
+Testbed_5 and one phone photo). Training: `scripts/train_small_yolo.py`, `yolo26s-seg` fine-tuned from the local pretrained weights, 80 epochs, 0.63 h on the
+RTX 5070, run with the host's existing CUDA environment `~/.venv` (torch 2.13+cu130, ultralytics 8.4.95; the container's py3.8 torch is CPU-only).
+Held-out validation: mask mAP50 0.84 (box 0.83), still improving at epoch 80. Run: `yolo/runs/segment/runs_arm/vignax_s`; ONNX exported in the container
+(`venv_yolo`) as `models/vignax_small.onnx` (42 MB, output `(1, 38, 8400)` + protos, layout v8, names from the metadata).
+
+Live arm-camera frames (not in the training set), scored against my hand-drawn boxes of the 7 visible Vigna plants (3 frames, conf 0.25, full frame):
+| input size | plants covered | detections inside a plant box | ms / frame (GPU) |
+|---|---|---|---|
+| 640 | 4.0 / 7 | 4.7 of 4.7 | 14 |
+| 960 | 3.7 / 7 | 4.0 of 4.0 | 15 |
+| 1280 | 3.3 / 7 | 3.0 of 3.0 | 19 |
+| 1920 | 4.0 / 7 | 5.0 of 5.3 | 33 |
+No detection on the grass or the marker. For comparison VignaX-3 found 1.7 of 7 (tiled, 4 scales, 1 to 7 s) and the classical methods fragment every plant. Misses
+are the shaded leaves at the left and the cluster at the right, and some boxes cover part of a plant: the training photos are not from this camera. The full-frame
+640 letterbox is the best size, which is exactly what `object_detector_node.py` does: `roslaunch arm_perception object_detector.launch model:=/home/dev/models/vignax_small.onnx`
+(`~device` auto = GPU; `grasp_class: Vigna`). Checked through the node's decode path on captured frames: 4 to 7 detections, 7 ms; the node itself has not been run live
+with this model yet. Next step: label the captured arm-camera frames (`models/samples`, 15 frames, 3 poses, sidecar JSON with the camera pose) and retrain.
