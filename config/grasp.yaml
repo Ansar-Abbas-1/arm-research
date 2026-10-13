@@ -67,7 +67,7 @@ close:
 # correction_steps times; the descent and the lift are then re-planned from the actual joints with the compensation. 0 disables all of it.
 correction_steps: 2            # re-aims per position (PRE, GRASP). Operator: 2. FLAGGED
 correction_trigger: 0.006      # m: at or below this error nothing is corrected (the reach node's default). FLAGGED
-correction_gain: 1.0           # fraction of the measured error added to the compensation per step. FLAGGED
+correction_gain: 0.7           # fraction of the measured error added to the compensation per step. Operator: 0.7 (at 1.0 the first PRE step overshot: 14 -> 20 mm, the sag changes with the pose). FLAGGED
 correction_max_total: 0.06     # m: cap on the compensation. FLAGGED
 correction_max_error: 0.05     # m: after the steps, a pose still further off than this aborts the sequence. FLAGGED
 correction_settle: 0.8         # s to wait after a move before measuring the end effector. FLAGGED
