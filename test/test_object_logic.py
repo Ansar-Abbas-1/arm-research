@@ -247,5 +247,42 @@ class FloorMemoryTest(unittest.TestCase):
         self.assertEqual(f.get(21.0, 0.0)[0], -0.59)
 
 
+class MaskTargetTest(unittest.TestCase):
+    def test_pixel_position_of_the_box_centre_equals_object_position(self):
+        T = camera_looking_down(0.6)
+        box = (800.0, 400.0, 1000.0, 600.0)
+        a = ol.object_position(box, T, K, None, 0.1)
+        b = ol.pixel_position(900.0, 500.0, T, K, None, 0.1)
+        np.testing.assert_allclose(a, b)
+
+    def test_pixel_position_round_trip(self):
+        T = camera_looking_down(0.6, x=0.2, y=-0.1)
+        p = np.array([0.31, -0.05, 0.1])
+        u, v = project(T, p, K)
+        np.testing.assert_allclose(ol.pixel_position(u, v, T, K, None, 0.1), p, atol=1e-9)
+
+    def test_mask_centroid_is_mapped_back_through_the_letterbox(self):
+        img = np.zeros((1080, 1920, 3), np.uint8)
+        _, scale, pad = ol.letterbox(img, 640)                       # scale 1/3, padding on top and bottom
+        mask = np.zeros((640, 640), bool)
+        mask[300:340, 200:260] = True                                # centroid (229.5, 319.5) in index space
+        u, v = ol.mask_pixel(mask, scale, pad)
+        self.assertAlmostEqual(u, (230.0 - pad[0]) / scale, places=6)
+        self.assertAlmostEqual(v, (320.0 - pad[1]) / scale, places=6)
+
+    def test_an_off_centre_leaf_moves_the_box_centre_but_less_the_mask_centroid(self):
+        """The reason for the mask target: a long leaf on one side shifts the box centre by half its length, the centroid by far less."""
+        mask = np.zeros((640, 640), bool)
+        mask[300:340, 300:340] = True                                # the plant body
+        mask[318:322, 340:420] = True                                # one thin outstretched leaf
+        ys, xs = np.nonzero(mask)
+        box_cx = 0.5 * (xs.min() + xs.max() + 1)
+        u, _ = ol.mask_pixel(mask, 1.0, (0, 0))
+        self.assertLess(abs(u - 320.0), abs(box_cx - 320.0))
+
+    def test_an_empty_mask_has_no_pixel(self):
+        self.assertIsNone(ol.mask_pixel(np.zeros((640, 640), bool), 0.5, (0, 140)))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,6 +5,7 @@ format: auto                    # auto | v8 (YOLOv8/11, channels first) | v5 | e
 names: []                       # class names in model order; empty = read from the ONNX metadata (ultralytics exports store them)
 conf: 0.35                      # FLAGGED: score threshold
 iou: 0.45                       # FLAGGED: NMS IoU threshold
+target_point: mask              # box | mask: the pixel a detection is positioned from: the box centre, or the centroid of its segmentation mask (a -seg model; closer to a plant's stem)
 max_rate_hz: 2.0                # frames processed per second at most (CPU inference of a few tens of ms each)
 threads: 8                      # onnxruntime intra-op threads
 image_topic: /usb_cam/image_raw

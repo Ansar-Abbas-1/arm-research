@@ -74,6 +74,7 @@ class Node(object):
         self.fmt = P("~format", "auto")
         self.conf, self.iou = float(P("~conf", 0.35)), float(P("~iou", 0.45))
         self.max_rate = float(P("~max_rate_hz", 2.0))
+        self.target_point = P("~target_point", "box")                 # box: the box centre; mask: the centroid of the segmentation mask (a -seg model)
         self.base = P("~base_frame", "base_link")
         self.prefix = P("~tf_prefix", "object_")
         self.floor_z_param = float(P("~floor_z", -0.60))
@@ -92,6 +93,7 @@ class Node(object):
         self.K = self.D = None
         self.last_t, self.lock = 0.0, threading.Lock()
         self.target = None                                            # (position, stamp, class, confidence)
+        self.pixels = []
         self.floor_age = None
         self.stats = {"frames": 0, "inference_ms": 0.0, "skipped_no_tf": 0, "last_error": ""}
         self.pub = rospy.Publisher("~detections", ObjectDetectionArray, queue_size=1)
@@ -154,20 +156,30 @@ class Node(object):
         img = self.bridge.imgmsg_to_cv2(msg, "bgr8")
         t0 = time.time()
         blob, scale, pad = ol.letterbox(img, self.size)
-        out = self.session.run(None, {self.input_name: blob})[0]
-        boxes, scores, cls = ol.decode(out, self.fmt, self.conf, len(self.names) or None)
-        keep = ol.nms(boxes, scores, cls, self.iou)
+        outs = self.session.run(None, {self.input_name: blob})
+        out, pixels = outs[0], None
+        if self.target_point == "mask" and len(outs) > 1 and out.shape[1] == 4 + len(self.names) + outs[1].shape[1]:     # a -seg model: boxes, scores, mask coefficients, prototypes
+            boxes, scores, cls, coefs = ol.decode_seg(out, self.conf, len(self.names))
+            keep = ol.nms(boxes, scores, cls, self.iou)
+            masks = ol.masks_from_protos(outs[1][0], coefs[keep], boxes[keep], self.size)
+            pixels = [ol.mask_pixel(m, scale, pad) for m in masks]
+        else:
+            boxes, scores, cls = ol.decode(out, self.fmt, self.conf, len(self.names) or None)
+            keep = ol.nms(boxes, scores, cls, self.iou)
         boxes = ol.unletterbox(boxes[keep], scale, pad, img.shape[:2])
         scores, cls = scores[keep], cls[keep]
+        self.pixels = []                                              # the pixel each detection is positioned from (for the annotated image)
         ms = 1000.0 * (time.time() - t0)
         floor_z, source = self.floor()
         arr = ObjectDetectionArray()
         arr.header, arr.inference_ms, arr.floor_z, arr.floor_source = msg.header, ms, floor_z, source
         ranks, transforms = {}, []
-        for b, s, c in zip(boxes, scores, cls):
+        for i, (b, s, c) in enumerate(zip(boxes, scores, cls)):
             name = self.names[c] if c < len(self.names) else "class%d" % c
             z_plane = floor_z + self.heights.get(name, self.default_height)
-            pos = ol.object_position(b, T, self.K, self.D, z_plane, self.max_range)
+            uv = pixels[i] if pixels is not None and pixels[i] is not None else (0.5 * (b[0] + b[2]), 0.5 * (b[1] + b[3]))     # mask centroid, else the box centre
+            self.pixels.append(uv)
+            pos = ol.pixel_position(uv[0], uv[1], T, self.K, self.D, z_plane, self.max_range)
             d = ObjectDetection(class_name=name, class_id=int(c), confidence=float(s), box=[float(v) for v in b], valid=pos is not None, plane_z=float(z_plane))
             if pos is not None:
                 k = ranks.get(name, 0)
@@ -189,10 +201,12 @@ class Node(object):
         self.stats["frames"] += 1
         self.stats["inference_ms"] = ms
         if self.pub_img.get_num_connections():
-            self.pub_img.publish(self.bridge.cv2_to_imgmsg(self.annotate(img, arr), "bgr8"))
+            self.pub_img.publish(self.bridge.cv2_to_imgmsg(self.annotate(img, arr, self.pixels), "bgr8"))
 
-    def annotate(self, img, arr):
+    def annotate(self, img, arr, pixels=()):
         import cv2
+        for d, uv in zip(arr.detections, pixels):
+            cv2.circle(img, (int(uv[0]), int(uv[1])), 14, (0, 0, 255), -1)      # the point the position is computed from
         for d in arr.detections:
             x1, y1, x2, y2 = [int(v) for v in d.box]
             color = (0, 200, 0) if d.valid else (0, 0, 255)

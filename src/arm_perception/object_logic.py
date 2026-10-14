@@ -133,12 +133,26 @@ def intersect_plane(origin, direction, z_plane, max_range=3.0):
     return origin + t * direction
 
 
-def object_position(box_xyxy, T_base_camera, K, D, z_plane, max_range=3.0):
-    """3D position (base frame) of the bounding-box centre on the plane z = z_plane, or None when the ray does not reach it."""
-    u, v = 0.5 * (box_xyxy[0] + box_xyxy[2]), 0.5 * (box_xyxy[1] + box_xyxy[3])
+def pixel_position(u, v, T_base_camera, K, D, z_plane, max_range=3.0):
+    """3D position (base frame) where the ray through pixel (u, v) meets the plane z = z_plane, or None when it does not reach it."""
     d_cam = pixel_ray(u, v, K, D)
     R, o = T_base_camera[:3, :3], T_base_camera[:3, 3]
     return intersect_plane(o, R.dot(d_cam), z_plane, max_range)
+
+
+def object_position(box_xyxy, T_base_camera, K, D, z_plane, max_range=3.0):
+    """3D position (base frame) of the bounding-box centre on the plane z = z_plane, or None when the ray does not reach it."""
+    u, v = 0.5 * (box_xyxy[0] + box_xyxy[2]), 0.5 * (box_xyxy[1] + box_xyxy[3])
+    return pixel_position(u, v, T_base_camera, K, D, z_plane, max_range)
+
+
+def mask_pixel(mask, scale, pad):
+    """Centroid (u, v) of a boolean mask given at the letterboxed input resolution, in ORIGINAL image pixels (pixel centres at +0.5, like the
+    boxes); None for an empty mask. A plant's mask centroid is closer to its stem than the box centre, which one outstretched leaf shifts."""
+    ys, xs = np.nonzero(mask)
+    if len(xs) == 0:
+        return None
+    return ((float(xs.mean()) + 0.5 - pad[0]) / scale, (float(ys.mean()) + 0.5 - pad[1]) / scale)
 
 
 class FloorMemory(object):
