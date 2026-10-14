@@ -104,6 +104,7 @@ class Node(gt.GraspContext):
         self.probe = False
         self.ff = {k: np.zeros(3) for k in sm.KEYS}                   # feed-forward offsets of this grasp (added to the waypoints)
         self.last_aim, self.approach_deg, self.run_id, self.q_start = {}, 90.0, "", [0.0] * 5
+        self.sag_scale = 1.0                                          # how much of the model's offset this grasp could use (the full one may be out of reach)
         self.wps = []
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
@@ -238,18 +239,28 @@ class Node(gt.GraspContext):
         self.approach_deg = float(np.degrees(np.arcsin(np.clip(T[2, 2], -1.0, 1.0))))      # the tool axis below the horizontal (90 = straight down)
         self.q_start = [float(v) for v in self.q]                                       # where the run starts: joint 1 travels from here to the target's azimuth
         az = float(np.arctan2(wps[0].position[1], wps[0].position[0]))
-        self.ff = ({k: np.zeros(3) for k in sm.KEYS} if self.sag_model is None else
+        ff_full = ({k: np.zeros(3) for k in sm.KEYS} if self.sag_model is None else
                    self.sag_model.offsets(self.approach_deg, az, self.q_start[0], self.sag_gain, self.sag_min_n, self.sag_max_offset))
-        planned = [gp.Waypoint(w.name, w.position + self.ff[w.name], w.R, w.grasp_point) for w in wps]     # aim where the sag will bring the arm onto the waypoint
-        legs, trajs = self.plan_legs(planned)
+        # Aim where the sag will bring the arm onto the waypoint. Near the edge of the workspace that aim can be unreachable (a PRE pushed further inward by the
+        # offset): back the offset off in steps until the whole plan is feasible, and say so.
+        self.sag_scale = 1.0
+        for scale in ((1.0, 0.75, 0.5, 0.25, 0.0) if any(np.any(v) for v in ff_full.values()) else (0.0,)):
+            self.ff = {k: scale * v for k, v in ff_full.items()}
+            planned = [gp.Waypoint(w.name, w.position + self.ff[w.name], w.R, w.grasp_point) for w in wps]
+            legs, trajs = self.plan_legs(planned)
+            problems = gp.check_plan(legs, self.spec)
+            self.sag_scale = scale
+            if not problems:
+                break
+        if self.sag_scale < 1.0 and any(np.any(v) for v in ff_full.values()):
+            rospy.logwarn("grasp: the full sag offset is not reachable here: using %.0f %% of it", 100.0 * self.sag_scale)
         self.last_aim = {w.name: np.array(w.position) for w in planned}
         self.wps = wps
-        problems = gp.check_plan(legs, self.spec)
         duration = gp.total_duration(legs, self.spec, gripper_time=(self.spec.gripper_open - self.spec.gripper_closed) * (1.0 / self.gripper_speed + 1.0 / self.close.close_speed) + self.gripper_settle + self.close.hold_time + 5.0)
         dev = max([l.deviation for l in legs if l.success] or [0.0])
         self.plan_info = {"legs": [{"name": l.name, "ok": l.success, "duration": l.duration, "deviation_mm": 1000 * l.deviation, "message": l.message} for l in legs],
                           "duration": duration, "problems": problems, "waypoints": {w.name: [float(v) for v in w.position] for w in wps},
-                          "approach_deg": round(self.approach_deg, 1), "probe": self.probe,
+                          "approach_deg": round(self.approach_deg, 1), "probe": self.probe, "sag_scale": self.sag_scale,
                           "sag_ff_mm": {k: [round(1000.0 * float(v), 1) for v in self.ff[k]] for k in sm.KEYS}}
         if problems:
             self.set_state("ABORTED", "plan not feasible: " + "; ".join(problems))
