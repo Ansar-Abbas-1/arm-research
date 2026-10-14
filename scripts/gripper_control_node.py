@@ -91,14 +91,20 @@ class Node(object):
     def loop(self):
         rate = rospy.Rate(RATE_HZ)
         while not rospy.is_shutdown():
-            with self.lock:
-                out = self.controller.step(time.time(), self.pos, self.load, self.load_time, self.estop is False)
-                if out.cmd is not None:
-                    self.command(out.cmd)
-                if out.result is not None and self.waiter is not None:
-                    self.waiter[1].append(out.result)
-                    self.waiter[0].set()
-            self.publish()
+            try:
+                with self.lock:
+                    out = self.controller.step_safe(time.time(), self.pos, self.load, self.load_time, self.estop is False)
+                    if out.cmd is not None:
+                        self.command(out.cmd)
+                    if out.result is not None and self.waiter is not None:
+                        self.waiter[1].append(out.result)
+                        self.waiter[0].set()
+                    if self.controller.last_error:
+                        rospy.logerr("gripper_control: internal error, the gripper is frozen (open or close again to recover):\n%s", self.controller.last_error)
+                        self.controller.last_error = None
+                self.publish()
+            except Exception as e:  # noqa: BLE001  (this thread must never die: a dead loop cannot open the gripper)
+                rospy.logerr_throttle(5.0, "gripper_control: loop error %s: %s", type(e).__name__, e)
             rate.sleep()
 
     def publish(self, force=False):

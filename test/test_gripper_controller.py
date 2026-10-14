@@ -259,5 +259,34 @@ class RuntimeLoadTargetTest(unittest.TestCase):
         self.assertLessEqual(abs(w.load - 15.0), w.c.p.load_band + 1.0)
 
 
+class StepSafeTest(unittest.TestCase):
+    def test_an_internal_error_freezes_the_gripper_and_releases_the_pending_action_instead_of_raising(self):
+        w = World(obj=0.012)
+        w.c.request_close(w.t, w.pos)
+        w.run(1)
+
+        def boom(*a, **k):
+            raise TypeError("unsupported operand type(s) for -: 'float' and 'NoneType'")
+        w.c.closer.step = boom
+        out = w.c.step_safe(w.t + DT, w.pos, w.load, w.stamp, True)                   # must not raise
+        self.assertIsNone(out.cmd)
+        self.assertEqual((out.result.kind, out.result.ok), ("close", False))
+        self.assertIn("internal error", out.result.message)
+        self.assertEqual(w.c.mode, "FROZEN")
+        self.assertIn("TypeError", w.c.last_error)
+
+    def test_the_gripper_can_be_opened_again_after_an_internal_error(self):
+        w = World(obj=None)
+        w.pos = w.cmd = 0.0
+        w.c.request_close(w.t, w.pos)
+        w.c.closer.step = lambda *a, **k: 1 / 0
+        w.c.step_safe(w.t + DT, w.pos, w.load, w.stamp, True)
+        self.assertEqual(w.c.mode, "FROZEN")
+        w.c.request_open(w.t, w.pos)
+        w.run(10)
+        self.assertEqual(w.c.mode, "IDLE")
+        self.assertTrue(w.results[-1].ok and w.results[-1].kind == "open")
+
+
 if __name__ == "__main__":
     unittest.main()

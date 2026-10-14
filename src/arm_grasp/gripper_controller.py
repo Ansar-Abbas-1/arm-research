@@ -12,6 +12,8 @@ The gripper_control node calls `step()` at 20 Hz with the latest measurements an
 `grip` summarises it for others: 'held' (HOLDING with a settled object grasp), 'thin' (closed completely below the load
 target, counted as grasped), 'lost', or 'none'. An action's completion is reported once, as a `Result`.
 """
+import traceback
+
 from arm_grasp import grasp_plan as gp
 
 
@@ -42,6 +44,7 @@ class GripperController(object):
         self.t_reached = None
         self.t_last = None
         self.pending = None             # 'open' | 'close' while an action waits for its completion
+        self.last_error = None          # traceback of the last internal error caught by step_safe
         self.contact_ratio = params.contact_load / params.load_target if params.load_target > 0.0 else 1.0 / 3.0    # contact_load follows the target at this ratio
 
     # ---- requests ----------------------------------------------------------------------------------------------
@@ -77,6 +80,16 @@ class GripperController(object):
         return self._freeze(reason)
 
     # ---- the control step -----------------------------------------------------------------------------------------
+    def step_safe(self, now, pos, load, load_stamp, estop_ok):
+        """step() that never raises: an internal error freezes the gripper (no more commands, the driver holds the last goal) and comes back as the failed
+        result of the pending action, so the node's loop thread does not die and a waiting open / close call is released. The traceback is in
+        `last_error` (None when there was none). 2026-10-14: an unhandled TypeError in the loop thread left the gripper unable to open until a restart."""
+        try:
+            return self.step(now, pos, load, load_stamp, estop_ok)
+        except Exception as e:  # noqa: BLE001  (the loop must survive anything)
+            self.last_error = traceback.format_exc()
+            return StepOut(result=self._freeze("internal error: %s: %s" % (type(e).__name__, e)))
+
     def step(self, now, pos, load, load_stamp, estop_ok):
         if self.mode in ("IDLE", "FROZEN", "LOST"):
             return StepOut()
