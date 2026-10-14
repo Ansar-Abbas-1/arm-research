@@ -163,5 +163,26 @@ class ArmFrameTest(unittest.TestCase):
         np.testing.assert_allclose(s[2][1], +0.012, atol=1e-12)
 
 
+class ReportToolTest(unittest.TestCase):
+    def test_the_report_splits_model_on_and_off_and_prints_the_residuals(self):
+        import os
+        import subprocess
+        import sys
+        import tempfile
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "sag_20261014.jsonl"), "w") as f:
+            off = polar_row(-40.0, radial=0.03, tangent=0.012)
+            on = polar_row(-40.0, radial=0.03, tangent=0.012)
+            on["aim"] = (np.array(on["goal"]) - [0.001, 0.0, 0.0]).tolist()                 # the aim was shifted: only the 'on' row carries ff_mm
+            on["ff_mm"] = [-30.0, 10.0, 0.0]
+            f.write(json.dumps(off) + "\n" + json.dumps(on) + "\n")
+        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts", "sag_report.py")
+        res = subprocess.run([sys.executable, script, "--log-dir", d], capture_output=True, text=True)
+        self.assertEqual(res.returncode, 0, res.stderr)
+        self.assertIn("off", res.stdout)
+        self.assertIn(" on ", res.stdout)
+        self.assertIn("-az", res.stdout)
+
+
 if __name__ == "__main__":
     unittest.main()
