@@ -116,3 +116,21 @@ are the shaded leaves at the left and the cluster at the right, and some boxes c
 640 letterbox is the best size, which is exactly what `object_detector_node.py` does: `roslaunch arm_perception object_detector.launch model:=/home/dev/models/vignax_small.onnx`
 (`~device` auto = GPU; `grasp_class: Vigna`). Checked through the node's decode path on captured frames: 4 to 7 detections, 7 ms; the node itself has not been run live
 with this model yet. Next step: label the captured arm-camera frames (`models/samples`, 15 frames, 3 poses, sidecar JSON with the camera pose) and retrain.
+
+## Retrained with arm-camera labels and the augmented copies (2026-10-14)
+Data: Roboflow v4 (12 photos: the 9 earlier ones plus 3 arm-camera frames, one per camera pose) merged with v5 (the same 12 photos x 3 augmented versions: flip,
++-15 deg rotation, +-10 % exposure, Gaussian blur up to 4.5 px, salt-and-pepper noise 1.8 %). `make_tile_dataset.py` (`--only/--exclude/--drop-val`, unique crop names)
+gives 3070 train crops (887 from arm frames, oversampled with a small stride, the v5 copies sampled more lightly) and 654 validation crops from photos held out
+BEFORE any augmentation: Testbed_5, one phone photo and the third arm pose (`arm_..._171916`, 179 crops); the augmented copies of held-out photos are dropped.
+Warm start from the previous model, 50 epochs, 0.92 h (`yolo/runs/segment/runs_arm/vignax_s_v45A`, ONNX `models/vignax_small_v45A.onnx`).
+
+| validation set | model | mask P | mask R | mask mAP50 |
+|---|---|---|---|---|
+| held-out arm pose (179 crops) | previous | 0.58 | 0.48 | 0.56 |
+| held-out arm pose | v45A | 0.93 | 0.80 | 0.91 |
+| held-out phone photos (475 crops) | previous | 0.82 | 0.79 | 0.84 |
+| held-out phone photos | v45A | 0.86 | 0.79 | 0.86 |
+The held-out arm pose shows the SAME plants as the two training poses from another viewpoint, so 0.91 is optimistic. The independent check: the pre-grasp live frames
+(never labeled, my hand-drawn boxes of 7 plants): v45A covers 6.0 / 7 at 960 and 1920 px, 5.3 / 7 at 640 (previous model 4.0 / 7), every Vigna detection on a plant, 13 ms
+(640) to 34 ms (1920) per frame; it also reports the grass as its own class `Sorgo_Row`. Remaining misses: some shaded plants at the left and top of the pot.
+A fine-tune on all 12 photos (no holdout, `vignax_tiles_v45B`) was started and stopped by the operator after its first epochs: no weights.
