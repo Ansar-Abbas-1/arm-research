@@ -103,7 +103,7 @@ class Node(gt.GraspContext):
                 rospy.logerr("grasp: cannot load the sag model %s (%s): running without it", self.sag_path, e)
         self.probe = False
         self.ff = {k: np.zeros(3) for k in sm.KEYS}                   # feed-forward offsets of this grasp (added to the waypoints)
-        self.last_aim, self.approach_deg, self.run_id = {}, 90.0, ""
+        self.last_aim, self.approach_deg, self.run_id, self.q_start = {}, 90.0, "", [0.0] * 5
         self.wps = []
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
@@ -236,8 +236,10 @@ class Node(gt.GraspContext):
             return GraspResponse(False, "refused: " + str(e), 0.0, 0.0)
         self.probe = bool(req.probe)
         self.approach_deg = float(np.degrees(np.arcsin(np.clip(T[2, 2], -1.0, 1.0))))      # the tool axis below the horizontal (90 = straight down)
+        self.q_start = [float(v) for v in self.q]                                       # where the run starts: joint 1 travels from here to the target's azimuth
+        az = float(np.arctan2(wps[0].position[1], wps[0].position[0]))
         self.ff = ({k: np.zeros(3) for k in sm.KEYS} if self.sag_model is None else
-                   self.sag_model.offsets(self.approach_deg, self.sag_gain, self.sag_min_n, self.sag_max_offset))
+                   self.sag_model.offsets(self.approach_deg, az, self.q_start[0], self.sag_gain, self.sag_min_n, self.sag_max_offset))
         planned = [gp.Waypoint(w.name, w.position + self.ff[w.name], w.R, w.grasp_point) for w in wps]     # aim where the sag will bring the arm onto the waypoint
         legs, trajs = self.plan_legs(planned)
         self.last_aim = {w.name: np.array(w.position) for w in planned}
@@ -392,7 +394,7 @@ class Node(gt.GraspContext):
                 return
             row = {"time": time.time(), "run": self.run_id, "mode": "probe" if self.probe else "real", "key": key, "step": int(step),
                    "approach_deg": round(self.approach_deg, 2), "goal": [float(v) for v in self.waypoint(key)], "aim": [float(v) for v in aim],
-                   "measured": [float(v) for v in measured], "joints": [float(v) for v in (self.q or [])[:6]],
+                   "measured": [float(v) for v in measured], "joints": [float(v) for v in (self.q or [])[:6]], "q_start": self.q_start,
                    "ff_mm": [round(1000.0 * float(v), 1) for v in self.ff[key]], "comp_mm": [round(1000.0 * float(v), 1) for v in self.correction.comp],
                    "target": [float(v) for v in self.plan_T[:3, 3]] if self.plan_T is not None else None}
             if not os.path.isdir(self.sag_log_dir):

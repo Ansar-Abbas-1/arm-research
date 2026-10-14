@@ -36,15 +36,16 @@ def main():
         print("nothing to fit")
         return 1
     model = sm.SagModel.fit(samples, a.bucket_deg)
-    print("approach  leg    runs   mean sag [mm] (x, y, z)        spread [mm]            feed-forward [mm]")
+    print("sag in the arm's frame: radial (outward), tangential (ALONG the joint 1 travel), vertical; feed-forward = minus that, in the same components")
+    print("approach  leg    runs   mean sag [mm] (radial, tangential, vertical)    spread [mm]")
     for centre in sorted(model.buckets):
-        off = model.offsets(centre, 1.0, min_n=1)
         for key in sm.KEYS:
             b = model.buckets[centre].get(key)
             if not b:
                 continue
-            m, sd, o = 1000.0 * np.array(b["mean"]), 1000.0 * np.array(b["std"]), 1000.0 * off[key]
-            print("%5.0f deg %-6s %4d   (%6.1f, %6.1f, %6.1f)   (%5.1f, %5.1f, %5.1f)   (%6.1f, %6.1f, %6.1f)" % (centre, key, b["n"], *m, *sd, *o))
+            m, sd = 1000.0 * np.array(b["mean"]), 1000.0 * np.array(b["std"])
+            print("%5.0f deg %-6s %4d   (%7.1f, %7.1f, %7.1f)               (%5.1f, %5.1f, %5.1f)%s" % (
+                centre, key, b["n"], *m, *sd, "" if b["n_tangential"] == b["n"] else "   tangential from %d runs" % b["n_tangential"]))
     if a.out:
         sm.save(model, a.out)
         print("model written to", a.out)

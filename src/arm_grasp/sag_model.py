@@ -10,12 +10,27 @@ The SAG of a move is s = measured - aim (the displacement the arm adds to what i
 compensation that was already applied, so samples taken with and without the model agree. The model is the mean sag per (approach angle bucket, key);
 to land on a waypoint the arm has to be told to go to waypoint - s, so the feed-forward offset is -gain * s. It is constant per leg and approach angle
 (it ignores how the sag changes with the target position: a fit over position needs many more samples).
+
+The sag is stored in the ARM'S OWN FRAME, not the base frame: radial (outward from the base axis, at the waypoint's azimuth), tangential and vertical. The
+tangential part is signed by the direction joint 1 travels (from the azimuth the run started at to the waypoint's): a joint that stops short of its goal
+under-shoots in the direction of travel, so that error mirrors when the target is on the other side of the start. (Measured 2026-10-14 at azimuth -40 degrees:
++12 mm tangential at every leg, i.e. about 1.4 degrees of joint 1 short of its goal.) Heuristic: the tangential part ramps from 0 to full over TRAVEL_RAMP rad of
+joint 1 travel, since a move too small to break the friction has no such error.
 """
 import json
 
 import numpy as np
 
 KEYS = ("PRE", "GRASP", "LIFT")
+TRAVEL_RAMP = 0.05      # rad of joint 1 travel over which the tangential sag ramps in (FLAGGED guess)
+
+
+def arm_frame(azimuth, azimuth_start):
+    """(radial, tangent, vertical) unit vectors of the arm's frame at `azimuth`; the tangent points along the joint 1 travel (sign and size of
+    clip((azimuth - azimuth_start) / TRAVEL_RAMP, -1, 1) are folded in, so it fades to zero for a move that is too small to matter)."""
+    u = np.array([np.cos(azimuth), np.sin(azimuth), 0.0])
+    v = np.array([-np.sin(azimuth), np.cos(azimuth), 0.0])
+    return u, v * float(np.clip((azimuth - azimuth_start) / TRAVEL_RAMP, -1.0, 1.0)), np.array([0.0, 0.0, 1.0])
 
 
 def read_rows(lines):
@@ -35,19 +50,28 @@ def read_rows(lines):
 
 
 def sag_samples(rows, modes=("real", "probe")):
-    """[(approach_deg, key, sag_vector)] from the FIRST measurement (step 0) of every position of every run; rows without a valid measurement are
-    skipped. step > 0 measurements follow corrective moves that were aimed at the already compensated point: they are samples too, but the
-    first one is the cleanest (one move from a known start), so only those are used."""
+    """[(approach_deg, key, local_sag [radial, tangential-along-travel, vertical], valid [3 bool])] from the FIRST measurement (step 0) of every position of every
+    run; rows without a valid measurement are skipped. step > 0 measurements follow corrective moves that were aimed at the already compensated point: the first
+    one is the cleanest (one move from a known start), so only those are used. The azimuth is the waypoint's (`goal`), the start azimuth is q_start[0] when the
+    row has it, else 0 (the viewing pose). The tangential component is valid only where joint 1 travelled at least TRAVEL_RAMP."""
     out = []
     for r in rows:
         try:
             if r.get("mode", "real") not in modes or int(r["step"]) != 0 or r["key"] not in KEYS:
                 continue
             s = np.asarray(r["measured"], float) - np.asarray(r["aim"], float)
-            if s.shape != (3,) or not np.all(np.isfinite(s)):
+            goal = np.asarray(r["goal"], float)
+            if s.shape != (3,) or not np.all(np.isfinite(s)) or goal.shape != (3,):
                 continue
-            out.append((float(r["approach_deg"]), r["key"], s))
-        except (KeyError, TypeError, ValueError):
+            az = float(np.arctan2(goal[1], goal[0]))
+            az0 = float(r["q_start"][0]) if r.get("q_start") else 0.0
+            u, w, z = arm_frame(az, az0)
+            travel = float(np.linalg.norm(w))
+            v = np.array([-np.sin(az), np.cos(az), 0.0])
+            sign = np.sign(az - az0)
+            local = np.array([s @ u, (s @ v) * sign, s @ z])
+            out.append((float(r["approach_deg"]), r["key"], local, np.array([True, travel >= 1.0 - 1e-9, True])))
+        except (KeyError, TypeError, ValueError, IndexError):
             continue
     return out
 
@@ -62,13 +86,18 @@ class SagModel(object):
     @classmethod
     def fit(cls, samples, bucket_deg=15.0):
         acc = {}
-        for angle, key, s in samples:
+        for angle, key, s, valid in samples:
             centre = round(angle / bucket_deg) * bucket_deg
-            acc.setdefault(centre, {}).setdefault(key, []).append(s)
+            acc.setdefault(centre, {}).setdefault(key, []).append((s, valid))
         buckets = {}
         for centre, keys in acc.items():
-            buckets[centre] = {k: {"mean": np.mean(v, axis=0).tolist(), "std": (np.std(v, axis=0, ddof=1) if len(v) > 1 else np.zeros(3)).tolist(), "n": len(v)}
-                               for k, v in keys.items()}
+            buckets[centre] = {}
+            for k, items in keys.items():
+                L, M = np.array([i[0] for i in items]), np.array([i[1] for i in items], bool)
+                n_c = M.sum(axis=0)
+                mean = [float(L[M[:, c], c].mean()) if n_c[c] else 0.0 for c in range(3)]
+                std = [float(L[M[:, c], c].std(ddof=1)) if n_c[c] > 1 else 0.0 for c in range(3)]
+                buckets[centre][k] = {"mean": mean, "std": std, "n": len(items), "n_tangential": int(n_c[1])}
         return cls(buckets, bucket_deg)
 
     def to_dict(self):
@@ -91,15 +120,17 @@ class SagModel(object):
             return np.zeros(3), 0
         return np.asarray(best[1]["mean"], float), int(best[1]["n"])
 
-    def offsets(self, approach_deg, gain=1.0, min_n=2, max_offset=0.08):
-        """{key: feed-forward offset [m] to ADD to that waypoint} = -gain x mean sag, each limited to max_offset in length. LIFT is not measured by a real
-        run: it uses its own samples when a probe measured it, else the GRASP sag."""
+    def offsets(self, approach_deg, azimuth=0.0, azimuth_start=0.0, gain=1.0, min_n=2, max_offset=0.08):
+        """{key: feed-forward offset [m] in the base frame to ADD to that waypoint} = -gain x the mean sag turned from the arm's frame (at `azimuth`, joint 1
+        travelling from `azimuth_start`) into the base frame, each limited to max_offset in length. LIFT is not measured by a real run: it uses its own samples
+        when a probe measured it, else the GRASP sag."""
         out = {}
+        u, w, z = arm_frame(azimuth, azimuth_start)
         for key in KEYS:
             s, n = self.sag(key, approach_deg, min_n)
             if n == 0 and key == "LIFT":
                 s, n = self.sag("GRASP", approach_deg, min_n)
-            off = -float(gain) * s
+            off = -float(gain) * (s[0] * u + s[1] * w + s[2] * z)
             norm = float(np.linalg.norm(off))
             out[key] = off * (max_offset / norm) if norm > max_offset else off
         return out
