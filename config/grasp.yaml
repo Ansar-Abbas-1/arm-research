@@ -49,6 +49,8 @@ close:
   close_speed: 0.004      # m/s: APPROACH speed of the close, until the load reaches contact_load. Operator: 4 mm/s. Set it here or with the close_speed launch arg. FLAGGED
   contact_speed: 0.002    # m/s: speed after the load has reached contact_load (the final trim approach). Operator: 2 mm/s. FLAGGED
   relief_speed: 0.001     # m/s: how fast the command opens at the peak limit (apart from contact_speed so the relief stays gentle). FLAGGED
+  load_target_max: 38.5   # %: upper limit of the target when it is changed at run time (service /gripper_control/set_load_target, rviz panel slider): the operator's steady-state number. The 45 % peak ceiling (load_limit) is not adjustable.
+  contact_floor: 2.0      # %: the lowest contact_load a run-time change of the target may give (free closing measured 0.8 to 1.8 %). FLAGGED
   contact_load: 15.0      # %: the load at which the close slows from close_speed to contact_speed. Operator: raised from 4 %. A higher value keeps the fast approach longer; the PREDICTED-load stop and the 45 % peak relief still apply. FLAGGED
   trim_speed: 0.002       # m/s: rate limit of the hold PI's command, the final trim. Operator: 2 mm/s. FLAGGED
   confirm_samples: 1      # consecutive NEW samples with predicted load >= target before the close stops. FLAGGED

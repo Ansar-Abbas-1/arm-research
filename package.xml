@@ -17,6 +17,7 @@
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
   <depend>std_srvs</depend>
+  <depend>arm_gui</depend>   <!-- hosts the SetLoadTarget service type (the rviz panel is its client), like PresetCommand -->
   <depend>tf2_ros</depend>
   <depend>arm_trajectory</depend>
   <depend>actionlib_msgs</depend>

@@ -156,6 +156,8 @@ class CloseParams:
     relief_speed: float = 0.001      # m/s: how fast the command opens when the load is at the peak limit (kept apart from contact_speed so a faster approach does not make the relief coarse)
     contact_load: float = 15.0       # % of max torque: the load at which the close slows from close_speed to contact_speed (operator: raised from 4 %; free closing measured 0.8 to 1.8 %)
     load_target: float = 38.5        # % of max torque: the STEADY-STATE load to hold the grasp at (raised from the operator's 37.5 on request, still under 40 with the band)
+    load_target_max: float = 38.5    # % ceiling of the runtime-adjustable target (service ~set_load_target, rviz panel slider): the operator's steady-state number; the target can only be set within [0, this]
+    contact_floor: float = 2.0       # % lowest contact_load a runtime change of the target may give (free closing measured 0.8 to 1.8 %)
     load_limit: float = 45.0         # % PEAK CEILING: at or above it the command opens at once (at relief_speed); if it persists for hold_timeout the grasp fails
     load_lead_s: float = 0.25        # s: look-ahead of the stop decision, predicted load = load + (load rate) x load_lead_s (covers the 10 Hz sampling and the lag)
     load_band: float = 1.0           # % band around load_target in which the grasp counts as settled (the hold stays at or under load_target + band = 39.5 %)
@@ -230,6 +232,15 @@ class LoadLimitedCloser:
         self.thin = False                    # settled as 'thin': nothing to lose, so no loss detection
         self.t_low = None                    # since when the load has been below contact_load (loss detection)
         self.t_over = None                   # since when the load has been at or above load_limit
+
+    def rebase_target(self, old_target):
+        """The caller changed p.load_target (and p.contact_load, shared by reference) while closing or holding. Re-bases the hold PI so the step in the
+        error does not kick the command (the integral term moves it, rate-limited), and restarts the timers that were measured against the old levels."""
+        if self.e_prev is not None:
+            self.e_prev += self.p.load_target - old_target                # e = load_target - load
+        self.pending = 0.0
+        self.in_band_since = self.t_closed = self.t_low = None
+        self.hits = 0
 
     def _still(self, t, measured):
         if self.ref is None or abs(measured - self.ref[0]) > self.p.still_tol:

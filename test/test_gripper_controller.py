@@ -184,5 +184,80 @@ class GripperControllerTest(unittest.TestCase):
         self.assertEqual([r.kind for r in w.results], ["close", "close"])
 
 
+class RuntimeLoadTargetTest(unittest.TestCase):
+    """The steady-state target changed at run time (service / panel slider), clamped to [0, load_target_max]. Model of mine, not the motor."""
+
+    @staticmethod
+    def holding_world(target=38.5, contact=15.0, gain=40.0):
+        w = World(obj=0.012, gain=gain)
+        w.c = gc.GripperController(gp.CloseParams(load_target=target, contact_load=contact))
+        w.c.request_close(w.t, w.pos)
+        w.run(60)
+        assert w.c.mode == "HOLDING", w.c.mode
+        return w
+
+    def test_the_value_is_clamped_and_a_nan_is_refused(self):
+        c = gc.GripperController(gp.CloseParams())
+        self.assertEqual(c.set_load_target(50.0)[0], 38.5)
+        self.assertEqual(c.set_load_target(-5.0)[0], 0.0)
+        with self.assertRaises(ValueError):
+            c.set_load_target(float("nan"))
+
+    def test_contact_load_follows_the_target_and_stays_under_it(self):
+        c = gc.GripperController(gp.CloseParams(load_target=15.0, contact_load=5.0))        # the light-grip launch values
+        for x in (38.5, 25.0, 15.0, 8.0, 3.0, 1.0, 0.0):
+            applied, contact = c.set_load_target(x)
+            self.assertAlmostEqual(applied, x)
+            self.assertLess(contact, applied + 1e-12 if x == 0.0 else applied)               # never at or above the target (0: no loss detection)
+            self.assertGreaterEqual(contact, 0.0)
+            if x >= 3.0:
+                self.assertGreaterEqual(contact, c.p.contact_floor)                          # never below the noise floor
+        self.assertAlmostEqual(c.set_load_target(15.0)[1], 5.0)                              # the configured pair is reproduced at its own target
+        self.assertAlmostEqual(gc.GripperController(gp.CloseParams()).set_load_target(38.5)[1], 15.0)
+
+    def test_lowering_the_target_while_holding_relaxes_the_grip_without_a_fault_or_a_loss(self):
+        w = self.holding_world()
+        before = w.cmd
+        w.c.set_load_target(15.0)
+        w.run(40)
+        self.assertEqual(w.c.mode, "HOLDING")
+        self.assertEqual(w.c.grip, "held")
+        self.assertLessEqual(abs(w.load - 15.0), w.c.p.load_band + 1.0)
+        self.assertGreater(w.cmd, before)                                                    # the jaws opened a little
+        self.assertLess(min(w.loads[-100:]), 15.0 + w.c.p.load_band + 1.0)
+
+    def test_raising_the_target_while_holding_squeezes_harder_but_never_past_the_peak_limit(self):
+        w = self.holding_world(target=15.0, contact=5.0)
+        w.c.set_load_target(30.0)
+        w.run(60)
+        self.assertEqual(w.c.mode, "HOLDING")
+        self.assertLessEqual(abs(w.load - 30.0), w.c.p.load_band + 1.0)
+        self.assertLess(max(w.loads), w.c.p.load_limit)
+
+    def test_the_command_does_not_jump_when_the_target_changes(self):
+        w = self.holding_world()
+        before = w.cmd
+        w.c.set_load_target(10.0)
+        w.tick()
+        self.assertLessEqual(abs(w.cmd - before), w.c.p.trim_speed * DT + 1e-9)             # still rate-limited: no proportional kick
+
+    def test_a_lost_grip_is_still_detected_after_the_target_was_lowered(self):
+        w = self.holding_world()
+        w.c.set_load_target(15.0)
+        w.run(40)
+        self.assertEqual(w.c.grip, "held")                                                   # a hold at the new target is not a loss
+        w.override = 1.0
+        w.run(5)
+        self.assertEqual(w.c.grip, "lost")
+
+    def test_a_target_set_while_idle_is_used_by_the_next_close(self):
+        w = World(obj=0.012, gain=40.0)
+        w.c.set_load_target(15.0)
+        w.c.request_close(w.t, w.pos)
+        w.run(60)
+        self.assertEqual(w.c.mode, "HOLDING")
+        self.assertLessEqual(abs(w.load - 15.0), w.c.p.load_band + 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

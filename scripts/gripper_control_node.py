@@ -9,7 +9,8 @@ and `~grip_lost` goes true. Services (all block until the action ends; the regul
     ~close_on_load   std_srvs/Trigger        the load-limited close (the rviz panel uses it)
     ~close           arm_grasp/GripperClose  the same with execute / open_first; execute:=false only watches (sends nothing)
     ~stop            std_srvs/Trigger        end the action and the regulation; the command stays where it is (the driver holds it)
-Topics: ~status (JSON, latched: phase, message, grip held|thin|lost|none, command, load_percent, position), ~grip_lost (Bool, latched).
+    ~set_load_target arm_gui/SetLoadTarget  change the steady-state load target AT RUN TIME (clamped to [0, close/load_target_max]); the rviz panel slider uses it
+Topics: ~status (JSON, latched: phase, message, grip held|thin|lost|none, command, load_percent, position, load_target, load_target_max), ~grip_lost (Bool, latched).
 
 COMMANDS THE GRIPPER (joint_6 only, through /joint_states_out). Safety:
   * refused when the e-stop is engaged or unknown (fail closed); an e-stop during any action or hold freezes the gripper at once
@@ -35,6 +36,7 @@ from std_srvs.srv import Trigger, TriggerResponse
 from arm_grasp import grasp_plan as gp
 from arm_grasp import gripper_controller as gc
 from arm_grasp.srv import GripperClose, GripperCloseResponse
+from arm_gui.srv import SetLoadTarget, SetLoadTargetResponse
 
 RATE_HZ = 20.0
 
@@ -61,6 +63,7 @@ class Node(object):
         self.pub_lost = rospy.Publisher("~grip_lost", Bool, queue_size=1, latch=True)
         rospy.Service("~close", GripperClose, self.on_close)
         rospy.Service("~stop", Trigger, self.on_stop)
+        rospy.Service("~set_load_target", SetLoadTarget, self.on_set_load_target)
         rospy.Service("~open", Trigger, self.on_open)
         rospy.Service("~close_on_load", Trigger, self.on_close_trigger)
         self.pub_lost.publish(Bool(False))
@@ -100,7 +103,7 @@ class Node(object):
 
     def publish(self, force=False):
         c = self.controller
-        state = (c.phase, c.message, c.grip)
+        state = (c.phase, c.message, c.grip, c.p.load_target)
         now = time.time()
         if not force and state == self.last_published and now - getattr(self, "t_pub", 0.0) < 0.5:
             return
@@ -110,7 +113,8 @@ class Node(object):
                 rospy.logwarn("gripper_control: %s %s (grip: %s)", c.phase, c.message, c.grip)
         self.last_published, self.t_pub = state, now
         self.pub_status.publish(String(json.dumps({"phase": c.phase, "message": c.message, "grip": c.grip, "command": c.cmd,
-                                                   "load_percent": self.load, "position": self.pos})))
+                                                   "load_percent": self.load, "position": self.pos,
+                                                   "load_target": c.p.load_target, "load_target_max": c.p.load_target_max})))
 
     # ---- actions ----------------------------------------------------------------------------------------------
     def preflight(self):
@@ -184,6 +188,17 @@ class Node(object):
             return GripperCloseResponse(r.ok, r.outcome if r.ok else "", r.message, r.load if r.ok else (self.load or 0.0))
         finally:
             self.action_lock.release()
+
+    def on_set_load_target(self, req):
+        with self.lock:
+            try:
+                applied, contact = self.controller.set_load_target(req.load_target)
+            except ValueError as e:
+                return SetLoadTargetResponse(False, "refused: %s" % e, self.params.load_target, self.params.contact_load, self.params.load_target_max)
+        rospy.logwarn("gripper_control: load target %.1f %% (requested %.1f %%), contact/loss level %.1f %%", applied, req.load_target, contact)
+        self.publish(force=True)
+        return SetLoadTargetResponse(True, "load target %.1f %% (max %.1f %%), contact level %.1f %%" % (applied, self.params.load_target_max, contact),
+                                     applied, contact, self.params.load_target_max)
 
     def on_stop(self, _):
         with self.lock:

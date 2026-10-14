@@ -42,6 +42,7 @@ class GripperController(object):
         self.t_reached = None
         self.t_last = None
         self.pending = None             # 'open' | 'close' while an action waits for its completion
+        self.contact_ratio = params.contact_load / params.load_target if params.load_target > 0.0 else 1.0 / 3.0    # contact_load follows the target at this ratio
 
     # ---- requests ----------------------------------------------------------------------------------------------
     def request_open(self, now, pos):
@@ -52,6 +53,24 @@ class GripperController(object):
         self.mode, self.message, self.grip = "CLOSING", "slowly to a load of %.1f %%" % self.p.load_target, "none"
         self.closer = gp.LoadLimitedCloser(pos, self.closed_pos, self.open_pos, self.p)
         self.cmd, self.t_action, self.t_last, self.pending = pos, now, now, "close"
+
+    def set_load_target(self, value):
+        """Changes the steady-state load target at run time, also while closing or holding (the PI moves to it at its own rate limit). The value is
+        clamped to [0, p.load_target_max]; contact_load (the slow-down level AND the grip-lost level) follows at the ratio configured at start, never
+        below p.contact_floor and always under the target, so that a hold at the new target is not flagged as lost. 0 means 'no squeeze': the PI
+        relaxes the grip to no load and loss detection is off. Returns (applied target, applied contact_load)."""
+        value = float(value)
+        if value != value:                                              # NaN
+            raise ValueError("load target is not a number")
+        old = self.p.load_target
+        x = min(max(value, 0.0), self.p.load_target_max)
+        contact = 0.0 if x <= 0.0 else min(max(self.p.contact_floor, self.contact_ratio * x), 0.9 * x)
+        self.p.load_target, self.p.contact_load = x, contact
+        if self.closer is not None:
+            self.closer.rebase_target(old)
+        if self.mode == "CLOSING":
+            self.message = "slowly to a load of %.1f %%" % x
+        return x, contact
 
     def request_stop(self, reason="stopped"):
         """Stop commanding. Returns the Result of the action it interrupts, if any."""
