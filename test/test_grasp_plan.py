@@ -293,5 +293,39 @@ class LoadLimitedCloserTest(unittest.TestCase):
         self.assertEqual(pl.run(60).outcome, "thin")
 
 
+class LightGripTest(unittest.TestCase):
+    """The 15 % grip for uprooting: load_target 15, contact_load 5 (contact_load must stay below the target: it is the slow-down level and the
+    grip-lost level). Model of mine (80 %/mm), not the motor."""
+    P = dict(load_target=15.0, contact_load=5.0)
+
+    def test_holds_the_light_target_without_a_false_loss_or_a_fault(self):
+        pl = Plant(obj=0.012, gain=40.0, params=gp.CloseParams(**self.P))
+        step = pl.run(60)
+        self.assertEqual(step.outcome, "object")
+        step = pl.run(40, stop_on_done=False)                                     # 40 s of holding: no fault, no loss
+        self.assertEqual(step.fault, "")
+        self.assertLessEqual(abs(pl.load - 15.0), pl.p.load_band + 1.0)
+        self.assertLess(max(pl.loads), pl.p.load_limit)
+
+    def test_the_close_still_slows_down_at_the_contact_load(self):
+        pl = Plant(obj=0.012, gain=40.0, params=gp.CloseParams(**self.P))
+        pl.run(8)
+        steps = np.abs(np.diff(pl.cmds)) / 0.05
+        self.assertAlmostEqual(steps.max(), pl.p.close_speed, delta=1e-6)         # the approach reached close_speed
+        i = next(k for k, l in enumerate(pl.loads) if l >= pl.p.contact_load)
+        self.assertLessEqual(steps[i + 3:i + 15].max(), pl.p.contact_speed + 1e-9)   # and slowed once the load had risen
+
+    def test_losing_a_light_grip_is_still_a_fault(self):
+        pl = Plant(obj=0.012, gain=40.0, params=gp.CloseParams(**self.P))
+        pl.run(8)
+        step = pl.run(40, load_override=1.0, stop_on_done=False)
+        self.assertIn("contact was lost", step.fault)
+
+    def test_the_default_contact_load_would_flag_a_light_grip_as_lost(self):
+        """Why contact_load has to be lowered with the target: at the yaml's 15 % the settled hold is already at the loss threshold."""
+        pl = Plant(obj=0.012, gain=40.0, params=gp.CloseParams(load_target=15.0))
+        self.assertGreaterEqual(pl.p.contact_load, pl.p.load_target)
+
+
 if __name__ == "__main__":
     unittest.main()

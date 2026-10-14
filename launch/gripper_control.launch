@@ -15,8 +15,16 @@
   <!-- close_speed: m/s approach speed of the close, overriding the yaml (empty: keep the yaml value). The node reads it at
        startup, so a change needs a restart of this launch. Example: roslaunch arm_grasp gripper_control.launch close_speed:=0.003 -->
   <arg name="close_speed" default=""/>
+  <!-- load_target / contact_load: % of max torque, overriding the yaml (empty: keep the yaml values). For a LIGHT grip (uprooting) use
+       load_target:=15 contact_load:=5: contact_load must stay well BELOW load_target, since it is the load at which the close slows down AND the
+       level under which a settled grip counts as lost (with the yaml's 15 % a 15 % target would be flagged lost). The load rises about
+       65 to 80 %/mm, so even at 15 % the squeeze is only a fraction of a millimetre. Needs a restart of this launch. -->
+  <arg name="load_target" default=""/>
+  <arg name="contact_load" default=""/>
   <node name="gripper_control" pkg="arm_grasp" type="gripper_control_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
     <param name="close/close_speed" value="$(arg close_speed)" type="double" unless="$(eval arg('close_speed') == '')"/>
+    <param name="close/load_target" value="$(arg load_target)" type="double" unless="$(eval arg('load_target') == '')"/>
+    <param name="close/contact_load" value="$(arg contact_load)" type="double" unless="$(eval arg('contact_load') == '')"/>
   </node>
 </launch>
