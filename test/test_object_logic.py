@@ -284,5 +284,18 @@ class MaskTargetTest(unittest.TestCase):
         self.assertIsNone(ol.mask_pixel(np.zeros((640, 640), bool), 0.5, (0, 140)))
 
 
+class ParseHeightsTest(unittest.TestCase):
+    def test_numbers_and_strings_are_accepted(self):
+        h, d = ol.parse_heights({"Vigna": 0.07, "Sorgo_Row": "0.02"}, 0.03)
+        self.assertEqual(h, {"Vigna": 0.07, "Sorgo_Row": 0.02})
+        self.assertEqual(d, 0.03)
+        self.assertEqual(ol.parse_heights(None, 0.03), ({}, 0.03))
+
+    def test_nonsense_is_refused(self):
+        for raw, default in (({"Vigna": "tall"}, 0.03), ({"Vigna": -0.01}, 0.03), ({"Vigna": 7.0}, 0.03), ({"Vigna": 0.05}, 5.0), ([0.05], 0.03), ({"Vigna": None}, 0.03)):
+            with self.assertRaises(ValueError):
+                ol.parse_heights(raw, default)
+
+
 if __name__ == "__main__":
     unittest.main()

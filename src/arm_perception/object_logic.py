@@ -133,6 +133,23 @@ def intersect_plane(origin, direction, z_plane, max_range=3.0):
     return origin + t * direction
 
 
+def parse_heights(raw, default, max_height=0.5):
+    """Validates the grasp-height settings re-read from the parameter server while the node runs: raw = {class: metres above the floor} (or None), default = the
+    height for classes not listed. Returns ({class: float}, float). Raises ValueError on anything that is not a number between 0 and max_height, so a typo
+    typed at run time never moves the aim point to nonsense (the caller keeps the previous values)."""
+    def one(v, what):
+        try:
+            h = float(v)
+        except (TypeError, ValueError):
+            raise ValueError("%s: %r is not a number" % (what, v))
+        if not 0.0 <= h <= max_height:
+            raise ValueError("%s: %.3f m is outside 0 to %.2f m above the floor" % (what, h, max_height))
+        return h
+    if raw is not None and not hasattr(raw, "items"):
+        raise ValueError("grasp_heights must be a mapping class -> metres, got %r" % (raw,))
+    return {str(k): one(v, "grasp_heights[%s]" % k) for k, v in (raw or {}).items()}, one(default, "default_grasp_height")
+
+
 def pixel_position(u, v, T_base_camera, K, D, z_plane, max_range=3.0):
     """3D position (base frame) where the ray through pixel (u, v) meets the plane z = z_plane, or None when it does not reach it."""
     d_cam = pixel_ray(u, v, K, D)

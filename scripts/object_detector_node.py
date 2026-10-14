@@ -81,8 +81,7 @@ class Node(object):
         self.floor_from_marker0 = bool(P("~floor_from_marker0", True))
         self.floor_mem = ol.FloorMemory(float(P("~floor_max_age_s", 600.0)))
         self.marker0 = P("~marker0_frame", "marker_0")
-        self.heights = {str(k): float(v) for k, v in P("~grasp_heights", {}).items()}
-        self.default_height = float(P("~default_grasp_height", 0.03))
+        self.heights, self.default_height = ol.parse_heights(P("~grasp_heights", {}), P("~default_grasp_height", 0.03))
         self.max_range = float(P("~max_range", 1.5))
         self.target_frame = P("~target_frame", "grasp_target")
         self.select(P("~grasp_class", ""))
@@ -145,7 +144,20 @@ class Node(object):
             self.lock.release()
 
     # ---- one frame ---------------------------------------------------------------------------------------------
+    def refresh_heights(self):
+        """The pinch-point height above the floor is tunable while the node runs: rosparam set /object_detector/grasp_heights "{Vigna: 0.07}" (a bad value is
+        refused and the previous one kept)."""
+        try:
+            heights, default = ol.parse_heights(rospy.get_param("~grasp_heights", {}), rospy.get_param("~default_grasp_height", 0.03))
+        except ValueError as e:
+            rospy.logerr_throttle(5.0, "object_detector: %s; keeping %s", e, self.heights)
+            return
+        if heights != self.heights or default != self.default_height:
+            rospy.logwarn("object_detector: grasp heights now %s (default %.3f m)", heights, default)
+            self.heights, self.default_height = heights, default
+
     def process(self, msg):
+        self.refresh_heights()
         try:
             tf = self.buf.lookup_transform(self.base, msg.header.frame_id, msg.header.stamp, rospy.Duration(0.1))
         except tf2_ros.TransformException:
@@ -226,7 +238,7 @@ class Node(object):
             m.transform.rotation.w = 1.0
             self.br.sendTransform(m)
         age = None if self.target is None else (rospy.Time.now() - self.target[1]).to_sec()
-        self.pub_status.publish(String(json.dumps(dict(self.stats, grasp_class=self.grasp_class, target=None if self.target is None else
+        self.pub_status.publish(String(json.dumps(dict(self.stats, grasp_class=self.grasp_class, grasp_heights=self.heights, target=None if self.target is None else
                                                        {"class": self.target[2], "confidence": self.target[3], "xyz": [float(v) for v in self.target[0]], "age_s": age},
                                                        classes=self.names, floor_z_param=self.floor_z_param, floor_marker_age_s=self.floor_age))))
 
