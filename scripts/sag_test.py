@@ -10,6 +10,8 @@ The sequencer logs every measurement (sag_log_dir); fit them with scripts/sag_fi
     rosrun arm_grasp sag_test.py --azimuth -40                  # dry runs only: lists the points and whether the planner can reach them, nothing moves
     rosrun arm_grasp sag_test.py --azimuth -40 --go             # the real test (e-stop in reach, the area under every point clear)
 
+It refuses to start a probe when a motor is at or above --max-temp (default 65 C).
+
 The area around every point must be free (the grasp point is a point in the air, PRE is 10 cm up and back along the approach line, the arm sweeps there).
 """
 import argparse
@@ -19,6 +21,7 @@ import time
 import numpy as np
 import rospy
 import tf2_ros
+from diagnostic_msgs.msg import DiagnosticArray
 from std_msgs.msg import String
 from tf.transformations import quaternion_matrix
 
@@ -47,6 +50,22 @@ def wait_marker(buf, timeout, max_age=1.5):
     return None
 
 
+def hottest_motor():
+    """(name, temperature [C]) of the hottest motor from /arm_interface/motor_status, or None when there is no fresh status."""
+    try:
+        msg = rospy.wait_for_message("/arm_interface/motor_status", DiagnosticArray, 3.0)
+    except rospy.ROSException:
+        return None
+    best = None
+    for st in msg.status:
+        for kv in st.values:
+            if kv.key == "temperature_c":
+                t = float(kv.value)
+                if best is None or t > best[1]:
+                    best = (st.name.split("/")[-1], t)
+    return best
+
+
 def wait_state(done, timeout):
     state = {"s": ""}
     sub = rospy.Subscriber("/grasp_sequencer/status", String, lambda m: state.update(s=m.data), queue_size=1)
@@ -73,6 +92,7 @@ def main():
     ap.add_argument("--angle", type=float, default=45.0, help="approach angle below the horizontal (90 = from above)")
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--preset", default="Pre-approach-New", help="the viewing pose to return to between points")
+    ap.add_argument("--max-temp", type=float, default=65.0, help="stop before the next probe when any motor is at or above this temperature [C] (the motors' own limit is 80)")
     ap.add_argument("--go", action="store_true", help="MOVE THE ARM (without it: dry runs only)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
     rospy.init_node("sag_test")
@@ -93,6 +113,14 @@ def main():
     for rep in range(a.repeats if a.go else 1):
         for r, h, p in points:
             tag = "r %.2f h %.2f rep %d" % (r, h, rep + 1)
+            if a.go:
+                hot = hottest_motor()
+                if hot is None:
+                    print(tag, "no fresh motor_status: stopping (cannot check the temperatures)")
+                    return 5
+                if hot[1] >= a.max_temp:
+                    print(tag, "stopping: %s is at %.0f C (limit for this test %.0f C): let the arm cool down" % (hot[0], hot[1], a.max_temp))
+                    return 6
             if a.go and not first:
                 res = preset(action="go", name=a.preset)
                 if not res.success:
