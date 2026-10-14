@@ -369,5 +369,41 @@ class SideApproachTest(unittest.TestCase):
         np.testing.assert_allclose(floor.position[2], -0.60 + 0.02, atol=1e-12)         # the down approach keeps grasp_height
 
 
+class TiltedApproachTest(unittest.TestCase):
+    """An approach 45 degrees below the horizontal, from the robot's side."""
+
+    @staticmethod
+    def tilted_target(pos, angle=45.0):
+        from arm_grasp import target_offset as to
+        T = np.eye(4)
+        T[:3, :3] = to.angled_frame(pos, angle)
+        T[:3, 3] = pos
+        return T
+
+    def test_a_45_degree_frame_is_tilted_and_a_slightly_leaning_floor_frame_is_not(self):
+        self.assertTrue(gp.is_side_approach(self.tilted_target([0.5, 0.0, -0.55])))
+        self.assertTrue(gp.is_side_approach(self.tilted_target([0.5, 0.0, -0.55], 70.0)))          # 20 degrees off vertical
+        self.assertFalse(gp.is_side_approach(self.tilted_target([0.5, 0.0, -0.55], 80.0)))         # 10 degrees: still the ordinary approach (5 degree check applies)
+
+    def test_pre_is_back_and_up_along_the_approach_line_and_grasp_is_at_the_target(self):
+        pos = np.array([0.5, 0.2, -0.55])
+        pre, grasp, lift = gp.waypoints(self.tilted_target(pos), gp.GraspSpec())
+        radial = np.array([pos[0], pos[1], 0.0]) / np.hypot(pos[0], pos[1])
+        axis = np.sqrt(0.5) * radial - np.sqrt(0.5) * np.array([0, 0, 1])                           # tool axis: outward and 45 degrees down
+        np.testing.assert_allclose(grasp.position, pos, atol=1e-12)
+        np.testing.assert_allclose(pre.position, pos - 0.10 * axis, atol=1e-12)                    # 10 cm back along the line: higher and nearer the base
+        self.assertGreater(pre.position[2], pos[2] + 0.05)                                          # PRE is clearly above the stem, unlike the horizontal case
+        for w in (pre, grasp, lift):
+            np.testing.assert_allclose(w.R[:, 2], axis, atol=1e-9)
+            self.assertAlmostEqual(w.R[2, 1], 0.0)                                                  # jaws close sideways
+
+    def test_lift_up_is_vertical_and_lift_back_follows_the_approach_line(self):
+        pos = np.array([0.5, 0.0, -0.55])
+        T = self.tilted_target(pos)
+        np.testing.assert_allclose(gp.waypoints(T, gp.GraspSpec())[2].position, pos + [0, 0, 0.15], atol=1e-12)
+        axis = np.array([np.sqrt(0.5), 0.0, -np.sqrt(0.5)])
+        np.testing.assert_allclose(gp.waypoints(T, gp.GraspSpec(side_lift="back"))[2].position, pos - 0.15 * axis, atol=1e-12)
+
+
 if __name__ == "__main__":
     unittest.main()

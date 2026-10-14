@@ -55,15 +55,16 @@ def tool_rotation(approach, position):
 
 
 def is_side_approach(T_base_target):
-    """True when the target frame's z axis (the direction the gripper retreats along) is more than 60 degrees from vertical: a SIDE grasp, the tool looking
-    horizontally. arm_grasp/target_offset.side_frame builds such a frame (grasp_target ~approach:=forward)."""
-    return abs(np.asarray(T_base_target, float)[2, 2]) < 0.5
+    """True when the target frame's z axis (the direction the gripper retreats along) is more than 15 degrees from vertical: a TILTED or SIDE grasp (the
+    tool looking outward and down, at any angle from horizontal to 15 degrees off vertical). arm_grasp/target_offset.angled_frame builds such a frame
+    (grasp_target ~approach: forward = 0 degrees, or an angle such as 45). A frame within 15 degrees of vertical is the ordinary approach from above."""
+    return abs(np.asarray(T_base_target, float)[2, 2]) < np.cos(np.radians(15.0))
 
 
 def waypoints(T_base_target, spec):
     """PRE, GRASP, LIFT as a list of Waypoint (end-effector pose in base_link) for a target frame.
-    The tool approaches along -z of the target frame: straight down onto a floor target, or, when the frame is horizontal (is_side_approach), sideways
-    from the robot's side; there GRASP is spec.side_grasp_height short of the target and LIFT goes straight up (side_lift 'up') or back.
+    The tool approaches along -z of the target frame: straight down onto a floor target, or, when the frame is tilted (is_side_approach), from the robot's
+    side at that angle; there GRASP is spec.side_grasp_height short of the target (along z) and LIFT goes straight up (side_lift 'up') or back along z.
     Raises ValueError if the target's normal cannot be matched by the wrist within 5 degrees."""
     T = np.asarray(T_base_target, float)
     normal = T[:3, 2]

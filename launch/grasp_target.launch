@@ -12,8 +12,8 @@
   <!-- vertical:=true makes the target frame exactly upright (the marker's heading kept) for a marker lying on a level floor: the approach is then
        straight down and the marker pose's tilt noise (a few degrees) cannot make the plan refuse the target. -->
   <arg name="vertical" default="false"/>
-  <!-- approach: down (the gripper comes from above, default) or forward (a SIDE grasp: the tool looks horizontally outward along the radial direction and
-       closes sideways on the target). It is a parameter read every cycle, so it can be flipped while running: rosparam set /grasp_target/approach forward.
+  <!-- approach: down (the gripper comes from above, default), forward (a SIDE grasp: the tool looks horizontally outward) or an angle in
+       degrees below the horizontal such as 45 (the tool looks outward and down; 90 = down, 0 = forward); the gripper closes sideways on the target. It is a parameter read every cycle, so it can be flipped while running: rosparam set /grasp_target/approach 45.
        The sequencer plans a side approach by itself when the frame is horizontal (config/grasp.yaml side_grasp_height, side_lift). -->
   <arg name="approach" default="down"/>
   <node name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">

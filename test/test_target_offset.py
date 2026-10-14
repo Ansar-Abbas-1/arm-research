@@ -77,5 +77,31 @@ class SideFrameTest(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.det(R), 1.0)
 
 
+class AngledFrameTest(unittest.TestCase):
+    def test_90_degrees_is_the_floor_frame_and_0_the_side_frame(self):
+        pos = [0.45, 0.2, -0.55]
+        np.testing.assert_allclose(to.angled_frame(pos, 0.0), to.side_frame(pos), atol=1e-12)
+        np.testing.assert_allclose(to.angled_frame(pos, 90.0)[:, 2], [0, 0, 1], atol=1e-12)         # retreat straight up = approach straight down
+
+    def test_the_frame_is_a_rotation_in_the_arms_plane_at_the_requested_angle(self):
+        for pos in ([0.5, 0.0, -0.55], [0.4, 0.3, -0.5], [-0.2, 0.4, -0.6]):
+            R = to.angled_frame(pos, 45.0)
+            np.testing.assert_allclose(R.T @ R, np.eye(3), atol=1e-12)
+            self.assertAlmostEqual(np.linalg.det(R), 1.0)
+            radial = np.array([pos[0], pos[1], 0.0]) / np.hypot(pos[0], pos[1])
+            np.testing.assert_allclose(R[:, 2], -np.sqrt(0.5) * radial + np.sqrt(0.5) * np.array([0, 0, 1]), atol=1e-12)   # back and up at 45 degrees
+            self.assertAlmostEqual(float(R[:, 1] @ radial), 0.0)                                      # y perpendicular to the arm's plane
+            self.assertAlmostEqual(R[2, 1], 0.0)                                                       # and horizontal
+
+    def test_parse_approach(self):
+        self.assertEqual(to.parse_approach("down"), 90.0)
+        self.assertEqual(to.parse_approach(" Forward "), 0.0)
+        self.assertEqual(to.parse_approach("45"), 45.0)
+        self.assertEqual(to.parse_approach(30), 30.0)
+        for bad in ("sideways", -1, 91, "nan"):
+            with self.assertRaises(ValueError):
+                to.parse_approach(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -5,7 +5,7 @@ grasp_height: 0.02        # m: at GRASP. UNCONFIRMED: depends on the gripper's f
 lift_height: 0.15         # m: at LIFT
 tool_offset: 0.0          # m: distance from the end_effector origin to the grasp point (fingertips) along the tool axis.
                           # UNKNOWN: the URDF fingers are placeholders. With 0 the end_effector origin itself goes to the heights above.
-side_grasp_height: 0.0    # m: for a SIDE grasp (grasp_target approach:=forward, the tool looks horizontally outward): how far short of the target point the fingertips stop, back toward the base. 0 = the fingertips reach the target (a stem). FLAGGED
+side_grasp_height: 0.0    # m: for a SIDE or TILTED grasp (grasp_target approach:=forward or an angle such as 45: the tool looks outward, horizontally or down): how far short of the target point the fingertips stop, back toward the base. 0 = the fingertips reach the target (a stem). FLAGGED
 side_lift: up             # LIFT of a side grasp: up (straight up from GRASP: pulls a plant out) or back (straight back along the approach). FLAGGED
 grasp_offset: [0.0, 0.0]  # m: x, y of the grasp point in the target frame
 

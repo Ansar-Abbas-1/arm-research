@@ -10,10 +10,11 @@ sequence's freshness check (target_max_age) refuses a target nobody has seen rec
 
     roslaunch arm_grasp grasp_target.launch marker:=marker_984 offset_x:=0.03 offset_y:=0 offset_z:=0.0
 
-~approach (default down; read every cycle, so it can be changed while running: rosparam set /grasp_target/approach forward):
-    down      the frame's z is the surface normal (up for a floor target): the gripper comes from above
-    forward   a SIDE grasp: z is horizontal, back toward the robot's base, so the gripper looks outward along the radial direction and closes sideways
-              on the target (arm_grasp/target_offset.side_frame; the planner's waypoints then approach horizontally, see config/grasp.yaml side_*)
+~approach (default down; read every cycle, so it can be changed while running: rosparam set /grasp_target/approach 45):
+    down      the frame's z is the surface normal (up for a floor target): the gripper comes from above (= 90)
+    forward   a SIDE grasp: z is horizontal, back toward the robot's base, so the gripper looks outward along the radial direction (= 0)
+    <number>  the angle of the tool axis BELOW the horizontal, in degrees (0 to 90): 45 looks outward and down at 45 degrees, from the robot's side, and
+              closes sideways on the target (arm_grasp/target_offset.angled_frame; the planner then approaches along that line, see config/grasp.yaml side_*)
 """
 import json
 
@@ -54,10 +55,14 @@ def main():
         if last is not None:
             tr, q = last.transform.translation, last.transform.rotation
             p, R = to.offset_target_frame([tr.x, tr.y, tr.z], [q.x, q.y, q.z, q.w], offset, vertical)
-            approach = str(rospy.get_param("~approach", "down")).strip().lower()
-            side = approach in ("forward", "side")
+            try:
+                angle = to.parse_approach(rospy.get_param("~approach", "down"))
+            except ValueError as e:
+                rospy.logerr_throttle(5.0, "grasp_target: %s; using down", e)
+                angle = 90.0
+            side = angle < 89.0
             if side:
-                R = to.side_frame(p)                              # z horizontal, back toward the base: the gripper looks forward (radially outward)
+                R = to.angled_frame(p, angle)                     # z back toward the base and up at this angle: the gripper looks outward and down
             m = TransformStamped()
             m.header.stamp, m.header.frame_id, m.child_frame_id = last.header.stamp, base, target
             m.transform.translation.x, m.transform.translation.y, m.transform.translation.z = [float(v) for v in p]
@@ -67,7 +72,7 @@ def main():
                 m.transform.rotation = last.transform.rotation
             br.sendTransform(m)
             pub.publish(String(json.dumps({"marker": marker, "offset": offset, "age_s": (rospy.Time.now() - last.header.stamp).to_sec(),
-                                           "approach": "forward" if side else "down", "target_xyz": [float(v) for v in p]})))
+                                           "approach_deg": angle, "target_xyz": [float(v) for v in p]})))
         rate.sleep()
 
 
