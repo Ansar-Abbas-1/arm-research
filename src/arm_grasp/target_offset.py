@@ -77,3 +77,15 @@ def parse_approach(value):
     if not 0.0 <= a <= 90.0:
         raise ValueError("approach angle %s is outside 0 (horizontal) to 90 (straight down) degrees" % a)
     return a
+
+
+def apply_bias(position, bias):
+    """The target moved by `bias` = (radial, tangential, vertical) metres in the ARM's frame at the target's azimuth: radial outward from the base axis, tangential
+    toward increasing azimuth (left as seen from the robot looking outward), vertical up (base z). A residual aim error found on the hardware (calibration, the mask
+    centroid against the stem) is the same in the arm's frame whatever the azimuth, which a base-frame offset is not."""
+    p = np.asarray(position, float)
+    az = np.arctan2(p[1], p[0])
+    u = np.array([np.cos(az), np.sin(az), 0.0])
+    v = np.array([-np.sin(az), np.cos(az), 0.0])
+    b = [float(x) for x in bias]
+    return p + b[0] * u + b[1] * v + b[2] * np.array([0.0, 0.0, 1.0])

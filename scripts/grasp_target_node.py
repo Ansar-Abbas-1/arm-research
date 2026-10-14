@@ -10,6 +10,10 @@ sequence's freshness check (target_max_age) refuses a target nobody has seen rec
 
     roslaunch arm_grasp grasp_target.launch marker:=marker_984 offset_x:=0.03 offset_y:=0 offset_z:=0.0
 
+~bias ([radial, tangential, vertical] metres in the ARM's frame at the target's azimuth, default 0; read every cycle: rosparam set /grasp_target/bias "[-0.01, 0.01, 0]"):
+    moves the final aim point (radial outward, tangential toward increasing azimuth = left as seen from the robot looking outward, vertical up). For a residual aim
+    error found on the hardware (calibration, the mask centroid against the stem).
+
 ~offset ([x, y, z] in the marker frame, read every cycle: rosparam set /grasp_target/offset "[0.02, -0.2, 0.07]"): the grasp point relative to the marker.
 
 ~approach (default down; read every cycle, so it can be changed while running: rosparam set /grasp_target/approach 45):
@@ -61,6 +65,12 @@ def main():
             except (TypeError, ValueError):
                 rospy.logerr_throttle(5.0, "grasp_target: ~offset must be three numbers; keeping %s", offset)
             p, R = to.offset_target_frame([tr.x, tr.y, tr.z], [q.x, q.y, q.z, q.w], offset, vertical)
+            try:                                                        # ~bias [radial, tangential, vertical] m in the arm's frame, read every cycle
+                bias = [float(v) for v in rospy.get_param("~bias", [0.0, 0.0, 0.0])][:3]
+                p = to.apply_bias(p, bias)
+            except (TypeError, ValueError):
+                rospy.logerr_throttle(5.0, "grasp_target: ~bias must be three numbers; ignoring it")
+                bias = [0.0, 0.0, 0.0]
             try:
                 angle = to.parse_approach(rospy.get_param("~approach", "down"))
             except ValueError as e:
@@ -78,7 +88,7 @@ def main():
                 m.transform.rotation = last.transform.rotation
             br.sendTransform(m)
             pub.publish(String(json.dumps({"marker": marker, "offset": offset, "age_s": (rospy.Time.now() - last.header.stamp).to_sec(),
-                                           "approach_deg": angle, "target_xyz": [float(v) for v in p]})))
+                                           "approach_deg": angle, "bias_m": bias, "target_xyz": [float(v) for v in p]})))
         rate.sleep()
 
 

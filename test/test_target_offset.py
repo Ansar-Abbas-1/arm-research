@@ -103,5 +103,21 @@ class AngledFrameTest(unittest.TestCase):
                 to.parse_approach(bad)
 
 
+class BiasTest(unittest.TestCase):
+    def test_the_bias_is_in_the_arms_frame_at_the_targets_azimuth(self):
+        for az_deg in (-40.0, 0.0, 30.0):
+            az = np.radians(az_deg)
+            p = np.array([0.5 * np.cos(az), 0.5 * np.sin(az), -0.5])
+            q = to.apply_bias(p, (-0.010, 0.010, 0.002))
+            d = q - p
+            u, v = np.array([np.cos(az), np.sin(az), 0.0]), np.array([-np.sin(az), np.cos(az), 0.0])
+            self.assertAlmostEqual(float(d @ u), -0.010, places=12)         # closer to the base
+            self.assertAlmostEqual(float(d @ v), 0.010, places=12)          # toward increasing azimuth: left seen from the robot
+            self.assertAlmostEqual(d[2], 0.002, places=12)
+
+    def test_zero_bias_changes_nothing(self):
+        np.testing.assert_allclose(to.apply_bias([0.4, 0.1, -0.5], (0, 0, 0)), [0.4, 0.1, -0.5])
+
+
 if __name__ == "__main__":
     unittest.main()

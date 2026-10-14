@@ -16,11 +16,17 @@
        degrees below the horizontal such as 45 (the tool looks outward and down; 90 = down, 0 = forward); the gripper closes sideways on the target. It is a parameter read every cycle, so it can be flipped while running: rosparam set /grasp_target/approach 45.
        The sequencer plans a side approach by itself when the frame is horizontal (config/grasp.yaml side_grasp_height, side_lift). -->
   <arg name="approach" default="down"/>
+  <!-- bias_r / bias_t / bias_z: metres the final aim point is moved radially outward / toward increasing azimuth (left seen from the robot) / up, in the arm's frame at the
+       target's azimuth; also changeable while running: rosparam set /grasp_target/bias "[-0.01, 0.01, 0.0]" -->
+  <arg name="bias_r" default="0.0"/>
+  <arg name="bias_t" default="0.0"/>
+  <arg name="bias_z" default="0.0"/>
   <node name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">
     <param name="marker_frame" value="$(arg marker)"/>
     <rosparam param="offset" subst_value="true">[$(arg offset_x), $(arg offset_y), $(arg offset_z)]</rosparam>
     <param name="target_frame" value="$(arg target_frame)"/>
     <param name="vertical" value="$(arg vertical)"/>
     <param name="approach" value="$(arg approach)"/>
+    <rosparam param="bias" subst_value="true">[$(arg bias_r), $(arg bias_t), $(arg bias_z)]</rosparam>
   </node>
 </launch>
