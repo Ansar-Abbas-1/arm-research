@@ -10,7 +10,7 @@ The sequencer logs every measurement (sag_log_dir); fit them with scripts/sag_fi
     rosrun arm_grasp sag_test.py --azimuth -40                  # dry runs only: lists the points and whether the planner can reach them, nothing moves
     rosrun arm_grasp sag_test.py --azimuth -40 --go             # the real test (e-stop in reach, the area under every point clear)
 
-It refuses to start a probe when a motor is at or above --max-temp (default 65 C).
+With --max-temp T it refuses to start a probe when a motor is at or above T degrees C (off by default).
 
 The area around every point must be free (the grasp point is a point in the air, PRE is 10 cm up and back along the approach line, the arm sweeps there).
 """
@@ -92,7 +92,7 @@ def main():
     ap.add_argument("--angle", type=float, default=45.0, help="approach angle below the horizontal (90 = from above)")
     ap.add_argument("--repeats", type=int, default=2)
     ap.add_argument("--preset", default="Pre-approach-New", help="the viewing pose to return to between points")
-    ap.add_argument("--max-temp", type=float, default=65.0, help="stop before the next probe when any motor is at or above this temperature [C] (the motors' own limit is 80)")
+    ap.add_argument("--max-temp", type=float, default=0.0, help="stop before the next probe when any motor is at or above this temperature [C]; 0 = no check (default: the motors' own limit is 80 C)")
     ap.add_argument("--go", action="store_true", help="MOVE THE ARM (without it: dry runs only)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
     rospy.init_node("sag_test")
@@ -113,7 +113,7 @@ def main():
     for rep in range(a.repeats if a.go else 1):
         for r, h, p in points:
             tag = "r %.2f h %.2f rep %d" % (r, h, rep + 1)
-            if a.go:
+            if a.go and a.max_temp > 0.0:
                 hot = hottest_motor()
                 if hot is None:
                     print(tag, "no fresh motor_status: stopping (cannot check the temperatures)")
