@@ -68,7 +68,7 @@ def wait_state(done, timeout):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--azimuth", type=float, required=True, help="degrees from base +x: a direction with free space under the points (no default: it depends on the scene)")
-    ap.add_argument("--radii", default="0.40,0.46,0.52", help="horizontal distances from the base axis [m]")
+    ap.add_argument("--radii", default="0.46,0.52", help="horizontal distances from the base axis [m]")
     ap.add_argument("--heights", default="0.12,0.20", help="grasp-point heights above the floor [m]: keep them above anything in the way")
     ap.add_argument("--angle", type=float, default=45.0, help="approach angle below the horizontal (90 = from above)")
     ap.add_argument("--repeats", type=int, default=2)
