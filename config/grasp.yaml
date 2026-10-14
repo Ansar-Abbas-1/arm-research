@@ -76,3 +76,11 @@ correction_max_total: 0.06     # m: cap on the compensation. FLAGGED
 correction_max_error: 0.05     # m: after the steps, a pose still further off than this aborts the sequence. FLAGGED
 correction_settle: 0.8         # s to wait after a move before measuring the end effector. FLAGGED
 correction_endpoint_tolerance_rad: 0.12   # rad: the joint-space endpoint check while correction is on (the Cartesian check above replaces it). FLAGGED
+
+# Arm sag (sag_model.py, scripts/sag_fit.py, scripts/sag_test.py). Every correction measurement is logged to sag_log_dir; sag_fit.py fits the mean sag per leg and
+# approach angle into a model file; with sag_model set, each plan aims at waypoint + (-gain x sag) and the running compensation starts from the PRE offset.
+sag_model: ""                  # path of the fitted model (json); "" = the sag is only corrected by the correction steps
+sag_gain: 1.0                  # 0 = off, 1 = the full learned offset. FLAGGED
+sag_min_samples: 2             # a bucket needs this many first measurements per leg to be used. FLAGGED
+sag_max_offset: 0.08           # m: a learned offset is limited to this length
+sag_log_dir: /home/dev/recordings/sag

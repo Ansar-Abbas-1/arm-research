@@ -19,9 +19,10 @@ class PositionCorrection(object):
         self.comp = np.zeros(3)
         self.used = 0
 
-    def reset(self):
-        """A new grasp: forget the compensation."""
-        self.comp = np.zeros(3)
+    def reset(self, initial=None):
+        """A new grasp: forget what the last one learned. `initial` starts the running compensation at a feed-forward value (the learned sag of the PRE
+        move, sag_model) instead of zero."""
+        self.comp = np.zeros(3) if initial is None else np.asarray(initial, float).copy()
         self.used = 0
 
     def begin(self):

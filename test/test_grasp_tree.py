@@ -42,6 +42,7 @@ class FakeContext(gt.GraspContext):
         self.arm_responds, self.measure_none = True, False
         self.corrective, self.replans = [], []
         self.corrective_error, self.replan_problem = None, None
+        self.measurements = []                                       # (key, step, measured xyz) as the leaves log them
 
     def now(self): return self.t
     def set_state(self, state, message=""): self.states.append(state) if not self.states or self.states[-1] != state else None
@@ -73,12 +74,15 @@ class FakeContext(gt.GraspContext):
             self.ee_aim = self.waypoints["PRE"].copy()
         elif name == "DESCEND":
             self.ee_aim = self.waypoints["GRASP"] + self.comp
+        elif name == "LIFT":
+            self.ee_aim = self.waypoints["LIFT"] + self.comp
         return self.start_error.get(name)
 
     def measure_ee(self):
         return None if self.measure_none else self.ee_aim + self.offset
 
     def waypoint(self, key): return self.waypoints[key]
+    def log_measurement(self, key, step, measured): self.measurements.append((key, step, np.array(measured)))
 
     def start_corrective(self, key, aim):
         self.corrective.append((key, np.array(aim)))
@@ -372,6 +376,42 @@ class TestCorrection(unittest.TestCase):
         self.assertEqual([k for k, _ in ctx.corrective], ["GRASP"])
         np.testing.assert_allclose(ctx.corrective[0][1][2], ctx.waypoints["GRASP"][2] - 0.012, atol=1e-9)
         self.assertEqual([legs for legs, _ in ctx.replans], [("LIFT",)])        # only the lift is re-planned (nothing to re-plan before the descent)
+
+
+class TestProbe(unittest.TestCase):
+    """The sag probe: PRE, GRASP and LIFT are moved to and measured in free air; the gripper is never commanded."""
+
+    def test_a_real_grasp_logs_its_first_measurements_of_pre_and_grasp(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.offset = np.array([0.0, 0.0, -0.03])
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        keys = [(k, step) for k, step, _ in ctx.measurements]
+        self.assertEqual(keys[0], ("PRE", 0))
+        self.assertIn(("GRASP", 0), keys)
+        self.assertNotIn("LIFT", [k for k, _, _ in ctx.measurements])      # a real run does not measure the lift
+        self.assertEqual(ctx.gripper_started, ["open", "close"])
+
+    def test_a_probe_never_touches_the_gripper_and_measures_pre_grasp_and_lift(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.probe = True
+        ctx.offset = np.array([0.0, 0.0, -0.03])
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual(ctx.gripper_started, [])
+        self.assertEqual(ctx.gripper_cancelled, 0)
+        self.assertNotIn("OPENING", ctx.states)
+        self.assertNotIn("CLOSING", ctx.states)
+        self.assertEqual([n for n, _ in ctx.started if not n.startswith("CORR")], ["PRE", "DESCEND", "LIFT"])
+        first = {k: m for k, step, m in ctx.measurements if step == 0}
+        self.assertEqual(sorted(first), ["GRASP", "LIFT", "PRE"])
+        for k in first:                                                      # the fake arm sags 3 cm: the raw first measurement shows it
+            self.assertAlmostEqual(first[k][2] - ctx.waypoints[k][2], -0.03, delta=0.031)
+
+    def test_a_probe_still_stops_on_a_safety_violation(self):
+        ctx, spec, root, tree = make(correction_steps=2)
+        ctx.probe = True
+        ctx.violation = "e-stop engaged"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertEqual(ctx.started, [])
 
 
 if __name__ == "__main__":

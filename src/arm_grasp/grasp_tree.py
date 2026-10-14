@@ -44,6 +44,11 @@ class SequenceParams(object):
 class GraspContext(object):
     """Interface the leaves use. The node implements it with ROS; tests with a fake."""
 
+    probe = False       # True: a SAG PROBE: PRE, GRASP and LIFT are moved to and measured, the gripper is never commanded (see build_tree)
+
+    def log_measurement(self, key, step, measured):
+        """One raw end-effector measurement of position `key` (PRE | GRASP | LIFT); `step` 0 is the first, before any corrective move. Default: ignore."""
+
     def now(self):
         """Monotonic time in seconds."""
         raise NotImplementedError
@@ -141,6 +146,26 @@ class Guarded(py_trees.decorators.Decorator):
         return self.decorated.status
 
 
+class ModeGate(py_trees.decorators.Decorator):
+    """Runs the child only in the right mode: `run_when_probe` True = only in a sag probe, False = only in a real grasp. In the other mode it succeeds
+    at once and never touches the child (no gripper command, no lift in a probe)."""
+
+    def __init__(self, child, ctx, run_when_probe):
+        super(ModeGate, self).__init__(child=child, name="%s (%s only)" % (child.name, "probe" if run_when_probe else "real grasp"))
+        self.ctx, self.run_when_probe = ctx, bool(run_when_probe)
+
+    def tick(self):
+        if bool(self.ctx.probe) != self.run_when_probe:
+            self.stop(Status.SUCCESS)
+            yield self
+            return
+        for node in super(ModeGate, self).tick():
+            yield node
+
+    def update(self):
+        return self.decorated.status
+
+
 class _Leaf(py_trees.behaviour.Behaviour):
     def __init__(self, name, ctx):
         super(_Leaf, self).__init__(name=name)
@@ -217,6 +242,7 @@ class CorrectPosition(_Leaf):
         if measured is None:
             self.ctx.fail("cannot measure the end effector for the %s correction" % self.key)
             return Status.FAILURE
+        self.ctx.log_measurement(self.key, c.used, measured)
         action, aim, err = c.step(self.ctx.waypoint(self.key), measured)
         if action == "ok":
             self.ctx.set_state("CORRECTING", "%s: %.1f mm off after %d correction step(s)" % (self.key, 1000.0 * err, c.used))
@@ -330,14 +356,16 @@ class RecheckTarget(_Leaf):
 
 
 def build_tree(ctx, spec, params, outcome_text=lambda: ""):
-    """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome)."""
+    """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome).
+    In a sag PROBE (ctx.probe) the gripper actions and the grip-watched lift are skipped and a plain LIFT that is measured too takes their place:
+    the arm goes through PRE, GRASP and LIFT in free air, every position measured, nothing gripped."""
     corrected = params.correction is not None and params.correction.steps > 0
     lift = py_trees.composites.Parallel(name="lift while holding", policy=py_trees.common.ParallelPolicy.SUCCESS_ON_ONE, children=[
         FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", lambda: "grasp outcome: %s" % outcome_text()),
         GripWatch(ctx),
     ])
     children = [
-        GripperAction("open gripper", ctx, params, "open", "OPENING", "gripper to %.3f" % spec.gripper_open),
+        ModeGate(GripperAction("open gripper", ctx, params, "open", "OPENING", "gripper to %.3f" % spec.gripper_open), ctx, False),
         FollowTrajectory("PRE", ctx, "PRE", 1.0, "MOVING_PRE", "above the target"),
     ]
     if corrected:
@@ -349,10 +377,14 @@ def build_tree(ctx, spec, params, outcome_text=lambda: ""):
     ]
     if corrected:
         children += [CorrectPosition(ctx, params, "GRASP")]
-    children += [GripperAction("close on load", ctx, params, "close", "CLOSING", "the gripper closes to its load target and keeps regulating it")]
+    children += [ModeGate(GripperAction("close on load", ctx, params, "close", "CLOSING", "the gripper closes to its load target and keeps regulating it"), ctx, False)]
     if corrected:
         children += [ReplanLegs(ctx, params, ("LIFT",), "re-plan LIFT")]
-    children += [lift]
+    children += [ModeGate(lift, ctx, False)]
+    probe_lift = [FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", "sag probe: the lift, measured")]
+    if corrected:
+        probe_lift += [CorrectPosition(ctx, params, "LIFT")]
+    children += [ModeGate(py_trees.composites.Sequence(name="probe lift", children=probe_lift), ctx, True)]
     return Guarded(py_trees.composites.Sequence(name="grasp", children=children), ctx)
 
 
@@ -360,6 +392,7 @@ def active_path(root):
     """Names of the RUNNING nodes from the root down, e.g. 'stop / e-stop guard/grasp/DESCEND'."""
     names, node = [], root
     while node is not None and node.status == Status.RUNNING:
-        names.append(node.name)
+        if not isinstance(node, ModeGate):                         # a mode gate only wraps its child: it adds nothing to the path
+            names.append(node.name)
         node = next((c for c in node.children if c.status == Status.RUNNING), None)
     return "/".join(names)

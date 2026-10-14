@@ -23,6 +23,7 @@ The target frame is any TF in base_link whose +z is the surface normal (e.g. mar
 Parameters: config/grasp.yaml (every default flagged there).
 """
 import json
+import os
 import threading
 import time
 
@@ -44,6 +45,7 @@ from actionlib_msgs.msg import GoalStatus
 from arm_grasp import correction as corr
 from arm_grasp import grasp_plan as gp
 from arm_grasp import grasp_tree as gt
+from arm_grasp import sag_model as sm
 from arm_grasp.srv import Grasp, GraspResponse
 from arm_trajectory.srv import GenerateTrajectory, GenerateTrajectoryRequest
 
@@ -87,6 +89,21 @@ class Node(gt.GraspContext):
         self.close = gp.CloseParams(**{k: type(getattr(d_close, k))(P("~close/" + k, getattr(d_close, k))) for k in vars(d_close)})
         self.params = gt.SequenceParams(recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg, require_object=self.require_object,
                                         correction=self.correction, correction_settle=float(P("~correction_settle", 0.8)))
+        # Arm sag: every correction measurement is logged (sag_log_dir); a model fitted from the log (sag_fit.py) gives a feed-forward offset per leg and approach
+        # angle: the plan aims at waypoint + offset and the running compensation starts from the PRE offset. sag_model "" = off.
+        self.sag_gain = float(P("~sag_gain", 1.0))
+        self.sag_min_n, self.sag_max_offset = int(P("~sag_min_samples", 2)), float(P("~sag_max_offset", 0.08))
+        self.sag_log_dir = P("~sag_log_dir", "/home/dev/recordings/sag")
+        self.sag_model, self.sag_path = None, str(P("~sag_model", ""))
+        if self.sag_path:
+            try:
+                self.sag_model = sm.load(self.sag_path)
+                rospy.logwarn("grasp: sag model %s loaded (gain %.2f): %s", self.sag_path, self.sag_gain, {c: {k: v["n"] for k, v in ks.items()} for c, ks in self.sag_model.buckets.items()})
+            except (IOError, ValueError) as e:
+                rospy.logerr("grasp: cannot load the sag model %s (%s): running without it", self.sag_path, e)
+        self.probe = False
+        self.ff = {k: np.zeros(3) for k in sm.KEYS}                   # feed-forward offsets of this grasp (added to the waypoints)
+        self.last_aim, self.approach_deg, self.run_id = {}, 90.0, ""
         self.wps = []
         self.buf = tf2_ros.Buffer()
         tf2_ros.TransformListener(self.buf)
@@ -200,7 +217,9 @@ class Node(gt.GraspContext):
             return GraspResponse(False, "refused: no /joint_states_in", 0.0, 0.0)
         if not req.dry_run and not self.estop_allows():
             return GraspResponse(False, "refused: e-stop engaged or its state unknown", 0.0, 0.0)
-        if not req.dry_run and self.grip_state() is None:
+        if req.probe and req.dry_run:
+            return GraspResponse(False, "refused: probe and dry_run together make no sense (a probe moves the arm to measure it)", 0.0, 0.0)
+        if not req.dry_run and not req.probe and self.grip_state() is None:
             return GraspResponse(False, "refused: no /gripper_control/status (start it: roslaunch arm_grasp gripper_control.launch)", 0.0, 0.0)
         self.target_frame = req.target_frame
         try:
@@ -215,13 +234,21 @@ class Node(gt.GraspContext):
         except ValueError as e:
             self.set_state("ABORTED", str(e))
             return GraspResponse(False, "refused: " + str(e), 0.0, 0.0)
-        legs, trajs = self.plan_legs(wps)
+        self.probe = bool(req.probe)
+        self.approach_deg = float(np.degrees(np.arcsin(np.clip(T[2, 2], -1.0, 1.0))))      # the tool axis below the horizontal (90 = straight down)
+        self.ff = ({k: np.zeros(3) for k in sm.KEYS} if self.sag_model is None else
+                   self.sag_model.offsets(self.approach_deg, self.sag_gain, self.sag_min_n, self.sag_max_offset))
+        planned = [gp.Waypoint(w.name, w.position + self.ff[w.name], w.R, w.grasp_point) for w in wps]     # aim where the sag will bring the arm onto the waypoint
+        legs, trajs = self.plan_legs(planned)
+        self.last_aim = {w.name: np.array(w.position) for w in planned}
         self.wps = wps
         problems = gp.check_plan(legs, self.spec)
         duration = gp.total_duration(legs, self.spec, gripper_time=(self.spec.gripper_open - self.spec.gripper_closed) * (1.0 / self.gripper_speed + 1.0 / self.close.close_speed) + self.gripper_settle + self.close.hold_time + 5.0)
         dev = max([l.deviation for l in legs if l.success] or [0.0])
         self.plan_info = {"legs": [{"name": l.name, "ok": l.success, "duration": l.duration, "deviation_mm": 1000 * l.deviation, "message": l.message} for l in legs],
-                          "duration": duration, "problems": problems, "waypoints": {w.name: [float(v) for v in w.position] for w in wps}}
+                          "duration": duration, "problems": problems, "waypoints": {w.name: [float(v) for v in w.position] for w in wps},
+                          "approach_deg": round(self.approach_deg, 1), "probe": self.probe,
+                          "sag_ff_mm": {k: [round(1000.0 * float(v), 1) for v in self.ff[k]] for k in sm.KEYS}}
         if problems:
             self.set_state("ABORTED", "plan not feasible: " + "; ".join(problems))
             return GraspResponse(False, "plan not feasible: " + "; ".join(problems), duration, dev)
@@ -353,8 +380,32 @@ class Node(gt.GraspContext):
     def waypoint(self, key):
         return np.array(self.wps[{"PRE": 0, "GRASP": 1, "LIFT": 2}[key]].position)
 
+    def delta(self, key):
+        """The feed-forward offset of `key` relative to PRE's: the running compensation starts at PRE's, so a later leg adds only the difference."""
+        return self.ff[key] - self.ff["PRE"]
+
+    def log_measurement(self, key, step, measured):
+        """One JSON line per raw measurement (sag_model documents the fields); a logging problem never disturbs the grasp."""
+        try:
+            aim = self.last_aim.get(key)
+            if aim is None:
+                return
+            row = {"time": time.time(), "run": self.run_id, "mode": "probe" if self.probe else "real", "key": key, "step": int(step),
+                   "approach_deg": round(self.approach_deg, 2), "goal": [float(v) for v in self.waypoint(key)], "aim": [float(v) for v in aim],
+                   "measured": [float(v) for v in measured], "joints": [float(v) for v in (self.q or [])[:6]],
+                   "ff_mm": [round(1000.0 * float(v), 1) for v in self.ff[key]], "comp_mm": [round(1000.0 * float(v), 1) for v in self.correction.comp],
+                   "target": [float(v) for v in self.plan_T[:3, 3]] if self.plan_T is not None else None}
+            if not os.path.isdir(self.sag_log_dir):
+                os.makedirs(self.sag_log_dir)
+            with open(os.path.join(self.sag_log_dir, "sag_%s.jsonl" % time.strftime("%Y%m%d")), "a") as f:
+                f.write(json.dumps(row) + "\n")
+        except Exception as e:  # noqa: BLE001
+            rospy.logwarn_throttle(30.0, "grasp: sag log not written: %s", e)
+
     def start_corrective(self, key, aim):
         wp = self.wps[{"PRE": 0, "GRASP": 1, "LIFT": 2}[key]]
+        aim = np.asarray(aim, float) + self.delta(key)
+        self.last_aim[key] = aim.copy()
         cartesian = key != "PRE"
         legs, trajs = self.plan_chain(list(self.q), (("CORR_" + key, aim, wp.R, cartesian),))
         problems = gp.check_plan(legs, self.spec)
@@ -365,12 +416,15 @@ class Node(gt.GraspContext):
     def replan_legs(self, comp, legs):
         """Re-plan `legs` from the CURRENT joints with `comp` added to their waypoints; keep them only if they pass the same checks."""
         comp = np.asarray(comp, float)
-        items = [(name, self.wps[{"DESCEND": 1, "LIFT": 2}[name]].position + comp, self.wps[{"DESCEND": 1, "LIFT": 2}[name]].R, True) for name in legs]
+        keys = {"DESCEND": "GRASP", "LIFT": "LIFT"}
+        items = [(name, self.wps[{"DESCEND": 1, "LIFT": 2}[name]].position + comp + self.delta(keys[name]), self.wps[{"DESCEND": 1, "LIFT": 2}[name]].R, True) for name in legs]
         planned, trajs = self.plan_chain(list(self.q), items)
         problems = gp.check_plan(planned, self.spec)
         if problems:
             return "; ".join(problems)
         self.trajs.update(trajs)
+        for name, position, _, _ in items:
+            self.last_aim[keys[name]] = np.array(position)
         return None
 
     def target_drift(self):
@@ -387,7 +441,8 @@ class Node(gt.GraspContext):
     def run(self):
         """Tick the behavior tree at tick_rate until it succeeds or fails. The leaves report the states."""
         self.abort_reason, self.outcome = None, None
-        self.correction.reset()                                          # the offset learned in an earlier grasp does not apply to this one
+        self.correction.reset(initial=self.ff["PRE"])                    # what an earlier grasp learned does not apply to this one; the sag model's PRE offset does
+        self.run_id = time.strftime("%Y%m%d_%H%M%S")
         self.tree.root.stop(py_trees.common.Status.INVALID)
         rate = rospy.Rate(self.tick_rate)
         last_path = None
@@ -401,7 +456,7 @@ class Node(gt.GraspContext):
                     self.publish()
                 if status == py_trees.common.Status.SUCCESS:
                     self.plan_info["correction_mm"] = [round(1000.0 * float(v), 1) for v in self.correction.comp]
-                    self.set_state("DONE", "grasp outcome: %s" % self.outcome)
+                    self.set_state("DONE", "sag probe finished: PRE, GRASP and LIFT measured (log in %s)" % self.sag_log_dir if self.probe else "grasp outcome: %s" % self.outcome)
                     return
                 if status == py_trees.common.Status.FAILURE:
                     self.set_state("ABORTED", self.abort_reason or "the behavior tree failed")
