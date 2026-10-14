@@ -327,5 +327,47 @@ class LightGripTest(unittest.TestCase):
         self.assertGreaterEqual(pl.p.contact_load, pl.p.load_target)
 
 
+class SideApproachTest(unittest.TestCase):
+    """A SIDE grasp: the target frame is horizontal (target_offset.side_frame), the tool looks outward along the radial direction."""
+
+    @staticmethod
+    def side_target(pos):
+        from arm_grasp import target_offset as to
+        T = np.eye(4)
+        T[:3, :3] = to.side_frame(pos)
+        T[:3, 3] = pos
+        return T
+
+    def test_a_horizontal_frame_is_a_side_approach_and_a_floor_frame_is_not(self):
+        self.assertTrue(gp.is_side_approach(self.side_target([0.5, 0.1, -0.55])))
+        self.assertFalse(gp.is_side_approach(floor_target()))
+
+    def test_pre_is_in_front_of_the_target_along_the_radial_line_and_the_tool_looks_outward_horizontally(self):
+        pos = np.array([0.5, 0.2, -0.55])
+        pre, grasp, lift = gp.waypoints(self.side_target(pos), gp.GraspSpec())
+        radial = np.array([pos[0], pos[1], 0.0]) / np.hypot(pos[0], pos[1])
+        np.testing.assert_allclose(pre.position, pos - 0.10 * radial, atol=1e-12)     # 10 cm toward the base, same height
+        np.testing.assert_allclose(grasp.position, pos, atol=1e-12)                   # the fingertips reach the target (side_grasp_height 0)
+        for w in (pre, grasp, lift):
+            np.testing.assert_allclose(w.R[:, 2], radial, atol=1e-9)                  # tool axis: horizontal, outward
+            self.assertAlmostEqual(w.R[2, 1], 0.0)                                    # jaws close sideways (tool y horizontal)
+
+    def test_the_side_lift_goes_straight_up_by_default_or_back_when_asked(self):
+        pos = np.array([0.5, 0.0, -0.55])
+        T = self.side_target(pos)
+        up = gp.waypoints(T, gp.GraspSpec())[2]
+        np.testing.assert_allclose(up.position, pos + [0, 0, 0.15], atol=1e-12)
+        np.testing.assert_allclose(up.R, gp.waypoints(T, gp.GraspSpec())[1].R)         # same orientation as GRASP: a pure translation
+        back = gp.waypoints(T, gp.GraspSpec(side_lift="back"))[2]
+        np.testing.assert_allclose(back.position, pos - 0.15 * np.array([1.0, 0.0, 0.0]), atol=1e-12)
+
+    def test_the_side_grasp_height_stops_short_of_the_target_and_never_changes_a_floor_grasp(self):
+        pos = np.array([0.5, 0.0, -0.55])
+        grasp = gp.waypoints(self.side_target(pos), gp.GraspSpec(side_grasp_height=0.02))[1]
+        np.testing.assert_allclose(grasp.position, pos - [0.02, 0, 0], atol=1e-12)
+        floor = gp.waypoints(floor_target(), gp.GraspSpec(side_grasp_height=0.5))[1]
+        np.testing.assert_allclose(floor.position[2], -0.60 + 0.02, atol=1e-12)         # the down approach keeps grasp_height
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -67,6 +67,7 @@ class Node(gt.GraspContext):
             grasp_offset=tuple(P("~grasp_offset", list(d.grasp_offset))), gripper_open=float(P("~gripper_open", d.gripper_open)),
             gripper_closed=float(P("~gripper_closed", d.gripper_closed)), descent_slow_factor=float(P("~descent_slow_factor", d.descent_slow_factor)),
             lift_slow_factor=float(P("~lift_slow_factor", d.lift_slow_factor)),
+            side_grasp_height=float(P("~side_grasp_height", d.side_grasp_height)), side_lift=str(P("~side_lift", d.side_lift)),
             max_cartesian_deviation=float(P("~max_cartesian_deviation", d.max_cartesian_deviation)))
         self.base = P("~base_frame", "base_link")
         self.target_max_age = float(P("~target_max_age", 5.0))

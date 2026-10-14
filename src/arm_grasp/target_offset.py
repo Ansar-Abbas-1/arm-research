@@ -40,3 +40,15 @@ def offset_target_frame(position, quaternion, offset, vertical=False):
     expressed in THAT frame."""
     R = vertical_frame(quaternion) if vertical else quat_to_matrix(quaternion)
     return np.asarray(position, float) + R.dot(np.asarray(offset, float)), R
+
+
+def side_frame(position):
+    """Rotation matrix of a target frame for a SIDE grasp: z = horizontal, pointing from the target back toward the robot's base (so the gripper, whose
+    approach is -z, looks outward along the radial direction), x = up, y = z cross x (horizontal, perpendicular to the arm's plane: the jaws close sideways
+    on the stem). `position` is the target in the base frame; a target straight above the base has no radial direction and falls back to -x."""
+    p = np.asarray(position, float)
+    r = np.array([p[0], p[1], 0.0])
+    n = np.linalg.norm(r)
+    z = -r / n if n > 1e-6 else np.array([-1.0, 0.0, 0.0])
+    x = np.array([0.0, 0.0, 1.0])
+    return np.column_stack([x, np.cross(z, x), z])

@@ -59,5 +59,23 @@ class VerticalFrameTest(unittest.TestCase):
         np.testing.assert_allclose(to.vertical_frame(q), np.eye(3), atol=1e-9)
 
 
+class SideFrameTest(unittest.TestCase):
+    def test_a_side_frame_is_horizontal_pointing_back_toward_the_base_with_y_perpendicular_to_the_arm_plane(self):
+        for pos in ([0.5, 0.0, -0.55], [0.4, 0.3, -0.5], [-0.2, 0.4, -0.6]):
+            R = to.side_frame(pos)
+            np.testing.assert_allclose(R.T @ R, np.eye(3), atol=1e-12)
+            self.assertAlmostEqual(np.linalg.det(R), 1.0)
+            radial = np.array([pos[0], pos[1], 0.0]) / np.hypot(pos[0], pos[1])
+            np.testing.assert_allclose(R[:, 2], -radial, atol=1e-12)               # z: horizontal, toward the base
+            np.testing.assert_allclose(R[:, 0], [0, 0, 1], atol=1e-12)             # x: up
+            self.assertAlmostEqual(R[2, 1], 0.0)                                    # y horizontal
+            self.assertAlmostEqual(float(R[:, 1] @ radial), 0.0)                    # and perpendicular to the arm's plane
+
+    def test_a_target_over_the_base_has_a_defined_frame(self):
+        R = to.side_frame([0.0, 0.0, -0.5])
+        np.testing.assert_allclose(R[:, 2], [-1, 0, 0])
+        self.assertAlmostEqual(np.linalg.det(R), 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

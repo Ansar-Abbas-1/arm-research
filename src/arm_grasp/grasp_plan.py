@@ -24,6 +24,8 @@ class GraspSpec:
     gripper_closed: float = 0.0       # joint_6 [m]: closed
     descent_slow_factor: float = 3.0  # the descent and the lift take this many times longer than the planner's time (>= 1)
     lift_slow_factor: float = 2.0
+    side_grasp_height: float = 0.0    # m along the target frame's z (back toward the base) at GRASP for a SIDE approach: 0 = the fingertips reach the target point itself (a stem)
+    side_lift: str = "up"             # LIFT of a side approach: 'up' (straight up from GRASP, pulls a plant out) or 'back' (straight back along the approach)
     max_cartesian_deviation: float = 0.005   # m: allowed worst tracking residual of a straight leg
 
 
@@ -52,14 +54,27 @@ def tool_rotation(approach, position):
     return np.column_stack([x, y, z]), deviation
 
 
+def is_side_approach(T_base_target):
+    """True when the target frame's z axis (the direction the gripper retreats along) is more than 60 degrees from vertical: a SIDE grasp, the tool looking
+    horizontally. arm_grasp/target_offset.side_frame builds such a frame (grasp_target ~approach:=forward)."""
+    return abs(np.asarray(T_base_target, float)[2, 2]) < 0.5
+
+
 def waypoints(T_base_target, spec):
     """PRE, GRASP, LIFT as a list of Waypoint (end-effector pose in base_link) for a target frame.
+    The tool approaches along -z of the target frame: straight down onto a floor target, or, when the frame is horizontal (is_side_approach), sideways
+    from the robot's side; there GRASP is spec.side_grasp_height short of the target and LIFT goes straight up (side_lift 'up') or back.
     Raises ValueError if the target's normal cannot be matched by the wrist within 5 degrees."""
     T = np.asarray(T_base_target, float)
     normal = T[:3, 2]
     approach = -normal
+    side = is_side_approach(T)
     out = []
-    for name, h in (("PRE", spec.pre_height), ("GRASP", spec.grasp_height), ("LIFT", spec.lift_height)):
+    for name, h in (("PRE", spec.pre_height), ("GRASP", spec.side_grasp_height if side else spec.grasp_height), ("LIFT", spec.lift_height)):
+        if name == "LIFT" and side and spec.side_lift == "up":
+            g = out[1]
+            out.append(Waypoint(name, g.position + h * np.array([0.0, 0.0, 1.0]), g.R, g.grasp_point + h * np.array([0.0, 0.0, 1.0])))
+            continue
         local = np.array([spec.grasp_offset[0], spec.grasp_offset[1], h, 1.0])
         grasp_point = (T @ local)[:3]
         R, dev = tool_rotation(approach, grasp_point)

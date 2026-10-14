@@ -9,6 +9,11 @@ keeps broadcasting <target_frame> with the MARKER'S timestamp, not the current t
 sequence's freshness check (target_max_age) refuses a target nobody has seen recently. Nothing here commands the robot.
 
     roslaunch arm_grasp grasp_target.launch marker:=marker_984 offset_x:=0.03 offset_y:=0 offset_z:=0.0
+
+~approach (default down; read every cycle, so it can be changed while running: rosparam set /grasp_target/approach forward):
+    down      the frame's z is the surface normal (up for a floor target): the gripper comes from above
+    forward   a SIDE grasp: z is horizontal, back toward the robot's base, so the gripper looks outward along the radial direction and closes sideways
+              on the target (arm_grasp/target_offset.side_frame; the planner's waypoints then approach horizontally, see config/grasp.yaml side_*)
 """
 import json
 
@@ -28,6 +33,7 @@ def main():
     offset = [float(v) for v in rospy.get_param("~offset", [0.0, 0.0, 0.0])]
     target = rospy.get_param("~target_frame", "grasp_target")
     vertical = bool(rospy.get_param("~vertical", False))
+    approach = "down"                                             # re-read below every cycle: rosparam set /grasp_target/approach forward
     base = rospy.get_param("~base_frame", "base_link")
     buf = tf2_ros.Buffer()
     tf2_ros.TransformListener(buf)
@@ -48,16 +54,20 @@ def main():
         if last is not None:
             tr, q = last.transform.translation, last.transform.rotation
             p, R = to.offset_target_frame([tr.x, tr.y, tr.z], [q.x, q.y, q.z, q.w], offset, vertical)
+            approach = str(rospy.get_param("~approach", "down")).strip().lower()
+            side = approach in ("forward", "side")
+            if side:
+                R = to.side_frame(p)                              # z horizontal, back toward the base: the gripper looks forward (radially outward)
             m = TransformStamped()
             m.header.stamp, m.header.frame_id, m.child_frame_id = last.header.stamp, base, target
             m.transform.translation.x, m.transform.translation.y, m.transform.translation.z = [float(v) for v in p]
-            if vertical:
+            if vertical or side:
                 m.transform.rotation.x, m.transform.rotation.y, m.transform.rotation.z, m.transform.rotation.w = gp.quaternion_from_matrix(R)
             else:
                 m.transform.rotation = last.transform.rotation
             br.sendTransform(m)
             pub.publish(String(json.dumps({"marker": marker, "offset": offset, "age_s": (rospy.Time.now() - last.header.stamp).to_sec(),
-                                           "target_xyz": [float(v) for v in p]})))
+                                           "approach": "forward" if side else "down", "target_xyz": [float(v) for v in p]})))
         rate.sleep()
 
 
