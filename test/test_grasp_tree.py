@@ -398,6 +398,7 @@ class TestProbe(unittest.TestCase):
         self.assertEqual(run(ctx, tree), Status.SUCCESS)
         self.assertEqual(ctx.gripper_started, [])
         self.assertEqual(ctx.gripper_cancelled, 0)
+        self.assertEqual(ctx.corrective, [])                                 # measured, never corrected: the raw sag is what the probe is for
         self.assertNotIn("OPENING", ctx.states)
         self.assertNotIn("CLOSING", ctx.states)
         self.assertEqual([n for n, _ in ctx.started if not n.startswith("CORR")], ["PRE", "DESCEND", "LIFT"])

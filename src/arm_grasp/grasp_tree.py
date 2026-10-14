@@ -25,6 +25,7 @@ The leaves publish their state name through `ctx.set_state`, which is what `~sta
 `ctx.fail(reason)`; the first reason wins and becomes the ABORTED message. Interrupting a running leaf (guard failure, tree
 stop, a failed sibling) cancels its trajectory goal or gripper action in `terminate`.
 """
+import numpy as np
 import py_trees
 from py_trees.common import Status
 
@@ -243,6 +244,10 @@ class CorrectPosition(_Leaf):
             self.ctx.fail("cannot measure the end effector for the %s correction" % self.key)
             return Status.FAILURE
         self.ctx.log_measurement(self.key, c.used, measured)
+        if self.ctx.probe:                                              # a sag probe only MEASURES: the raw sag is the data, a corrective move would hide it
+            self.ctx.set_state("CORRECTING", "%s: sag probe, measured %.1f mm from the waypoint" % (
+                self.key, 1000.0 * float(np.linalg.norm(np.asarray(self.ctx.waypoint(self.key), float) - np.asarray(measured, float)))))
+            return Status.SUCCESS
         action, aim, err = c.step(self.ctx.waypoint(self.key), measured)
         if action == "ok":
             self.ctx.set_state("CORRECTING", "%s: %.1f mm off after %d correction step(s)" % (self.key, 1000.0 * err, c.used))
