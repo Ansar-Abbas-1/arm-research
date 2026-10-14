@@ -105,11 +105,12 @@ struct PanelState {
   bool move_active = false;
   bool gripper_backend_present = false;  ///< the gripper_control services exist
   bool gripper_busy = false;             ///< an open/close call is in progress
+  bool gripper_load_present = false;     ///< the gripper_control set_load_target service exists
 };
 
 struct ButtonEnables {
   bool go, save, cancel, reset, torque, reenable;
-  bool gripper_move, gripper_stop;
+  bool gripper_move, gripper_stop, gripper_load;
 };
 
 /// Which buttons are usable. E-STOP itself is always enabled and is not listed.
@@ -126,6 +127,9 @@ inline ButtonEnables ComputeEnables(const PanelState& s) {
   // call is running, even under an e-stop, like the E-STOP button itself.
   e.gripper_move = s.gripper_backend_present && !s.gripper_busy && s.estop == EStop::kReleased && s.torque == Torque::kOn;
   e.gripper_stop = s.gripper_backend_present && s.gripper_busy;
+  // The hold-load slider only changes a number in the node (nothing moves while the gripper is idle; while it holds, the running regulation moves
+  // the jaws), so it needs neither torque nor a released e-stop: under an e-stop the gripper controller is frozen anyway.
+  e.gripper_load = s.gripper_load_present;
   return e;
 }
 
@@ -149,6 +153,20 @@ inline std::string GripperText(bool backend_present, bool has_position, double p
   }
   if (!phase.empty()) text += " | " + phase + (message.empty() ? "" : ": " + message);
   return text;
+}
+
+/// The hold-load slider moves in 0.1 % ticks from 0 to the maximum the gripper_control node reports (38.5 % by default).
+inline int LoadSliderMaxTick(double max_percent) { return static_cast<int>(std::lround(std::max(0.0, max_percent) * 10.0)); }
+inline int LoadToTick(double percent, double max_percent) {
+  return std::min(LoadSliderMaxTick(max_percent), std::max(0, static_cast<int>(std::lround(percent * 10.0))));
+}
+inline double TickToLoad(int tick, double max_percent) { return std::min(std::max(0, tick), LoadSliderMaxTick(max_percent)) / 10.0; }
+
+/// The slider's value label, e.g. "15.0 %".
+inline std::string LoadTargetText(double percent) {
+  char buf[32];
+  std::snprintf(buf, sizeof(buf), "%.1f %%", percent);
+  return buf;
 }
 
 /// True when no motor_status has arrived for longer than max_age_s (or never): the table must not be trusted.

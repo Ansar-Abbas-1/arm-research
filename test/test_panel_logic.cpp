@@ -168,6 +168,28 @@ TEST(Html, MotorTableHasOneRowPerMotorWithLevelColourAndEscapedText) {
   EXPECT_EQ(n, 3u);   // header + 2 motors
 }
 
+TEST(LoadSlider, TicksAreTenthsOfAPercentClampedToTheRange) {
+  EXPECT_EQ(LoadSliderMaxTick(38.5), 385);
+  EXPECT_EQ(LoadToTick(15.0, 38.5), 150);
+  EXPECT_EQ(LoadToTick(-3.0, 38.5), 0);                          // clamped at both ends
+  EXPECT_EQ(LoadToTick(50.0, 38.5), 385);
+  EXPECT_DOUBLE_EQ(TickToLoad(150, 38.5), 15.0);
+  EXPECT_DOUBLE_EQ(TickToLoad(9999, 38.5), 38.5);
+  EXPECT_DOUBLE_EQ(TickToLoad(-4, 38.5), 0.0);
+  EXPECT_EQ(LoadToTick(TickToLoad(237, 38.5), 38.5), 237);       // round trip
+  EXPECT_EQ(LoadSliderMaxTick(-1.0), 0);
+  EXPECT_EQ(LoadTargetText(15.0), "15.0 %");
+}
+
+TEST(GripperEnables, TheLoadSliderNeedsOnlyItsServiceNotTorqueOrAReleasedEStop) {
+  PanelState s;
+  EXPECT_FALSE(ComputeEnables(s).gripper_load);
+  s.gripper_load_present = true;
+  EXPECT_TRUE(ComputeEnables(s).gripper_load);
+  s.estop = EStop::kEngaged; s.torque = Torque::kOff; s.gripper_busy = true;     // a close in progress, e-stop engaged: still adjustable
+  EXPECT_TRUE(ComputeEnables(s).gripper_load);
+}
+
 int main(int argc, char** argv) {
   testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

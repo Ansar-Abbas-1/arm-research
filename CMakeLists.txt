@@ -16,7 +16,7 @@ find_package(Qt5 REQUIRED COMPONENTS Core Widgets Test)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 14)
 
-add_service_files(FILES PresetCommand.srv)
+add_service_files(FILES PresetCommand.srv SetLoadTarget.srv)
 generate_messages()
 
 catkin_package(

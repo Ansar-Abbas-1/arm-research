@@ -1,5 +1,6 @@
 // Widget-level test of ArmControlPanel against fake driver/backend services in this process, run headless
 // (QT_QPA_PLATFORM=offscreen) under rostest. Confirmation and name dialogs are replaced by recorders.
+#include <algorithm>
 #include <atomic>
 #include <mutex>
 
@@ -13,6 +14,7 @@
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
 #include <arm_gui/PresetCommand.h>
+#include <arm_gui/SetLoadTarget.h>
 
 #include <QApplication>
 #include <QTest>
@@ -69,6 +71,7 @@ class PanelTest : public ::testing::Test {
       gripper_open_srv = nh.advertiseService("/gripper_control/open", &PanelTest::OnGripperOpen, this);
       gripper_close_srv = nh.advertiseService("/gripper_control/close_on_load", &PanelTest::OnGripperClose, this);
       gripper_stop_srv = nh.advertiseService("/gripper_control/stop", &PanelTest::OnGripperStop, this);
+      set_load_srv = nh.advertiseService("/gripper_control/set_load_target", &PanelTest::OnSetLoad, this);
     }
     estop_trigger_sub = nh.subscribe<std_msgs::Empty>("/arm_interface/estop_trigger", 5, [this](const std_msgs::Empty::ConstPtr&) { ++estop_topic; });
     panel = new ArmControlPanel();
@@ -78,7 +81,7 @@ class PanelTest : public ::testing::Test {
 
   void TearDown() override {
     delete panel;
-    gripper_open_srv.shutdown(); gripper_close_srv.shutdown(); gripper_stop_srv.shutdown();
+    gripper_open_srv.shutdown(); gripper_close_srv.shutdown(); gripper_stop_srv.shutdown(); set_load_srv.shutdown();
     load_pub.shutdown(); gripper_status_pub.shutdown(); joints_pub.shutdown();
     estop_srv.shutdown(); reset_srv.shutdown(); torque_srv.shutdown(); reenable_srv.shutdown(); preset_srv.shutdown();
     estop_pub.shutdown(); drive_pub.shutdown(); motors_pub.shutdown(); presets_pub.shutdown();
@@ -94,6 +97,15 @@ class PanelTest : public ::testing::Test {
     r.success = true; r.message = "object: load 37 %"; return true;
   }
   bool OnGripperStop(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& r) { ++gripper_stop_calls; r.success = true; r.message = "stop requested"; return true; }
+  bool OnSetLoad(arm_gui::SetLoadTarget::Request& q, arm_gui::SetLoadTarget::Response& r) {
+    ++set_load_calls;
+    last_load_request = q.load_target;
+    r.success = true;
+    r.load_target = std::min(std::max(q.load_target, 0.0), load_clamp_max.load());       // the node clamps; the fake can clamp lower to test the answer
+    r.load_target_max = 38.5; r.contact_load = 5.0;
+    r.message = "load target applied";
+    return true;
+  }
   bool OnTorque(std_srvs::SetBool::Request& q, std_srvs::SetBool::Response& r) { ++torque_calls; torque_requested = q.data; r.success = true; r.message = "ok"; return true; }
   bool OnPreset(arm_gui::PresetCommand::Request& q, arm_gui::PresetCommand::Response& r) {
     std::lock_guard<std::mutex> l(m);
@@ -136,9 +148,11 @@ class PanelTest : public ::testing::Test {
   static ros::AsyncSpinner* spinner_;
   ros::NodeHandle nh;
   ros::Publisher estop_pub, drive_pub, motors_pub, presets_pub;
-  ros::ServiceServer estop_srv, reset_srv, torque_srv, reenable_srv, preset_srv, gripper_open_srv, gripper_close_srv, gripper_stop_srv;
+  ros::ServiceServer estop_srv, reset_srv, torque_srv, reenable_srv, preset_srv, gripper_open_srv, gripper_close_srv, gripper_stop_srv, set_load_srv;
   ros::Publisher load_pub, gripper_status_pub, joints_pub;
   std::atomic<int> gripper_open_calls, gripper_close_calls, gripper_stop_calls, gripper_close_ms;
+  std::atomic<int> set_load_calls{0};
+  std::atomic<double> last_load_request{-1.0}, load_clamp_max{38.5};
   bool no_gripper = false;
   ros::Subscriber estop_trigger_sub;
   ArmControlPanel* panel = nullptr;
@@ -220,8 +234,9 @@ TEST_F(PanelTest, GripperLabelShowsPositionLoadAndPhase) {
   ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("CLOSING: holding"); }));
   ASSERT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("load 37.5 %"); }));
   EXPECT_TRUE(panel->gripper_label()->text().contains("joint_6 5.6 mm"));
-  QTest::qWait(1600);                                            // no new load sample: shown as n/a, never a stale number
-  EXPECT_TRUE(panel->gripper_label()->text().contains("load n/a"));
+  // No new load sample: shown as n/a, never a stale number. The label is repainted by the 1 Hz service timer once the sample is older than 1 s, so
+  // it takes 1 to 2 s; wait for it (bounded) instead of sleeping a fixed 1.6 s, which raced the timer.
+  EXPECT_TRUE(WaitUntil([&] { return panel->gripper_label()->text().contains("load n/a"); }, 2500));
 }
 
 TEST_F(PanelTest, ALostGripTurnsTheGripperLabelRedAndRecovers) {
@@ -414,6 +429,44 @@ TEST_F(PanelTest, RendersAScreenshotForInspection) {
   QTest::qWait(100);
   const char* dir = getenv("ARM_GUI_SCREENSHOT");   // set to a file name to keep the image
   if (dir) EXPECT_TRUE(panel->grab().save(dir));
+}
+
+TEST_F(PanelTest, HoldLoadSliderFollowsTheNodeStatusWithoutCallingTheService) {
+  Publish(false, "HOLDING");
+  std_msgs::String st; st.data = R"({"phase": "HOLDING", "message": "", "grip": "held", "load_target": 15.0, "load_target_max": 30.0})";
+  gripper_status_pub.publish(st);
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->maximum() == 300 && panel->gripper_load_slider()->value() == 150; }));
+  EXPECT_EQ(panel->gripper_load_label()->text(), "15.0 %");
+  EXPECT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->isEnabled(); }, 4000));    // the service exists
+  QTest::qWait(300);
+  EXPECT_EQ(set_load_calls, 0);                                  // a status update must never echo back as a request
+}
+
+TEST_F(PanelTest, MovingTheHoldLoadSliderCallsTheServiceOnceAndReportsTheAnswer) {
+  Publish(false, "HOLDING");
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->isEnabled(); }, 4000));
+  panel->gripper_load_slider()->setValue(200);                   // 20.0 %
+  ASSERT_TRUE(WaitUntil([&] { return set_load_calls == 1; }));
+  EXPECT_DOUBLE_EQ(last_load_request, 20.0);
+  ASSERT_TRUE(WaitUntil([&] { return panel->message_label()->text().contains("Hold load"); }));
+  EXPECT_EQ(panel->gripper_load_label()->text(), "20.0 %");
+}
+
+TEST_F(PanelTest, TheSliderShowsWhatTheNodeAppliedWhenItClampedTheRequest) {
+  Publish(false, "HOLDING");
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->isEnabled(); }, 4000));
+  load_clamp_max = 30.0;
+  panel->gripper_load_slider()->setValue(385);
+  ASSERT_TRUE(WaitUntil([&] { return set_load_calls == 1; }));
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->value() == 300; }));
+  EXPECT_EQ(panel->gripper_load_label()->text(), "30.0 %");
+}
+
+TEST_F(PanelTest, TheHoldLoadSliderIsDisabledWithoutItsService) {
+  Publish(false, "HOLDING");
+  ASSERT_TRUE(WaitUntil([&] { return panel->gripper_load_slider()->isEnabled(); }, 4000));
+  set_load_srv.shutdown();
+  ASSERT_TRUE(WaitUntil([&] { return !panel->gripper_load_slider()->isEnabled(); }, 4000));
 }
 
 int main(int argc, char** argv) {

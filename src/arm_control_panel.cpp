@@ -9,6 +9,7 @@
 #include <std_srvs/SetBool.h>
 #include <std_srvs/Trigger.h>
 #include <arm_gui/PresetCommand.h>
+#include <arm_gui/SetLoadTarget.h>
 
 #include <QFrame>
 #include <QGridLayout>
@@ -20,6 +21,7 @@
 #include <QMessageBox>
 #include <QMetaObject>
 #include <QPointer>
+#include <QSignalBlocker>
 #include <QVBoxLayout>
 
 namespace arm_gui {
@@ -111,6 +113,17 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   gripper_row->addWidget(gripper_close_button_);
   gripper_row->addWidget(gripper_stop_button_);
   gripper_layout->addLayout(gripper_row);
+  auto* load_row = new QHBoxLayout();
+  load_row->addWidget(new QLabel("Hold load"));
+  gripper_load_slider_ = new QSlider(Qt::Horizontal);
+  gripper_load_slider_->setRange(0, LoadSliderMaxTick(load_target_max_));
+  gripper_load_slider_->setTracking(false);   // the service is called when the slider is released (or a key / wheel step), not on every tick while dragging
+  gripper_load_slider_->setToolTip("Steady-state load the gripper holds, changed at run time (0 = no squeeze, up to the node's maximum). The peak ceiling is fixed.");
+  gripper_load_label_ = new QLabel(QString::fromStdString(LoadTargetText(0.0)));
+  gripper_load_label_->setMinimumWidth(60);
+  load_row->addWidget(gripper_load_slider_, 1);
+  load_row->addWidget(gripper_load_label_);
+  gripper_layout->addLayout(load_row);
   layout->addWidget(gripper_box);
 
   auto* torque_box = new QGroupBox("Torque");
@@ -146,6 +159,14 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   connect(gripper_open_button_, &QPushButton::clicked, this, [this] { click_gripper_open(); });
   connect(gripper_close_button_, &QPushButton::clicked, this, [this] { click_gripper_close(); });
   connect(gripper_stop_button_, &QPushButton::clicked, this, [this] { click_gripper_stop(); });
+  connect(gripper_load_slider_, &QSlider::sliderMoved, this, [this](int tick) {
+    gripper_load_label_->setText(QString::fromStdString(LoadTargetText(TickToLoad(tick, load_target_max_))));
+  });
+  connect(gripper_load_slider_, &QSlider::valueChanged, this, [this](int tick) {     // released, or a key / wheel step; programmatic updates block the signal
+    const double percent = TickToLoad(tick, load_target_max_);
+    gripper_load_label_->setText(QString::fromStdString(LoadTargetText(percent)));
+    request_load_target(percent);
+  });
   connect(motors_reset_button_, &QPushButton::clicked, this, [this] { click_motors_reset(); });
 
   // ROS callbacks run on whatever thread spins the queue: forward everything to the GUI thread.
@@ -190,6 +211,7 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
   gripper_open_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/open");
   gripper_close_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/close_on_load");
   gripper_stop_client_ = nh_.serviceClient<std_srvs::Trigger>("/gripper_control/stop");
+  gripper_set_load_client_ = nh_.serviceClient<arm_gui::SetLoadTarget>("/gripper_control/set_load_target");
   estop_trigger_pub_ = nh_.advertise<std_msgs::Empty>("/arm_interface/estop_trigger", 1);
   estop_client_ = nh_.serviceClient<std_srvs::Trigger>("/arm_interface/estop");
   reset_client_ = nh_.serviceClient<std_srvs::Trigger>("/arm_interface/estop_reset");
@@ -201,6 +223,7 @@ ArmControlPanel::ArmControlPanel(QWidget* parent) : rviz::Panel(parent) {
     driver_present_ = estop_client_.exists();
     state_.backend_present = preset_client_.exists();
     state_.gripper_backend_present = gripper_open_client_.exists() && gripper_close_client_.exists() && gripper_stop_client_.exists();
+    state_.gripper_load_present = gripper_set_load_client_.exists();
     update_gripper_label();
     update_motor_age();
     refresh();
@@ -246,7 +269,66 @@ void ArmControlPanel::on_gripper_status(const QString& json) {
   gripper_phase_ = o["phase"].toString();
   gripper_message_ = o["message"].toString();
   gripper_grip_ = o["grip"].toString();
+  if (o.contains("load_target_max")) set_load_slider_range(o["load_target_max"].toDouble());
+  if (o.contains("load_target") && !gripper_load_slider_->isSliderDown() && !load_call_inflight_ && !has_load_pending_)
+    set_load_slider_value(o["load_target"].toDouble());            // follows the node (a change from the service, a restart with other launch args)
   update_gripper_label();
+}
+
+void ArmControlPanel::set_load_slider_range(double max_percent) {
+  if (max_percent <= 0.0 || std::abs(max_percent - load_target_max_) < 1e-9) return;
+  load_target_max_ = max_percent;
+  const QSignalBlocker blocker(gripper_load_slider_);
+  gripper_load_slider_->setRange(0, LoadSliderMaxTick(max_percent));
+}
+
+void ArmControlPanel::set_load_slider_value(double percent) {
+  {
+    const QSignalBlocker blocker(gripper_load_slider_);
+    gripper_load_slider_->setValue(LoadToTick(percent, load_target_max_));
+  }
+  gripper_load_label_->setText(QString::fromStdString(LoadTargetText(TickToLoad(gripper_load_slider_->value(), load_target_max_))));
+}
+
+void ArmControlPanel::request_load_target(double percent) {
+  if (load_call_inflight_) {                    // keep only the latest wish while a call runs
+    load_pending_ = percent;
+    has_load_pending_ = true;
+    return;
+  }
+  load_call_inflight_ = true;
+  QPointer<ArmControlPanel> self(this);
+  std::thread([self, percent] {                 // a fresh client in a worker thread, like the other gripper calls
+    ros::NodeHandle nh;
+    ros::ServiceClient client = nh.serviceClient<arm_gui::SetLoadTarget>("/gripper_control/set_load_target");
+    arm_gui::SetLoadTarget srv;
+    srv.request.load_target = percent;
+    QString text;
+    bool error = true;
+    double applied = percent, max_percent = 0.0;
+    if (!client.exists()) {
+      text = "service /gripper_control/set_load_target is not available";
+    } else if (!client.call(srv)) {
+      text = "call to /gripper_control/set_load_target failed";
+    } else {
+      text = QString("Hold load: %1").arg(QString::fromStdString(srv.response.message));
+      error = !srv.response.success;
+      applied = srv.response.load_target;
+      max_percent = srv.response.load_target_max;
+    }
+    if (self) QMetaObject::invokeMethod(self.data(), [self, applied, max_percent, text, error] { if (self) self->on_load_result(applied, max_percent, text, error); }, Qt::QueuedConnection);
+  }).detach();
+}
+
+void ArmControlPanel::on_load_result(double applied, double max_percent, const QString& text, bool error) {
+  load_call_inflight_ = false;
+  if (max_percent > 0.0) set_load_slider_range(max_percent);
+  if (!error && !has_load_pending_) set_load_slider_value(applied);   // the node may have clamped the request
+  say(text, error);
+  if (has_load_pending_) {
+    has_load_pending_ = false;
+    request_load_target(load_pending_);
+  }
 }
 
 void ArmControlPanel::update_gripper_label() {
@@ -364,6 +446,7 @@ void ArmControlPanel::refresh() {
   gripper_open_button_->setEnabled(en.gripper_move);
   gripper_close_button_->setEnabled(en.gripper_move);
   gripper_stop_button_->setEnabled(en.gripper_stop);
+  gripper_load_slider_->setEnabled(en.gripper_load);
   save_button_->setEnabled(en.save);
   cancel_button_->setEnabled(en.cancel);
   reset_button_->setEnabled(en.reset && driver_present_);

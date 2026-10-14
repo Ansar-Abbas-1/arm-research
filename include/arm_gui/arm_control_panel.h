@@ -16,6 +16,7 @@
 #include <QLabel>
 #include <QPointer>
 #include <QPushButton>
+#include <QSlider>
 #include <QString>
 #include <QTimer>
 #include <QWidget>
@@ -62,6 +63,8 @@ class ArmControlPanel : public rviz::Panel {
   QPushButton* gripper_close_button() const { return gripper_close_button_; }
   QPushButton* gripper_stop_button() const { return gripper_stop_button_; }
   QLabel* gripper_label() const { return gripper_label_; }
+  QSlider* gripper_load_slider() const { return gripper_load_slider_; }
+  QLabel* gripper_load_label() const { return gripper_load_label_; }
   QPushButton* preset_button(const QString& name) const;
   QStringList preset_names() const;
   QLabel* status_label() const { return status_label_; }
@@ -99,6 +102,10 @@ class ArmControlPanel : public rviz::Panel {
   void click_gripper_close();
   void click_gripper_stop();
   void run_gripper_call(const std::string& service, const QString& what);   ///< Trigger call in a worker thread
+  void request_load_target(double percent);       ///< set_load_target in a worker thread; a request made while one is running replaces the waiting one
+  void on_load_result(double applied, double max_percent, const QString& text, bool error);
+  void set_load_slider_range(double max_percent);
+  void set_load_slider_value(double percent);     ///< moves the slider without calling the service
   bool preset_command(const std::string& action, const std::string& name);
 
   ConfirmFn confirm_;
@@ -108,11 +115,14 @@ class ArmControlPanel : public rviz::Panel {
   ros::Subscriber estop_sub_, drive_sub_, motors_sub_, presets_sub_, joints_sub_, load_sub_, gripper_status_sub_;
   ros::Publisher estop_trigger_pub_;  ///< fire-and-forget e-stop, sent alongside the service call
   ros::ServiceClient estop_client_, reset_client_, torque_client_, motors_reset_client_, preset_client_;
-  ros::ServiceClient gripper_open_client_, gripper_close_client_, gripper_stop_client_;   ///< only for exists(); calls use fresh clients
+  ros::ServiceClient gripper_open_client_, gripper_close_client_, gripper_stop_client_, gripper_set_load_client_;   ///< only for exists(); calls use fresh clients
   ros::WallTime last_load_;        ///< when the last joint_6 load arrived (zero: never)
   double load_percent_ = 0.0;
   double shown_joint6_ = 1e9;      ///< joint_6 as last drawn in the gripper label
   QString gripper_phase_, gripper_message_, gripper_grip_;
+  double load_target_max_ = 38.5;  ///< upper end of the hold-load slider (the node reports it in its status)
+  bool load_call_inflight_ = false, has_load_pending_ = false;
+  double load_pending_ = 0.0;
   ros::WallTime last_motors_;      ///< when the last motor_status arrived (zero: never)
   int motors_count_ = 0;           ///< motor_status messages received
   QTimer service_timer_;  ///< polls which services exist (the driver or backend may start later)
@@ -144,6 +154,8 @@ class ArmControlPanel : public rviz::Panel {
   QPushButton* gripper_close_button_;
   QPushButton* gripper_stop_button_;
   QLabel* gripper_label_;
+  QSlider* gripper_load_slider_;
+  QLabel* gripper_load_label_;
   QWidget* preset_area_;
   QLabel* motor_label_;
   QGroupBox* motors_box_;
