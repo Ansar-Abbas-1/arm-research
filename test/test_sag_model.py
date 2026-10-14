@@ -27,7 +27,7 @@ class SamplesTest(unittest.TestCase):
     def test_only_first_measurements_of_known_keys_and_modes_count(self):
         rows = [row(), row(step=1), row(key="XYZ"), row(mode="sim"), {"key": "PRE"}, row(key="GRASP", sag=(0.01, 0, -0.02))]
         samples = sm.sag_samples(rows)
-        self.assertEqual([(k, tuple(np.round(s, 3))) for _, k, s, _ in samples], [("PRE", (0.0, 0.0, -0.03)), ("GRASP", (0.01, 0.0, -0.02))])
+        self.assertEqual([(k, tuple(np.round(s, 3))) for _, k, s, _, _ in samples], [("PRE", (0.0, 0.0, -0.03)), ("GRASP", (0.01, 0.0, -0.02))])
 
     def test_the_sag_does_not_depend_on_an_aim_that_already_includes_a_compensation(self):
         a = sm.sag_samples([row(aim=(0.4, 0, -0.4))])[0][2]
@@ -129,7 +129,7 @@ class ArmFrameTest(unittest.TestCase):
 
     def test_the_sag_is_stored_as_radial_tangential_along_the_travel_and_vertical(self):
         samples = sm.sag_samples([polar_row(-40.0, radial=0.030, tangent=0.012, vertical=-0.004)])
-        _, _, local, valid = samples[0]
+        _, _, local, valid, _ = samples[0]
         np.testing.assert_allclose(local, [0.030, -0.012, -0.004], atol=1e-12)        # joint 1 travelled toward -az, the error is +v: AGAINST the travel
         self.assertTrue(valid.all())
 
@@ -182,6 +182,50 @@ class ReportToolTest(unittest.TestCase):
         self.assertIn("off", res.stdout)
         self.assertIn(" on ", res.stdout)
         self.assertIn("-az", res.stdout)
+
+
+class RangeGuardTest(unittest.TestCase):
+    def test_a_target_far_above_the_measured_heights_gets_no_offset(self):
+        rows = [polar_row(-40.0, r=0.46, z=-0.52), polar_row(-40.0, r=0.52, z=-0.54), polar_row(-40.0, r=0.46, z=-0.54, key="GRASP"), polar_row(-40.0, r=0.52, z=-0.52, key="GRASP")]
+        model = sm.SagModel.fit(sm.sag_samples(rows))
+        az = np.radians(-40.0)
+        inside = model.offsets(45.0, az, 0.0, target_radius=0.49, target_z=-0.53)
+        self.assertGreater(np.linalg.norm(inside["PRE"]), 0.02)
+        high = model.offsets(45.0, az, 0.0, target_radius=0.49, target_z=-0.35)          # 18 cm above the highest sample, margin 4 cm
+        for k in sm.KEYS:
+            np.testing.assert_allclose(high[k], 0.0)
+        far = model.offsets(45.0, az, 0.0, target_radius=0.65, target_z=-0.53)           # beyond the radius range plus margin
+        np.testing.assert_allclose(far["PRE"], 0.0)
+        near_edge = model.offsets(45.0, az, 0.0, target_radius=0.555, target_z=-0.57)    # inside the margins: still used
+        self.assertGreater(np.linalg.norm(near_edge["PRE"]), 0.02)
+
+    def test_without_a_position_the_guard_is_not_applied(self):
+        model = sm.SagModel.fit(sm.sag_samples([polar_row(-40.0), polar_row(-40.0)]))
+        self.assertGreater(np.linalg.norm(model.offsets(45.0, np.radians(-40.0), 0.0)["PRE"]), 0.02)
+
+    def test_max_z_keeps_high_samples_out_of_the_fit(self):
+        rows = [polar_row(-40.0, z=-0.52), polar_row(-40.0, z=-0.53), polar_row(-40.0, z=-0.30, radial=0.01), polar_row(-40.0, z=-0.30, radial=0.01)]
+        full = sm.SagModel.fit(sm.sag_samples(rows))
+        low = sm.SagModel.fit(sm.sag_samples(rows, max_z=-0.45))
+        self.assertAlmostEqual(low.sag("PRE", 45.0)[0][0], 0.030, places=9)            # the 1 cm rows are excluded
+        self.assertLess(full.sag("PRE", 45.0)[0][0], 0.030)
+        self.assertEqual(low.buckets[45.0]["PRE"]["n"], 2)
+
+    def test_an_old_model_file_without_ranges_covers_everything(self):
+        model = sm.SagModel({45.0: {"PRE": {"mean": [0.03, 0, 0], "std": [0, 0, 0], "n": 5, "n_tangential": 5}}})
+        self.assertTrue(model.covers("PRE", 45.0, 0.9, 0.5))
+
+
+class TangentGainTest(unittest.TestCase):
+    def test_the_tangent_gain_scales_only_the_tangential_part(self):
+        model = sm.SagModel.fit(sm.sag_samples([polar_row(-40.0, vertical=-0.02), polar_row(-40.0, vertical=-0.02)]))
+        az = np.radians(-40.0)
+        full, half = model.offsets(45.0, az, 0.0)["PRE"], model.offsets(45.0, az, 0.0, tangent_gain=0.5)["PRE"]
+        v = np.array([-np.sin(az), np.cos(az), 0.0])
+        u = np.array([np.cos(az), np.sin(az), 0.0])
+        self.assertAlmostEqual(float(half @ v), 0.5 * float(full @ v), places=9)
+        self.assertAlmostEqual(float(half @ u), float(full @ u), places=9)
+        self.assertAlmostEqual(half[2], full[2], places=9)
 
 
 if __name__ == "__main__":

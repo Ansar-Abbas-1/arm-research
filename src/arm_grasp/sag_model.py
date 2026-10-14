@@ -49,11 +49,13 @@ def read_rows(lines):
     return rows
 
 
-def sag_samples(rows, modes=("real", "probe")):
+def sag_samples(rows, modes=("real", "probe"), max_z=None):
     """[(approach_deg, key, local_sag [radial, tangential-along-travel, vertical], valid [3 bool])] from the FIRST measurement (step 0) of every position of every
     run; rows without a valid measurement are skipped. step > 0 measurements follow corrective moves that were aimed at the already compensated point: the first
     one is the cleanest (one move from a known start), so only those are used. The azimuth is the waypoint's (`goal`), the start azimuth is q_start[0] when the
-    row has it, else 0 (the viewing pose). The tangential component is valid only where joint 1 travelled at least TRAVEL_RAMP."""
+    row has it, else 0 (the viewing pose). The tangential component is valid only where joint 1 travelled at least TRAVEL_RAMP. The last element of a sample is
+    the target point's (radius from the base axis, base-frame z), which gives the model its validity range; max_z drops samples whose target is higher than that
+    (a model fitted at grasp heights must not be built from samples far above them)."""
     out = []
     for r in rows:
         try:
@@ -63,6 +65,9 @@ def sag_samples(rows, modes=("real", "probe")):
             goal = np.asarray(r["goal"], float)
             if s.shape != (3,) or not np.all(np.isfinite(s)) or goal.shape != (3,):
                 continue
+            tgt = np.asarray(r["target"], float) if r.get("target") else goal
+            if max_z is not None and tgt[2] > max_z:
+                continue
             az = float(np.arctan2(goal[1], goal[0]))
             az0 = float(r["q_start"][0]) if r.get("q_start") else 0.0
             u, w, z = arm_frame(az, az0)
@@ -70,7 +75,7 @@ def sag_samples(rows, modes=("real", "probe")):
             v = np.array([-np.sin(az), np.cos(az), 0.0])
             sign = np.sign(az - az0)
             local = np.array([s @ u, (s @ v) * sign, s @ z])
-            out.append((float(r["approach_deg"]), r["key"], local, np.array([True, travel >= 1.0 - 1e-9, True])))
+            out.append((float(r["approach_deg"]), r["key"], local, np.array([True, travel >= 1.0 - 1e-9, True]), (float(np.hypot(tgt[0], tgt[1])), float(tgt[2]))))
         except (KeyError, TypeError, ValueError, IndexError):
             continue
     return out
@@ -86,9 +91,9 @@ class SagModel(object):
     @classmethod
     def fit(cls, samples, bucket_deg=15.0):
         acc = {}
-        for angle, key, s, valid in samples:
+        for angle, key, s, valid, pos in samples:
             centre = round(angle / bucket_deg) * bucket_deg
-            acc.setdefault(centre, {}).setdefault(key, []).append((s, valid))
+            acc.setdefault(centre, {}).setdefault(key, []).append((s, valid, pos))
         buckets = {}
         for centre, keys in acc.items():
             buckets[centre] = {}
@@ -97,7 +102,9 @@ class SagModel(object):
                 n_c = M.sum(axis=0)
                 mean = [float(L[M[:, c], c].mean()) if n_c[c] else 0.0 for c in range(3)]
                 std = [float(L[M[:, c], c].std(ddof=1)) if n_c[c] > 1 else 0.0 for c in range(3)]
-                buckets[centre][k] = {"mean": mean, "std": std, "n": len(items), "n_tangential": int(n_c[1])}
+                P = np.array([i[2] for i in items])
+                buckets[centre][k] = {"mean": mean, "std": std, "n": len(items), "n_tangential": int(n_c[1]),
+                                      "radius_range": [float(P[:, 0].min()), float(P[:, 0].max())], "z_range": [float(P[:, 1].min()), float(P[:, 1].max())]}
         return cls(buckets, bucket_deg)
 
     def to_dict(self):
@@ -120,17 +127,37 @@ class SagModel(object):
             return np.zeros(3), 0
         return np.asarray(best[1]["mean"], float), int(best[1]["n"])
 
-    def offsets(self, approach_deg, azimuth=0.0, azimuth_start=0.0, gain=1.0, min_n=2, max_offset=0.08):
+    def covers(self, key, approach_deg, radius, z, margin_radius=0.05, margin_z=0.04, min_n=2, max_distance=None):
+        """True when (radius, z) of the target is inside the range the sag of `key` was measured over, widened by the margins. A model without recorded ranges
+        (an old file) covers everything. The sag changes with the pose: measured 2026-10-14, the model fitted at grasp heights (0.05 to 0.09 m above the floor)
+        made the error WORSE 0.25 m above the floor (23 mm instead of 17 mm at PRE), so it must not be applied there."""
+        max_distance = self.bucket_deg if max_distance is None else max_distance
+        best = None
+        for centre, keys in self.buckets.items():
+            d = abs(centre - approach_deg)
+            if key in keys and keys[key]["n"] >= min_n and d <= max_distance and (best is None or d < best[0]):
+                best = (d, keys[key])
+        if best is None or "z_range" not in best[1]:
+            return True
+        (r0, r1), (z0, z1) = best[1]["radius_range"], best[1]["z_range"]
+        return bool(r0 - margin_radius <= radius <= r1 + margin_radius and z0 - margin_z <= z <= z1 + margin_z)
+
+    def offsets(self, approach_deg, azimuth=0.0, azimuth_start=0.0, gain=1.0, min_n=2, max_offset=0.08, target_radius=None, target_z=None, tangent_gain=1.0):
         """{key: feed-forward offset [m] in the base frame to ADD to that waypoint} = -gain x the mean sag turned from the arm's frame (at `azimuth`, joint 1
         travelling from `azimuth_start`) into the base frame, each limited to max_offset in length. LIFT is not measured by a real run: it uses its own samples
-        when a probe measured it, else the GRASP sag."""
+        when a probe measured it, else the GRASP sag. With target_radius and target_z a leg whose target lies outside the measured range (see covers) gets
+        a zero offset. tangent_gain scales ONLY the tangential part: it is measured at azimuths -40, 0 and +40 degrees but not in between, and its dependence on the
+        azimuth is not the simple sign-of-travel that the model assumes (+12 mm at -40, +8 mm at 0, -12 mm at +40, along +azimuth)."""
         out = {}
         u, w, z = arm_frame(azimuth, azimuth_start)
         for key in KEYS:
+            if target_radius is not None and not self.covers("GRASP" if key == "LIFT" and self.sag("LIFT", approach_deg, min_n)[1] == 0 else key, approach_deg, target_radius, target_z, min_n=min_n):
+                out[key] = np.zeros(3)
+                continue
             s, n = self.sag(key, approach_deg, min_n)
             if n == 0 and key == "LIFT":
                 s, n = self.sag("GRASP", approach_deg, min_n)
-            off = -float(gain) * (s[0] * u + s[1] * w + s[2] * z)
+            off = -float(gain) * (s[0] * u + float(tangent_gain) * s[1] * w + s[2] * z)
             norm = float(np.linalg.norm(off))
             out[key] = off * (max_offset / norm) if norm > max_offset else off
         return out

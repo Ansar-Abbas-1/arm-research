@@ -93,6 +93,7 @@ class Node(gt.GraspContext):
         # angle: the plan aims at waypoint + offset and the running compensation starts from the PRE offset. sag_model "" = off.
         self.sag_gain = float(P("~sag_gain", 1.0))
         self.sag_min_n, self.sag_max_offset = int(P("~sag_min_samples", 2)), float(P("~sag_max_offset", 0.08))
+        self.sag_tangent_gain = float(P("~sag_tangent_gain", 1.0))
         self.sag_log_dir = P("~sag_log_dir", "/home/dev/recordings/sag")
         self.sag_model, self.sag_path = None, str(P("~sag_model", ""))
         if self.sag_path:
@@ -240,7 +241,10 @@ class Node(gt.GraspContext):
         self.q_start = [float(v) for v in self.q]                                       # where the run starts: joint 1 travels from here to the target's azimuth
         az = float(np.arctan2(wps[0].position[1], wps[0].position[0]))
         ff_full = ({k: np.zeros(3) for k in sm.KEYS} if self.sag_model is None else
-                   self.sag_model.offsets(self.approach_deg, az, self.q_start[0], self.sag_gain, self.sag_min_n, self.sag_max_offset))
+                   self.sag_model.offsets(self.approach_deg, az, self.q_start[0], self.sag_gain, self.sag_min_n, self.sag_max_offset,
+                                          target_radius=float(np.hypot(T[0, 3], T[1, 3])), target_z=float(T[2, 3]), tangent_gain=self.sag_tangent_gain))
+        if self.sag_model is not None and not any(np.any(v) for v in ff_full.values()):
+            rospy.logwarn("grasp: the target (radius %.2f m, z %.2f m, approach %.0f deg) is outside the range the sag model was measured over: no sag offset", np.hypot(T[0, 3], T[1, 3]), T[2, 3], self.approach_deg)
         # Aim where the sag will bring the arm onto the waypoint. Near the edge of the workspace that aim can be unreachable (a PRE pushed further inward by the
         # offset): back the offset off in steps until the whole plan is feasible, and say so.
         self.sag_scale = 1.0

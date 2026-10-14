@@ -23,6 +23,7 @@ def main():
     ap.add_argument("--log-dir", default="/home/dev/recordings/sag")
     ap.add_argument("--modes", default="real,probe", help="which measurements to use: real, probe or both")
     ap.add_argument("--bucket-deg", type=float, default=15.0)
+    ap.add_argument("--max-z", type=float, default=None, help="use only samples whose target is at or below this base-frame z [m] (about the floor + 0.15: the grasp heights)")
     ap.add_argument("--out", default="", help="write the model here (json)")
     a = ap.parse_args()
     lines = []
@@ -30,7 +31,7 @@ def main():
         with open(f) as fh:
             lines += fh.readlines()
     rows = sm.read_rows(lines)
-    samples = sm.sag_samples(rows, tuple(a.modes.split(",")))
+    samples = sm.sag_samples(rows, tuple(a.modes.split(",")), a.max_z)
     print("%d log lines, %d first measurements used (%s)" % (len(rows), len(samples), a.modes))
     if not samples:
         print("nothing to fit")
@@ -44,8 +45,8 @@ def main():
             if not b:
                 continue
             m, sd = 1000.0 * np.array(b["mean"]), 1000.0 * np.array(b["std"])
-            print("%5.0f deg %-6s %4d   (%7.1f, %7.1f, %7.1f)               (%5.1f, %5.1f, %5.1f)%s" % (
-                centre, key, b["n"], *m, *sd, "" if b["n_tangential"] == b["n"] else "   tangential from %d runs" % b["n_tangential"]))
+            print("%5.0f deg %-6s %4d   (%7.1f, %7.1f, %7.1f)               (%5.1f, %5.1f, %5.1f)   radius %.2f-%.2f m, z %.2f-%.2f m%s" % (
+                centre, key, b["n"], *m, *sd, *b["radius_range"], *b["z_range"], "" if b["n_tangential"] == b["n"] else "   tangential from %d runs" % b["n_tangential"]))
     if a.out:
         sm.save(model, a.out)
         print("model written to", a.out)
