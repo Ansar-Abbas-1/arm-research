@@ -4,6 +4,10 @@
        (+z out of the surface, x and y in its plane), in metres. Then plan with:
          rosservice call /grasp_sequencer/grasp "{target_frame: grasp_target, dry_run: true}"
        The sequencer refuses a target older than target_max_age (5 s), so keep the marker in view and the arm still when you call it. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
   <arg name="marker" doc="TF frame of the marker, for example marker_984"/>
   <arg name="offset_x" default="0.0"/>
   <arg name="offset_y" default="0.0"/>
@@ -21,7 +25,7 @@
   <arg name="bias_r" default="0.0"/>
   <arg name="bias_t" default="0.0"/>
   <arg name="bias_z" default="0.0"/>
-  <node name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="grasp_target" pkg="arm_grasp" type="grasp_target_node.py" output="screen">
     <param name="marker_frame" value="$(arg marker)"/>
     <rosparam param="offset" subst_value="true">[$(arg offset_x), $(arg offset_y), $(arg offset_z)]</rosparam>
     <param name="target_frame" value="$(arg target_frame)"/>

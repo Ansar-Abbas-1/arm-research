@@ -8,8 +8,12 @@
        then, with the e-stop in reach and the arm supported, the same with dry_run: false; follow it with
          rostopic echo /grasp_sequencer/status        (rosservice call /grasp_sequencer/stop ends it; the driver holds)
        Every default in config/grasp.yaml is flagged: confirm the gripper geometry before a real grasp. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
   <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
-  <node name="grasp_sequencer" pkg="arm_grasp" type="grasp_sequencer_node.py" output="screen">
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="grasp_sequencer" pkg="arm_grasp" type="grasp_sequencer_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
   </node>
 </launch>

@@ -11,6 +11,11 @@
          rostopic echo /gripper_control/status                 (phase, grip held|thin|lost|none, load)
          rosservice call /gripper_control/stop                 (ends the action AND the regulation; the driver holds the last goal)
        Parameters (load target, speeds, PI gains) come from config/grasp.yaml; every value there except the operator's numbers is flagged. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
   <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
   <!-- close_speed: m/s approach speed of the close, overriding the yaml (empty: keep the yaml value). The node reads it at
        startup, so a change needs a restart of this launch. Example: roslaunch arm_grasp gripper_control.launch close_speed:=0.003 -->
@@ -21,7 +26,7 @@
        65 to 80 %/mm, so even at 15 % the squeeze is only a fraction of a millimetre. Needs a restart of this launch. -->
   <arg name="load_target" default=""/>
   <arg name="contact_load" default=""/>
-  <node name="gripper_control" pkg="arm_grasp" type="gripper_control_node.py" output="screen">
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="gripper_control" pkg="arm_grasp" type="gripper_control_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
     <param name="close/close_speed" value="$(arg close_speed)" type="double" unless="$(eval arg('close_speed') == '')"/>
     <param name="close/load_target" value="$(arg load_target)" type="double" unless="$(eval arg('load_target') == '')"/>
