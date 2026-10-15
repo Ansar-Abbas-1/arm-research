@@ -1,0 +1,114 @@
+<launch>
+  <!-- BRINGUP 2/4, arm + eye-in-hand camera + marker localizer: everything of bringup_arm, plus the usb camera (respawned by camera.launch itself), the
+       end_effector -> camera_optical_frame transform and marker_localizer (marker_<id> TF in base_link, only while the camera is still).
+         roslaunch arm_bringup bringup_vision.launch use_hardware:=true device:=/dev/video3
+       device: the camera's video node; it renumbers after a replug (check /sys/class/video4linux/video*/name). camera_tf: static (x y z in metres, yaw pitch
+       roll in radians; the defaults are the hand-measured mount of 2026-10-09) | hand_eye (hand_eye_file) | none. localizer:=false leaves the localizer out.
+       The marker localizer reports a marker only after a few still frames. Parameters of the arm set: see bringup_arm.launch. -->
+  <arg name="use_hardware" default="false"/>
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="respawn" default="true"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
+  <arg name="velocity_scale" default="1.0"/>
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+  <arg name="max_goal_slew_rad_s" default="0.0"/>
+  <arg name="nullspace_tip_link" default="link_4"/>
+  <arg name="nullspace_gain" default="0.05"/>
+  <arg name="nullspace_rate_fraction" default="0.25"/>
+  <arg name="correction_steps" default="0"/>
+  <arg name="correction_trigger" default="0.006"/>
+  <arg name="correction_max_total" default="0.06"/>
+  <arg name="correction_gain" default="1.0"/>
+  <arg name="correction_pitch" default="true"/>
+  <arg name="correction_pitch_trigger" default="0.01"/>
+  <arg name="correction_pitch_max_total" default="0.2"/>
+  <arg name="sim_motor_warn_joint" default="0"/>
+  <arg name="sim_motor_fault_joint" default="0"/>
+  <arg name="presets" default="true"/>
+  <arg name="preset_max_delta" default="0"/>
+  <arg name="gripper" default="true"/>
+  <arg name="grasp_config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <arg name="load_target" default="15"/>
+  <arg name="contact_load" default="5"/>
+  <arg name="close_speed" default=""/>
+  <arg name="use_rviz" default="true"/>
+  <arg name="rviz_config" default="$(find arm_bringup)/rviz/vision.rviz"/>
+  <arg name="camera" default="true"/>
+  <arg name="device" default="/dev/video2"/>
+  <arg name="camera_tf" default="static"/>
+  <arg name="x" default="-0.025"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="-0.06"/>
+  <arg name="yaw" default="1.5708"/>
+  <arg name="pitch" default="0"/>
+  <arg name="roll" default="0"/>
+  <arg name="hand_eye_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+  <arg name="localizer" default="true"/>
+  <arg name="markers_file" default="$(find arm_perception)/config/markers.yaml"/>
+  <arg name="window_s" default="0.5"/>
+  <arg name="still_translation_mm" default="2.0"/>
+  <arg name="still_rotation_deg" default="0.3"/>
+  <arg name="quad_decimate" default="2.0"/>
+
+  <include file="$(find arm_bringup)/launch/bringup_arm.launch">
+    <arg name="use_hardware" value="$(arg use_hardware)"/>
+    <arg name="serial_port" value="$(arg serial_port)"/>
+    <arg name="respawn" value="$(arg respawn)"/>
+    <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+    <arg name="respawn_driver" value="$(arg respawn_driver)"/>
+    <arg name="velocity_scale" value="$(arg velocity_scale)"/>
+    <arg name="max_joint_velocity" value="$(arg max_joint_velocity)"/>
+    <arg name="max_joint_acceleration" value="$(arg max_joint_acceleration)"/>
+    <arg name="max_goal_slew_rad_s" value="$(arg max_goal_slew_rad_s)"/>
+    <arg name="nullspace_tip_link" value="$(arg nullspace_tip_link)"/>
+    <arg name="nullspace_gain" value="$(arg nullspace_gain)"/>
+    <arg name="nullspace_rate_fraction" value="$(arg nullspace_rate_fraction)"/>
+    <arg name="correction_steps" value="$(arg correction_steps)"/>
+    <arg name="correction_trigger" value="$(arg correction_trigger)"/>
+    <arg name="correction_max_total" value="$(arg correction_max_total)"/>
+    <arg name="correction_gain" value="$(arg correction_gain)"/>
+    <arg name="correction_pitch" value="$(arg correction_pitch)"/>
+    <arg name="correction_pitch_trigger" value="$(arg correction_pitch_trigger)"/>
+    <arg name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)"/>
+    <arg name="sim_motor_warn_joint" value="$(arg sim_motor_warn_joint)"/>
+    <arg name="sim_motor_fault_joint" value="$(arg sim_motor_fault_joint)"/>
+    <arg name="presets" value="$(arg presets)"/>
+    <arg name="preset_max_delta" value="$(arg preset_max_delta)"/>
+    <arg name="gripper" value="$(arg gripper)"/>
+    <arg name="grasp_config" value="$(arg grasp_config)"/>
+    <arg name="load_target" value="$(arg load_target)"/>
+    <arg name="contact_load" value="$(arg contact_load)"/>
+    <arg name="close_speed" value="$(arg close_speed)"/>
+    <arg name="use_rviz" value="$(arg use_rviz)"/>
+    <arg name="rviz_config" value="$(arg rviz_config)"/>
+  </include>
+
+  <group if="$(arg camera)">
+    <include file="$(find arm_camera)/launch/camera.launch">
+      <arg name="device" value="$(arg device)"/>
+    </include>
+    <include if="$(eval arg('camera_tf') == 'static')" file="$(find arm_camera)/launch/camera_static_tf.launch">
+      <arg name="x" value="$(arg x)"/>
+      <arg name="y" value="$(arg y)"/>
+      <arg name="z" value="$(arg z)"/>
+      <arg name="yaw" value="$(arg yaw)"/>
+      <arg name="pitch" value="$(arg pitch)"/>
+      <arg name="roll" value="$(arg roll)"/>
+    </include>
+    <node if="$(eval arg('camera_tf') == 'hand_eye')" name="hand_eye_tf_publisher" pkg="arm_camera" type="hand_eye_tf_publisher.py" output="screen"
+          respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)">
+      <param name="file" value="$(arg hand_eye_file)"/>
+    </node>
+    <include if="$(arg localizer)" file="$(find arm_perception)/launch/marker_localizer.launch">
+      <arg name="markers_file" value="$(arg markers_file)"/>
+      <arg name="window_s" value="$(arg window_s)"/>
+      <arg name="still_translation_mm" value="$(arg still_translation_mm)"/>
+      <arg name="still_rotation_deg" value="$(arg still_rotation_deg)"/>
+      <arg name="quad_decimate" value="$(arg quad_decimate)"/>
+      <arg name="respawn" value="$(arg respawn)"/>
+      <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+    </include>
+  </group>
+</launch>

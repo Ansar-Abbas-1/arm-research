@@ -1,0 +1,168 @@
+<launch>
+  <!-- BRINGUP 4/4, the complete stack: everything of bringup_detect, plus the grasp sequencer and the mission control.
+         roslaunch arm_bringup bringup_grasp.launch use_hardware:=true device:=/dev/video3
+         roslaunch arm_bringup bringup_grasp.launch mission_control:=rqt            (the same panel as a separate rqt window)
+       Nothing moves by itself: the sequencer waits for /grasp_sequencer/grasp, which Mission Control calls only after a successful dry run of exactly the
+       current settings (the "go" gate; see arm_mission). The sequencer is configured by grasp_config (arm_grasp/config/grasp.yaml: heights, gripper close,
+       correction, sag model); arm_mission/config/mission_control.yaml (mission_config) holds the mission control's parameters.
+
+       mission_control: the operator interface, one of
+         rviz   the "Mission Control" panel inside rviz (arm_gui/MissionPanel; rviz uses mission.rviz unless you pass rviz_config; needs use_rviz:=true)
+         rqt    a separate rqt window with the same panel (arm_mission), rviz keeps detect.rviz
+         none   no interface and no backend: drive the services by hand
+       plan_valid_s: how long a successful dry run stays valid for the go. detector_view:=true opens rqt_image_view on /object_detector/image (with
+       mission_control:=rviz the image is a display in rviz already). -->
+  <arg name="use_hardware" default="false"/>
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="respawn" default="true"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
+  <arg name="velocity_scale" default="1.0"/>
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+  <arg name="max_goal_slew_rad_s" default="0.0"/>
+  <arg name="nullspace_tip_link" default="link_4"/>
+  <arg name="nullspace_gain" default="0.05"/>
+  <arg name="nullspace_rate_fraction" default="0.25"/>
+  <arg name="correction_steps" default="0"/>
+  <arg name="correction_trigger" default="0.006"/>
+  <arg name="correction_max_total" default="0.06"/>
+  <arg name="correction_gain" default="1.0"/>
+  <arg name="correction_pitch" default="true"/>
+  <arg name="correction_pitch_trigger" default="0.01"/>
+  <arg name="correction_pitch_max_total" default="0.2"/>
+  <arg name="sim_motor_warn_joint" default="0"/>
+  <arg name="sim_motor_fault_joint" default="0"/>
+  <arg name="presets" default="true"/>
+  <arg name="preset_max_delta" default="0"/>
+  <arg name="gripper" default="true"/>
+  <arg name="grasp_config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <arg name="load_target" default="15"/>
+  <arg name="contact_load" default="5"/>
+  <arg name="close_speed" default=""/>
+  <arg name="use_rviz" default="true"/>
+  <arg name="camera" default="true"/>
+  <arg name="device" default="/dev/video2"/>
+  <arg name="camera_tf" default="static"/>
+  <arg name="x" default="-0.025"/>
+  <arg name="y" default="0"/>
+  <arg name="z" default="-0.06"/>
+  <arg name="yaw" default="1.5708"/>
+  <arg name="pitch" default="0"/>
+  <arg name="roll" default="0"/>
+  <arg name="hand_eye_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+  <arg name="localizer" default="true"/>
+  <arg name="markers_file" default="$(find arm_perception)/config/markers.yaml"/>
+  <arg name="window_s" default="0.5"/>
+  <arg name="still_translation_mm" default="2.0"/>
+  <arg name="still_rotation_deg" default="0.3"/>
+  <arg name="quad_decimate" default="2.0"/>
+  <arg name="detector" default="true"/>
+  <arg name="detector_profile" default="$(find arm_bringup)/config/detect.yaml"/>
+  <arg name="model" default=""/>
+  <arg name="device_ep" default=""/>
+  <arg name="plant_class" default="Vigna"/>
+  <arg name="grasp_height" default="0.09"/>
+  <arg name="target" default="true"/>
+  <arg name="marker" default="marker_0"/>
+  <arg name="offset_x" default="0.0"/>
+  <arg name="offset_y" default="0.0"/>
+  <arg name="offset_z" default="0.0"/>
+  <arg name="vertical" default="true"/>
+  <arg name="target_frame" default="grasp_target"/>
+  <arg name="approach" default="45"/>
+  <arg name="bias_r" default="-0.010"/>
+  <arg name="bias_t" default="0.010"/>
+  <arg name="bias_z" default="0.0"/>
+  <arg name="mission_control" default="rviz"/>
+  <arg name="rviz_name" value="$(eval 'mission' if arg('mission_control') == 'rviz' else 'detect')"/>
+  <arg name="rviz_config" default="$(find arm_bringup)/rviz/$(arg rviz_name).rviz"/>
+  <arg name="sequencer" default="true"/>
+  <arg name="mission_config" default="$(find arm_mission)/config/mission_control.yaml"/>
+  <arg name="plan_valid_s" default="120.0"/>
+  <arg name="detector_view" default="false"/>
+
+  <include file="$(find arm_bringup)/launch/bringup_detect.launch">
+    <arg name="use_hardware" value="$(arg use_hardware)"/>
+    <arg name="serial_port" value="$(arg serial_port)"/>
+    <arg name="respawn" value="$(arg respawn)"/>
+    <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+    <arg name="respawn_driver" value="$(arg respawn_driver)"/>
+    <arg name="velocity_scale" value="$(arg velocity_scale)"/>
+    <arg name="max_joint_velocity" value="$(arg max_joint_velocity)"/>
+    <arg name="max_joint_acceleration" value="$(arg max_joint_acceleration)"/>
+    <arg name="max_goal_slew_rad_s" value="$(arg max_goal_slew_rad_s)"/>
+    <arg name="nullspace_tip_link" value="$(arg nullspace_tip_link)"/>
+    <arg name="nullspace_gain" value="$(arg nullspace_gain)"/>
+    <arg name="nullspace_rate_fraction" value="$(arg nullspace_rate_fraction)"/>
+    <arg name="correction_steps" value="$(arg correction_steps)"/>
+    <arg name="correction_trigger" value="$(arg correction_trigger)"/>
+    <arg name="correction_max_total" value="$(arg correction_max_total)"/>
+    <arg name="correction_gain" value="$(arg correction_gain)"/>
+    <arg name="correction_pitch" value="$(arg correction_pitch)"/>
+    <arg name="correction_pitch_trigger" value="$(arg correction_pitch_trigger)"/>
+    <arg name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)"/>
+    <arg name="sim_motor_warn_joint" value="$(arg sim_motor_warn_joint)"/>
+    <arg name="sim_motor_fault_joint" value="$(arg sim_motor_fault_joint)"/>
+    <arg name="presets" value="$(arg presets)"/>
+    <arg name="preset_max_delta" value="$(arg preset_max_delta)"/>
+    <arg name="gripper" value="$(arg gripper)"/>
+    <arg name="grasp_config" value="$(arg grasp_config)"/>
+    <arg name="load_target" value="$(arg load_target)"/>
+    <arg name="contact_load" value="$(arg contact_load)"/>
+    <arg name="close_speed" value="$(arg close_speed)"/>
+    <arg name="use_rviz" value="$(arg use_rviz)"/>
+    <arg name="camera" value="$(arg camera)"/>
+    <arg name="device" value="$(arg device)"/>
+    <arg name="camera_tf" value="$(arg camera_tf)"/>
+    <arg name="x" value="$(arg x)"/>
+    <arg name="y" value="$(arg y)"/>
+    <arg name="z" value="$(arg z)"/>
+    <arg name="yaw" value="$(arg yaw)"/>
+    <arg name="pitch" value="$(arg pitch)"/>
+    <arg name="roll" value="$(arg roll)"/>
+    <arg name="hand_eye_file" value="$(arg hand_eye_file)"/>
+    <arg name="localizer" value="$(arg localizer)"/>
+    <arg name="markers_file" value="$(arg markers_file)"/>
+    <arg name="window_s" value="$(arg window_s)"/>
+    <arg name="still_translation_mm" value="$(arg still_translation_mm)"/>
+    <arg name="still_rotation_deg" value="$(arg still_rotation_deg)"/>
+    <arg name="quad_decimate" value="$(arg quad_decimate)"/>
+    <arg name="detector" value="$(arg detector)"/>
+    <arg name="detector_profile" value="$(arg detector_profile)"/>
+    <arg name="model" value="$(arg model)"/>
+    <arg name="device_ep" value="$(arg device_ep)"/>
+    <arg name="plant_class" value="$(arg plant_class)"/>
+    <arg name="grasp_height" value="$(arg grasp_height)"/>
+    <arg name="target" value="$(arg target)"/>
+    <arg name="marker" value="$(arg marker)"/>
+    <arg name="offset_x" value="$(arg offset_x)"/>
+    <arg name="offset_y" value="$(arg offset_y)"/>
+    <arg name="offset_z" value="$(arg offset_z)"/>
+    <arg name="vertical" value="$(arg vertical)"/>
+    <arg name="target_frame" value="$(arg target_frame)"/>
+    <arg name="approach" value="$(arg approach)"/>
+    <arg name="bias_r" value="$(arg bias_r)"/>
+    <arg name="bias_t" value="$(arg bias_t)"/>
+    <arg name="bias_z" value="$(arg bias_z)"/>
+    <arg name="rviz_config" value="$(arg rviz_config)"/>
+  </include>
+
+  <include if="$(arg sequencer)" file="$(find arm_grasp)/launch/grasp.launch">
+    <arg name="config" value="$(arg grasp_config)"/>
+    <arg name="respawn" value="$(arg respawn)"/>
+    <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+  </include>
+
+  <group unless="$(eval arg('mission_control') == 'none')">
+    <node name="mission_control" pkg="arm_mission" type="mission_control_node.py" output="screen" respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)">
+      <rosparam command="load" file="$(arg mission_config)"/>
+      <param name="plant_class" value="$(arg plant_class)"/>
+      <param name="plan_valid_s" value="$(arg plan_valid_s)"/>
+      <param name="marker_frame" value="$(arg marker)"/>
+      <param name="target_frame" value="$(arg target_frame)"/>
+    </node>
+  </group>
+  <node if="$(eval arg('mission_control') == 'rqt')" name="mission_control_ui" pkg="arm_mission" type="arm_mission_rqt" output="screen"/>
+  <node if="$(arg detector_view)" name="detector_view" pkg="rqt_image_view" type="rqt_image_view" args="/object_detector/image"/>
+</launch>

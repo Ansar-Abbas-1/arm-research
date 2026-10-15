@@ -1,0 +1,87 @@
+<launch>
+  <!-- BRINGUP 1/4, the arm: driver (use_hardware:=true) or simulator, kinematics, trajectory service + executor, reach node, interactive marker, preset backend,
+       the gripper_control node (it owns joint_6) and rviz with the "Arm Control" panel. Nothing moves until you command it.
+         roslaunch arm_bringup bringup_arm.launch use_hardware:=true
+       The sets build on each other: bringup_vision includes this one, bringup_detect includes bringup_vision, bringup_grasp (the complete stack) includes
+       bringup_detect. Every argument of the lower file is repeated (same name, same default) in the upper ones, so the complete stack takes all of them.
+       use_hardware defaults to FALSE: a bringup never opens the serial port unless asked.
+
+       Crashed nodes restart by themselves (respawn:=true, after respawn_delay s); rviz and the rqt windows are never respawned. The hardware DRIVER is the
+       exception, respawn_driver (default false): a driver that dies on a motor error would re-enable the torque again and again. A driver that restarts
+       re-seeds its goals to the present pose. Set respawn_driver:=true only if you want that. -->
+  <arg name="use_hardware" default="false"/>
+  <arg name="serial_port" default="/dev/ttyUSB0"/>
+  <arg name="respawn" default="true"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
+
+  <!-- Motion limits and planner; see arm_trajectory/launch/interactive_reach.launch for what each one does. max_joint_acceleration: 1.0 on hardware, off in the sim. -->
+  <arg name="velocity_scale" default="1.0"/>
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+  <arg name="max_goal_slew_rad_s" default="0.0"/>
+  <arg name="nullspace_tip_link" default="link_4"/>
+  <arg name="nullspace_gain" default="0.05"/>
+  <arg name="nullspace_rate_fraction" default="0.25"/>
+  <!-- reach_target_pose_node's own re-aim loop (not the grasp sequencer's, which is configured in arm_grasp/config/grasp.yaml): off by default. -->
+  <arg name="correction_steps" default="0"/>
+  <arg name="correction_trigger" default="0.006"/>
+  <arg name="correction_max_total" default="0.06"/>
+  <arg name="correction_gain" default="1.0"/>
+  <arg name="correction_pitch" default="true"/>
+  <arg name="correction_pitch_trigger" default="0.01"/>
+  <arg name="correction_pitch_max_total" default="0.2"/>
+  <arg name="sim_motor_warn_joint" default="0"/>
+  <arg name="sim_motor_fault_joint" default="0"/>
+  <arg name="presets" default="true"/>
+  <arg name="preset_max_delta" default="0"/>
+
+  <!-- Gripper: the hold load. load_target / contact_load in % of max torque (15 / 5 is the light grip of the uprooting runs, contact_load well below the
+       target); empty = the arm_grasp/config/grasp.yaml values. close_speed in m/s, empty = yaml. Changeable while running from the Arm Control panel slider. -->
+  <arg name="gripper" default="true"/>
+  <arg name="grasp_config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <arg name="load_target" default="15"/>
+  <arg name="contact_load" default="5"/>
+  <arg name="close_speed" default=""/>
+
+  <!-- rviz: use_rviz:=false for a headless run. rviz_config: arm.rviz here, vision.rviz / detect.rviz / mission.rviz in the upper sets. -->
+  <arg name="use_rviz" default="true"/>
+  <arg name="rviz_config" default="$(find arm_bringup)/rviz/arm.rviz"/>
+
+  <include file="$(find arm_trajectory)/launch/interactive_reach.launch">
+    <arg name="use_hardware" value="$(arg use_hardware)"/>
+    <arg name="serial_port" value="$(arg serial_port)"/>
+    <arg name="use_rviz" value="$(arg use_rviz)"/>
+    <arg name="rviz_config" value="$(arg rviz_config)"/>
+    <arg name="respawn" value="$(arg respawn)"/>
+    <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+    <arg name="respawn_driver" value="$(arg respawn_driver)"/>
+    <arg name="velocity_scale" value="$(arg velocity_scale)"/>
+    <arg name="max_joint_velocity" value="$(arg max_joint_velocity)"/>
+    <arg name="max_joint_acceleration" value="$(arg max_joint_acceleration)"/>
+    <arg name="max_goal_slew_rad_s" value="$(arg max_goal_slew_rad_s)"/>
+    <arg name="nullspace_tip_link" value="$(arg nullspace_tip_link)"/>
+    <arg name="nullspace_gain" value="$(arg nullspace_gain)"/>
+    <arg name="nullspace_rate_fraction" value="$(arg nullspace_rate_fraction)"/>
+    <arg name="correction_steps" value="$(arg correction_steps)"/>
+    <arg name="correction_trigger" value="$(arg correction_trigger)"/>
+    <arg name="correction_max_total" value="$(arg correction_max_total)"/>
+    <arg name="correction_gain" value="$(arg correction_gain)"/>
+    <arg name="correction_pitch" value="$(arg correction_pitch)"/>
+    <arg name="correction_pitch_trigger" value="$(arg correction_pitch_trigger)"/>
+    <arg name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)"/>
+    <arg name="sim_motor_warn_joint" value="$(arg sim_motor_warn_joint)"/>
+    <arg name="sim_motor_fault_joint" value="$(arg sim_motor_fault_joint)"/>
+    <arg name="presets" value="$(arg presets)"/>
+    <arg name="preset_max_delta" value="$(arg preset_max_delta)"/>
+  </include>
+
+  <include if="$(arg gripper)" file="$(find arm_grasp)/launch/gripper_control.launch">
+    <arg name="config" value="$(arg grasp_config)"/>
+    <arg name="load_target" value="$(arg load_target)"/>
+    <arg name="contact_load" value="$(arg contact_load)"/>
+    <arg name="close_speed" value="$(arg close_speed)"/>
+    <arg name="respawn" value="$(arg respawn)"/>
+    <arg name="respawn_delay" value="$(arg respawn_delay)"/>
+  </include>
+</launch>
