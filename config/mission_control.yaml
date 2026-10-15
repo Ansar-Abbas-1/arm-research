@@ -1,0 +1,9 @@
+# Parameters of the mission control backend (mission_control_node.py), loaded into /mission_control by mission_control.launch and bringup_grasp.launch.
+# plant_class, plan_valid_s, marker_frame and target_frame come from launch arguments (plant_class, plan_valid_s, marker, target_frame).
+snapshot_valid_s: 60.0          # s: a plant list older than this is stale; refresh before the dry run (the camera moves between grasps). FLAGGED
+state_rate_hz: 2.0              # Hz of /mission_control/state
+base_frame: base_link
+tool_frame: end_effector        # the tool axis is this frame's z; the nearest plant is the one closest to it on the plant plane
+grasp_target_ns: /grasp_target  # nodes whose runtime parameters the settings are written to
+detector_ns: /object_detector
+sequencer_ns: /grasp_sequencer

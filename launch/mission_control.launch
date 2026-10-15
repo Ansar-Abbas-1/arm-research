@@ -1,0 +1,19 @@
+<launch>
+  <!-- Mission control backend alone (and optionally the rqt window), for a stack that was not started with arm_bringup/bringup_grasp.launch.
+         roslaunch arm_mission mission_control.launch ui:=rqt
+       ui: rqt (a separate window) | none (backend only; the rviz panel arm_gui/MissionPanel talks to it). The backend never moves the arm by itself. -->
+  <arg name="ui" default="rqt"/>
+  <arg name="plant_class" default="Vigna"/>
+  <arg name="plan_valid_s" default="120.0"/>
+  <arg name="marker" default="marker_0"/>
+  <arg name="target_frame" default="grasp_target"/>
+  <arg name="respawn" default="false"/>
+  <node name="mission_control" pkg="arm_mission" type="mission_control_node.py" output="screen" respawn="$(arg respawn)" respawn_delay="2.0">
+    <rosparam command="load" file="$(find arm_mission)/config/mission_control.yaml"/>
+    <param name="plant_class" value="$(arg plant_class)"/>
+    <param name="plan_valid_s" value="$(arg plan_valid_s)"/>
+    <param name="marker_frame" value="$(arg marker)"/>
+    <param name="target_frame" value="$(arg target_frame)"/>
+  </node>
+  <node if="$(eval arg('ui') == 'rqt')" name="mission_control_ui" pkg="arm_mission" type="arm_mission_rqt" output="screen"/>
+</launch>

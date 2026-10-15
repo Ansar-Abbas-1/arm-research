@@ -1,0 +1,10 @@
+<launch>
+  <!-- the real backend node; the detector, TF, sequencer and e-stop are stubs inside the test -->
+  <node name="mission_control" pkg="arm_mission" type="mission_control_node.py" output="screen">
+    <param name="plan_valid_s" value="120.0"/>
+    <param name="state_rate_hz" value="10.0"/>
+  </node>
+  <rosparam param="grasp_target">{approach: "45", bias: [-0.01, 0.01, 0.0], offset: [0.0, 0.0, 0.0]}</rosparam>
+  <rosparam param="object_detector">{grasp_heights: {Vigna: 0.09}}</rosparam>
+  <test test-name="test_mission_node" pkg="arm_mission" type="test_mission_node.py" time-limit="90.0"/>
+</launch>
