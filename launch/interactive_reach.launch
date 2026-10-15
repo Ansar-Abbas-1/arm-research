@@ -19,7 +19,14 @@
        For the typing alternative instead of dragging:
          rosrun arm_trajectory reach_pose_cli.py -->
 
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
   <arg name="use_rviz" default="true"/>
+  <!-- rviz_config: the rviz configuration file (the arm_bringup launch files pass their own, with the camera images and the Mission Control panel). -->
+  <arg name="rviz_config" default="$(find arm_trajectory)/rviz/interactive_reach.rviz"/>
   <!-- use_rviz:=false lets this run without a display, e.g. for automated
        checks: rviz needs one and none is available in an automated/CI
        context (confirmed the hard way in M0). -->
@@ -97,13 +104,13 @@
   <param name="robot_description"
          command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
 
-  <node name="robot_state_publisher" pkg="robot_state_publisher"
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="robot_state_publisher" pkg="robot_state_publisher"
         type="robot_state_publisher">
     <remap from="joint_states" to="/joint_states_in" />
   </node>
 
   <group unless="$(arg use_hardware)">
-    <node name="arm_sim_validator_node" pkg="arm_interface"
+    <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="arm_sim_validator_node" pkg="arm_interface"
           type="arm_sim_validator_node">
       <param name="sim_mode" type="string" value="ideal"/>
       <param name="publish_rate" type="double" value="50.0"/>
@@ -113,14 +120,14 @@
     </node>
   </group>
   <group if="$(arg use_hardware)">
-    <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+    <node respawn="$(arg respawn_driver)" respawn_delay="$(arg respawn_delay)" name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
       <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
       <param name="device_name" value="$(arg serial_port)"/>
       <rosparam if="$(eval arg('max_goal_slew_rad_s') > 0)" param="max_goal_slew_rad_s" subst_value="true">[$(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s), $(arg max_goal_slew_rad_s)]</rosparam>
     </node>
   </group>
 
-  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node">
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node">
     <param name="nullspace_tip_link" value="$(arg nullspace_tip_link)" />
     <param name="nullspace_gain" value="$(arg nullspace_gain)" />
     <param name="velocity_scale" value="$(arg velocity_scale)" />
@@ -128,8 +135,8 @@
     <param name="max_joint_velocity" value="$(arg max_joint_velocity)" />
     <param name="max_joint_acceleration" value="$(arg max_joint_acceleration)" />
   </node>
-  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
-  <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node">
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node">
     <param name="correction_steps" value="$(arg correction_steps)" />
     <param name="correction_trigger" value="$(arg correction_trigger)" />
     <param name="correction_max_total" value="$(arg correction_max_total)" />
@@ -138,7 +145,7 @@
     <param name="correction_pitch_trigger" value="$(arg correction_pitch_trigger)" />
     <param name="correction_pitch_max_total" value="$(arg correction_pitch_max_total)" />
   </node>
-  <node name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="interactive_pose_marker_node" pkg="arm_trajectory" type="interactive_pose_marker_node" />
 
   <!-- Preset-pose backend for the "Arm Control" rviz panel (arm_gui): it holds the poses (config/presets.yaml,
        plus the ones you save from the panel in ~/.ros/arm_trajectory/presets.yaml) and runs the moves through the
@@ -148,7 +155,7 @@
   <arg name="presets" default="true"/>
   <arg name="preset_max_delta" default="0"/>
   <group if="$(arg presets)">
-    <node name="preset_manager" pkg="arm_trajectory" type="preset_manager_node.py" output="screen">
+    <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="preset_manager" pkg="arm_trajectory" type="preset_manager_node.py" output="screen">
       <rosparam command="load" file="$(find arm_trajectory)/config/presets.yaml"/>
       <param name="max_delta" value="$(arg preset_max_delta)"/>
     </node>
@@ -156,6 +163,6 @@
 
   <group if="$(arg use_rviz)">
     <node name="rviz" pkg="rviz" type="rviz"
-          args="-d $(find arm_trajectory)/rviz/interactive_reach.rviz" />
+          args="-d $(arg rviz_config)" />
   </group>
 </launch>
