@@ -34,11 +34,12 @@ from py_trees.common import Status
 class SequenceParams(object):
     """Thresholds of the leaves (the geometry and heights live in `grasp_plan.GraspSpec`, the gripper's law in the gripper_control node)."""
 
-    def __init__(self, recheck_mm=5.0, recheck_deg=3.0, require_object=False, correction=None, correction_settle=0.8):
+    def __init__(self, recheck_mm=5.0, recheck_deg=3.0, require_object=False, correction=None, correction_settle=0.8, return_to_view=False):
         self.correction = correction                # a correction.PositionCorrection, or None / steps == 0: no correction leaves at all
         self.correction_settle = correction_settle  # s to wait after a move before measuring the end effector
         self.recheck_mm = recheck_mm
         self.recheck_deg = recheck_deg
+        self.return_to_view = return_to_view        # True: after a successful LIFT of a real grasp the arm goes back to the viewing pose (the VIEW leg), the plant stays gripped
         self.require_object = require_object        # 'thin' (closed completely below the load target) fails instead of counting as grasped
 
 
@@ -86,7 +87,8 @@ class GraspContext(object):
         raise NotImplementedError
 
     def start_trajectory(self, name, slow):
-        """Send the planned trajectory `name` stretched by `slow`. Returns None or an error message."""
+        """Send the planned trajectory `name` stretched by `slow`. Returns None or an error message. 'VIEW' (the return to the viewing pose) is planned
+        from the CURRENT joints when it starts, since the lift may have ended a little away from where it was planned to."""
         raise NotImplementedError
 
     def poll_trajectory(self):
@@ -361,7 +363,8 @@ class RecheckTarget(_Leaf):
 
 
 def build_tree(ctx, spec, params, outcome_text=lambda: ""):
-    """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome).
+    """The grasp tree. `outcome_text` returns the text for the LIFTING message (the recorded outcome). With params.return_to_view a VIEW leg follows the
+    lift (real grasps only; the context plans it from the joints at that moment, see GraspContext.start_trajectory).
     In a sag PROBE (ctx.probe) the gripper actions and the grip-watched lift are skipped and a plain LIFT that is measured too takes their place:
     the arm goes through PRE, GRASP and LIFT in free air, every position measured, nothing gripped."""
     corrected = params.correction is not None and params.correction.steps > 0
@@ -386,6 +389,8 @@ def build_tree(ctx, spec, params, outcome_text=lambda: ""):
     if corrected:
         children += [ReplanLegs(ctx, params, ("LIFT",), "re-plan LIFT")]
     children += [ModeGate(lift, ctx, False)]
+    if params.return_to_view:           # only after the lift succeeded (the Sequence stops at a failed lift); the gripper keeps regulating its hold
+        children += [ModeGate(FollowTrajectory("VIEW", ctx, "VIEW", 1.0, "RETURNING", "back to the viewing pose, the plant stays in the gripper"), ctx, False)]
     probe_lift = [FollowTrajectory("LIFT", ctx, "LIFT", spec.lift_slow_factor, "LIFTING", "sag probe: the lift, measured")]
     if corrected:
         probe_lift += [CorrectPosition(ctx, params, "LIFT")]

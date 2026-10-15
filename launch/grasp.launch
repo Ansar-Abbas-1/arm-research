@@ -7,6 +7,8 @@
          dry_run: true"
        then, with the e-stop in reach and the arm supported, the same with dry_run: false; follow it with
          rostopic echo /grasp_sequencer/status        (rosservice call /grasp_sequencer/stop ends it; the driver holds)
+       After a successful lift of a real grasp the arm returns to the viewing pose, the preset named by view_preset in config/grasp.yaml (state RETURNING; the plant
+       stays in the gripper; "" turns it off; an unknown preset refuses the grasp; needs preset_manager from arm_trajectory presets:=true).
        Every default in config/grasp.yaml is flagged: confirm the gripper geometry before a real grasp. -->
   <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
        The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->

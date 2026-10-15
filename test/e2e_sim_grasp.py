@@ -62,7 +62,7 @@ def main():
         assert "/arm_interface" not in subprocess.check_output(["rosnode", "list"]).decode(), "arm_interface on this master"
         rospy.init_node("e2e_grasp")
         start(["roslaunch", "arm_trajectory", "interactive_reach.launch", "use_hardware:=false", "use_rviz:=%s" % ("true" if VISUAL else "false"),
-               "presets:=false"] + (["velocity_scale:=0.1"] if VISUAL else []), "sim")
+               "presets:=true"] + (["velocity_scale:=0.1"] if VISUAL else []), "sim")
         wait_for(lambda: "/trajectory_executor_node" in subprocess.check_output(["rosnode", "list"]).decode(), 40, "the planner stack")
         start(["roslaunch", "arm_grasp", "gripper_control.launch"], "gripper")
         start(["roslaunch", "arm_grasp", "grasp.launch"], "grasp")
@@ -101,7 +101,8 @@ def main():
                 joints["g"].append((time.time(), d["joint_6"]))
         rospy.Subscriber("/joint_states_in", JointState, on_joints, queue_size=1)
         pub_out = rospy.Publisher("/joint_states_out", JointState, queue_size=1)
-        grasp = rospy.ServiceProxy("/grasp_sequencer/grasp", Grasp)
+        grasp_srv = rospy.ServiceProxy("/grasp_sequencer/grasp", Grasp)
+        grasp = lambda frame, dry_run: grasp_srv(frame, dry_run, False)      # probe off
         stop_srv = rospy.ServiceProxy("/grasp_sequencer/stop", Trigger)
         # The simulator has NO gripper load model (load behaviour is hardware only). This is a constant low-load STUB so the
         # sequencing checks can run: the close ends "fully closed below the target" ('thin'). Nothing here says anything
@@ -197,14 +198,19 @@ def main():
         for _, st in history:
             if not seen or seen[-1] != st:
                 seen.append(st)
-        check("through OPENING, MOVING_PRE, CORRECTING, RECHECK, DESCENDING, CORRECTING, CLOSING, LIFTING, DONE (no sag in the sim: no re-planning) %s" % [s for s in seen if s not in ("PLANNING", "IDLE")],
-              [s for s in seen if s not in ("PLANNING", "IDLE")] == ["OPENING", "MOVING_PRE", "CORRECTING", "RECHECK", "DESCENDING", "CORRECTING", "CLOSING", "LIFTING", "DONE"])
+        check("through OPENING, MOVING_PRE, CORRECTING, RECHECK, DESCENDING, CORRECTING, CLOSING, LIFTING, RETURNING, DONE (no sag in the sim: no re-planning) %s" % [s for s in seen if s not in ("PLANNING", "IDLE")],
+              [s for s in seen if s not in ("PLANNING", "IDLE")] == ["OPENING", "MOVING_PRE", "CORRECTING", "RECHECK", "DESCENDING", "CORRECTING", "CLOSING", "LIFTING", "RETURNING", "DONE"])
+        import yaml
+        with open(os.path.join(os.path.dirname(__file__), "..", "..", "arm_trajectory", "config", "presets.yaml")) as f:
+            view = np.array(yaml.safe_load(f)["presets"]["Pre-approach-New"]["joints"])
+        check("and it ends at the viewing pose, the plant still gripped (max joint error %.3f rad)" % float(np.abs(joints["q"] - view).max()), float(np.abs(joints["q"] - view).max()) < 0.03)
         pts = np.array([p for _, p in trace])
         zmin = pts[:, 2].min()
         i = int(np.argmin(pts[:, 2]))
         check("the lowest point is the grasp height above the target (z %.3f, expected %.3f)" % (zmin, expected(SPEC["grasp"])[2]), abs(zmin - expected(SPEC["grasp"])[2]) < 0.008)
         check("and it is straight above the target (xy error %.1f mm)" % (1000 * np.linalg.norm(pts[i, :2] - expected(0)[:2])), np.linalg.norm(pts[i, :2] - expected(0)[:2]) < 0.008)
-        check("the final pose is the lift height (error %.1f mm)" % (1000 * np.linalg.norm(pts[-1] - expected(SPEC["lift"]))), np.linalg.norm(pts[-1] - expected(SPEC["lift"])) < 0.010)
+        lift_err = float(np.min(np.linalg.norm(pts - expected(SPEC["lift"]), axis=1)))
+        check("the arm passed through the lift height before returning to the viewing pose (closest %.1f mm)" % (1000 * lift_err), lift_err < 0.010)
         g = np.array([v for _, v in joints["g"]])
         check("the gripper opened and closed (max %.3f, final %.3f)" % (g.max(), g[-1]), g.max() > 0.024 and g[-1] < 0.002)
         check("fully closed below the load target (stub load) = 'thin' (%s)" % status["v"]["plan"].get("grasp_outcome"), status["v"]["plan"].get("grasp_outcome") == "thin")

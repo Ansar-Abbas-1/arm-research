@@ -143,6 +143,51 @@ class TestGraspTree(unittest.TestCase):
         self.assertIsNone(ctx.reason)
         self.assertEqual((ctx.outcome, ctx.final_load), ("object", 38.0))
 
+    def test_after_the_lift_the_arm_returns_to_the_viewing_pose_and_the_gripper_is_left_alone(self):
+        ctx, spec, root, tree = make(return_to_view=True)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual(ctx.states, ["OPENING", "MOVING_PRE", "RECHECK", "DESCENDING", "CLOSING", "LIFTING", "RETURNING"])
+        self.assertEqual(ctx.started[-2:], [("LIFT", spec.lift_slow_factor), ("VIEW", 1.0)])
+        self.assertEqual(ctx.gripper_started, ["open", "close"])
+        self.assertEqual(ctx.gripper_cancelled, 0)
+
+    def test_without_the_setting_there_is_no_return(self):
+        ctx, spec, root, tree = make()
+        run(ctx, tree)
+        self.assertNotIn("VIEW", [n for n, _ in ctx.started])
+
+    def test_a_failed_lift_does_not_return(self):
+        ctx, spec, root, tree = make(return_to_view=True)
+        ctx.traj_fail["LIFT"] = "lift failed"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertNotIn("VIEW", [n for n, _ in ctx.started])
+
+    def test_a_lost_grip_during_the_lift_does_not_return(self):
+        ctx, spec, root, tree = make(return_to_view=True)
+        run(ctx, tree, until=lambda i: ctx.states and ctx.states[-1] == "LIFTING")
+        ctx.grip = "lost"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertNotIn("VIEW", [n for n, _ in ctx.started])
+
+    def test_a_failure_of_the_return_aborts_with_its_reason(self):
+        ctx, spec, root, tree = make(return_to_view=True)
+        ctx.traj_fail["VIEW"] = "VIEW failed: blocked"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertIn("VIEW", ctx.reason)
+
+    def test_a_stop_during_the_return_cancels_it(self):
+        ctx, spec, root, tree = make(return_to_view=True)
+        run(ctx, tree, until=lambda i: ctx.states and ctx.states[-1] == "RETURNING")
+        ctx.violation = "stop requested"
+        self.assertEqual(run(ctx, tree), Status.FAILURE)
+        self.assertGreaterEqual(ctx.cancelled, 1)
+
+    def test_a_probe_never_returns_to_view(self):
+        ctx = FakeContext(); ctx.probe = True
+        ctx, spec, root, tree = make(ctx, return_to_view=True)
+        run(ctx, tree)
+        self.assertNotIn("VIEW", [n for n, _ in ctx.started])
+
     def test_the_tree_never_commands_the_gripper_itself_and_leaves_it_to_the_node_after_the_sequence(self):
         ctx, spec, root, tree = make()
         run(ctx, tree)

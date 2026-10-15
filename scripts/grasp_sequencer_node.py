@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""TF-driven grasp sequence: open the gripper, move above the target, descend straight onto it, close the gripper, lift.
+"""TF-driven grasp sequence: open the gripper, move above the target, descend straight onto it, close the gripper, lift, and (view_preset) return to the viewing pose.
 Executed as a behavior tree (py_trees, see arm_grasp/grasp_tree.py); view it live with `rqt_py_trees` (topic ~log/tree).
 
 COMMANDS THE REAL ARM (through the trajectory executor and /joint_states_out). Safety:
@@ -87,8 +87,13 @@ class Node(gt.GraspContext):
         self.tick_rate = float(P("~tick_rate", 20.0))
         d_close = gp.CloseParams()
         self.close = gp.CloseParams(**{k: type(getattr(d_close, k))(P("~close/" + k, getattr(d_close, k))) for k in vars(d_close)})
+        # After a successful lift of a real grasp the arm returns to the viewing pose: the joints of the preset `view_preset` (preset_manager, which also serves
+        # the poses saved from the panel). "" = no return. The plant stays in the gripper. A preset that is not found refuses the grasp (nothing moves).
+        self.view_preset = str(P("~view_preset", ""))
+        self.presets = {}
         self.params = gt.SequenceParams(recheck_mm=self.recheck_mm, recheck_deg=self.recheck_deg, require_object=self.require_object,
-                                        correction=self.correction, correction_settle=float(P("~correction_settle", 0.8)))
+                                        correction=self.correction, correction_settle=float(P("~correction_settle", 0.8)),
+                                        return_to_view=bool(self.view_preset))
         # Arm sag: every correction measurement is logged (sag_log_dir); a model fitted from the log (sag_fit.py) gives a feed-forward offset per leg and approach
         # angle: the plan aims at waypoint + offset and the running compensation starts from the PRE offset. sag_model "" = off.
         self.sag_gain = float(P("~sag_gain", 1.0))
@@ -129,6 +134,7 @@ class Node(gt.GraspContext):
             rospy.logwarn("grasp: the behavior tree's ROS interfaces did not set up in time (the tree still runs)")
         rospy.Subscriber("/joint_states_in", JointState, self.on_joints, queue_size=1)
         rospy.Subscriber("/gripper_control/status", String, self.on_grip_status, queue_size=1)
+        rospy.Subscriber("/preset_manager/state", String, self.on_presets, queue_size=1)
         rospy.Subscriber("/arm_interface/estop_state", Bool, lambda m: setattr(self, "estop", bool(m.data)), queue_size=1)
         self.pub_status = rospy.Publisher("~status", String, queue_size=1, latch=True)
         self.client = actionlib.SimpleActionClient("follow_joint_trajectory", FollowJointTrajectoryAction)
@@ -145,6 +151,16 @@ class Node(gt.GraspContext):
         d = dict(zip(m.name, m.position))
         if all(j in d for j in JOINTS):
             self.q = [d[j] for j in JOINTS]
+
+    def on_presets(self, m):
+        try:
+            self.presets = {p["name"]: [float(v) for v in p["joints"]] for p in json.loads(m.data).get("presets", [])}
+        except (ValueError, KeyError, TypeError):
+            pass
+
+    def view_goal(self):
+        """Joints of the viewing pose, or None (no view_preset configured, or the preset is unknown)."""
+        return self.presets.get(self.view_preset) if self.view_preset else None
 
     def on_grip_status(self, m):
         try:
@@ -178,8 +194,30 @@ class Node(gt.GraspContext):
     def plan_legs(self, wps):
         """Plan PRE (joint space), DESCEND and LIFT (straight lines) with chained start configurations. Returns
         (legs, trajectories)."""
-        return self.plan_chain(list(self.q), (("PRE", wps[0].position, wps[0].R, False), ("DESCEND", wps[1].position, wps[1].R, True),
-                                              ("LIFT", wps[2].position, wps[2].R, True)))
+        legs, trajs = self.plan_chain(list(self.q), (("PRE", wps[0].position, wps[0].R, False), ("DESCEND", wps[1].position, wps[1].R, True),
+                                                     ("LIFT", wps[2].position, wps[2].R, True)))
+        goal = None if self.probe else self.view_goal()
+        if goal is not None:                                            # the return to the viewing pose, planned from where the lift ends (checked like the other legs)
+            lift = trajs.get("LIFT")
+            leg, traj = self.plan_joint("VIEW", [float(v) for v in lift.points[-1].positions][:5] if lift else None, goal)
+            legs.append(leg)
+            if traj is not None:
+                trajs["VIEW"] = traj
+        return legs, trajs
+
+    def plan_joint(self, name, start, goal):
+        """Joint-space leg from `start` to the joints `goal`: (Leg, trajectory or None)."""
+        if start is None:
+            return gp.Leg(name, False, "not planned: an earlier leg failed"), None
+        req = GenerateTrajectoryRequest()
+        req.start_joint_positions, req.goal_joint_positions = list(start)[:5], list(goal)[:5]
+        try:
+            res = self.plan_srv(req)
+        except rospy.ServiceException as e:
+            return gp.Leg(name, False, "planner call failed: %s" % e), None
+        if not res.success or not res.trajectory.points:
+            return gp.Leg(name, False, res.message), None
+        return gp.Leg(name, True, duration=res.trajectory.points[-1].time_from_start.to_sec()), res.trajectory
 
     def plan_chain(self, start, items):
         """Plan the (name, position, R, cartesian) items one after the other, each from the end of the previous one."""
@@ -223,6 +261,8 @@ class Node(gt.GraspContext):
             return GraspResponse(False, "refused: probe and dry_run together make no sense (a probe moves the arm to measure it)", 0.0, 0.0)
         if not req.dry_run and not req.probe and self.grip_state() is None:
             return GraspResponse(False, "refused: no /gripper_control/status (start it: roslaunch arm_grasp gripper_control.launch)", 0.0, 0.0)
+        if self.view_preset and not req.probe and self.view_goal() is None:
+            return GraspResponse(False, "refused: the viewing preset '%s' is not known to /preset_manager (state topic); the arm could not return to it" % self.view_preset, 0.0, 0.0)
         self.target_frame = req.target_frame
         try:
             T, stamp, age = self.lookup_target()
@@ -346,6 +386,14 @@ class Node(gt.GraspContext):
         return self.grip_status.get("grip")
 
     def start_trajectory(self, name, slow):
+        if name == "VIEW":                                               # planned from the joints the lift really ended at (checked in the dry run from its planned end)
+            goal = self.view_goal()
+            if goal is None:
+                return "viewing preset '%s' is not available" % self.view_preset
+            leg, traj = self.plan_joint("VIEW", list(self.q)[:5], goal)
+            if traj is None:
+                return "VIEW: not reachable (%s)" % leg.message
+            return self._send(name, traj, slow)
         return self._send(name, self.trajs[name], slow)
 
     def _send(self, name, traj, slow):
