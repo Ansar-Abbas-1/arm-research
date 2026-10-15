@@ -1,0 +1,18 @@
+# Command to the mission control backend (arm_mission mission_control_node.py, /mission_control/command), defined here like PresetCommand: the rviz panel
+# (MissionPanel) and the rqt plugin are its clients.
+#   action  "refresh"       snapshot the plants in view (nearest to the gripper axis first), select #0 and make it the grasp target
+#           "select"        make plant `index` of the snapshot the grasp target
+#           "set_approach"  `text`: down | forward | an angle below the horizontal in degrees (45)
+#           "set_bias"      `values` = [radial, tangential, vertical] metres, the aim bias in the arm frame
+#           "set_height"    `values` = [metres]: the pinch point above the floor (the plant list must be refreshed afterwards)
+#           "dry_run"       plan the grasp of the current settings; nothing moves
+#           "go"            the real grasp; refused unless a dry run of EXACTLY the current settings succeeded recently
+#           "stop"          stop the running grasp (always accepted)
+# Everything except stop is refused while a grasp is running.
+string action
+int32 index
+float64[] values
+string text
+---
+bool success
+string message

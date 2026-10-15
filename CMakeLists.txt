@@ -16,7 +16,7 @@ find_package(Qt5 REQUIRED COMPONENTS Core Widgets Test)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_CXX_STANDARD 14)
 
-add_service_files(FILES PresetCommand.srv SetLoadTarget.srv)
+add_service_files(FILES MissionCommand.srv PresetCommand.srv SetLoadTarget.srv)
 generate_messages()
 
 catkin_package(
@@ -27,7 +27,8 @@ catkin_package(
 include_directories(include ${catkin_INCLUDE_DIRS})
 
 # The panel is a plugin library; the tests link the same library.
-add_library(arm_gui src/arm_control_panel.cpp include/arm_gui/arm_control_panel.h include/arm_gui/panel_logic.h)
+add_library(arm_gui src/arm_control_panel.cpp include/arm_gui/arm_control_panel.h include/arm_gui/panel_logic.h
+            src/mission_panel.cpp include/arm_gui/mission_panel.h)
 target_link_libraries(arm_gui ${catkin_LIBRARIES} Qt5::Widgets)
 add_dependencies(arm_gui ${PROJECT_NAME}_generate_messages_cpp ${catkin_EXPORTED_TARGETS})
 
@@ -41,6 +42,8 @@ if(CATKIN_ENABLE_TESTING)
   # The panel test needs a ROS master (rostest starts one) and runs Qt headless (QT_QPA_PLATFORM=offscreen).
   add_rostest_gtest(test_arm_control_panel test/arm_control_panel.test test/test_arm_control_panel.cpp)
   target_link_libraries(test_arm_control_panel arm_gui ${catkin_LIBRARIES} Qt5::Widgets Qt5::Test)
+  add_rostest_gtest(test_mission_panel test/mission_panel.test test/test_mission_panel.cpp)
+  target_link_libraries(test_mission_panel arm_gui ${catkin_LIBRARIES} Qt5::Widgets Qt5::Test)
 endif()
 
 # Debug tool, see tools/panel_probe.cpp (not installed).
