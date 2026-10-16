@@ -69,7 +69,7 @@ close:
 # 0.053 rad off at the PRE pose, the end effector 3.7 cm away; the 0.03 rad endpoint check correctly aborted the first real run). After PRE and after
 # the descent the end effector is measured (TF from the measured joints) and re-aimed, adding the measured error to a running compensation, up to
 # correction_steps times; the descent and the lift are then re-planned from the actual joints with the compensation. 0 disables all of it.
-view_preset: Pre-approach-New  # preset (arm_trajectory preset_manager, e.g. saved from the panel) the arm returns to after a successful lift of a real grasp, the plant stays gripped. "" = no return. A preset that does not exist refuses the grasp. Operator: the viewing pose. FLAGGED name
+view_preset: viewing-left  # preset (arm_trajectory preset_manager, e.g. saved from the panel) the arm returns to after a successful lift of a real grasp, the plant stays gripped. "" = no return. A preset that does not exist refuses the grasp. Operator: the viewing pose, turned 90 degrees to the left (2026-10-16; the front one is Pre-approach-New). FLAGGED name
 correction_steps: 2            # re-aims per position (PRE, GRASP). Operator: 2. FLAGGED
 correction_trigger: 0.010      # m: at or below this error nothing is corrected. Raised from 0.006: below ~10 mm the steps worsened the error. FLAGGED
 correction_gain: 0.7           # fraction of the measured error added to the compensation per step. Operator: 0.7 (at 1.0 the first PRE step overshot: 14 -> 20 mm, the sag changes with the pose). FLAGGED

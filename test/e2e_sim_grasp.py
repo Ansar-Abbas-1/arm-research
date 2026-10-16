@@ -202,7 +202,7 @@ def main():
               [s for s in seen if s not in ("PLANNING", "IDLE")] == ["OPENING", "MOVING_PRE", "CORRECTING", "RECHECK", "DESCENDING", "CORRECTING", "CLOSING", "LIFTING", "RETURNING", "DONE"])
         import yaml
         with open(os.path.join(os.path.dirname(__file__), "..", "..", "arm_trajectory", "config", "presets.yaml")) as f:
-            view = np.array(yaml.safe_load(f)["presets"]["Pre-approach-New"]["joints"])
+            view = np.array(yaml.safe_load(f)["presets"]["viewing-left"]["joints"])
         check("and it ends at the viewing pose, the plant still gripped (max joint error %.3f rad)" % float(np.abs(joints["q"] - view).max()), float(np.abs(joints["q"] - view).max()) < 0.03)
         pts = np.array([p for _, p in trace])
         zmin = pts[:, 2].min()
