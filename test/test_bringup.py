@@ -165,6 +165,11 @@ class ParamsTest(unittest.TestCase):
         self.assertEqual(p["mission_control"]["plant_class"], "Vigna")
         self.assertEqual(p["grasp_sequencer"]["correction_trigger"], 0.01)
 
+    def test_sim_logs_the_sag_measurements_away_from_the_real_ones(self):
+        self.assertEqual(dump("bringup_grasp")["grasp_sequencer"]["sag_log_dir"], "/home/dev/recordings/sag/sim")
+        self.assertEqual(dump("bringup_grasp", "use_hardware:=true")["grasp_sequencer"]["sag_log_dir"], "/home/dev/recordings/sag")
+        self.assertEqual(dump("bringup_grasp", "sag_log_dir:=/tmp/x")["grasp_sequencer"]["sag_log_dir"], "/tmp/x")
+
     def test_arguments_override_the_profile(self):
         p = dump("bringup_grasp", "model:=/tmp/other.onnx", "device_ep:=cpu", "grasp_height:=0.05", "approach:=down", "bias_r:=0.0", "load_target:=25",
                  "plant_class:=Cup", "plan_valid_s:=30")

@@ -81,6 +81,9 @@
   <arg name="mission_config" default="$(find arm_mission)/config/mission_control.yaml"/>
   <arg name="plan_valid_s" default="120.0"/>
   <arg name="detector_view" default="false"/>
+  <!-- sag_log_dir: where the sequencer logs its raw measurements. Empty = the yaml value (recordings/sag) with the real arm; a simulated stack logs to recordings/sag/sim
+       by default, which sag_fit.py does not read. -->
+  <arg name="sag_log_dir" default="$(eval '' if arg('use_hardware') else '/home/dev/recordings/sag/sim')"/>
 
   <include file="$(find arm_bringup)/launch/bringup_detect.launch">
     <arg name="use_hardware" value="$(arg use_hardware)"/>
@@ -150,6 +153,7 @@
 
   <include if="$(arg sequencer)" file="$(find arm_grasp)/launch/grasp.launch">
     <arg name="config" value="$(arg grasp_config)"/>
+    <arg name="sag_log_dir" value="$(arg sag_log_dir)"/>
     <arg name="respawn" value="$(arg respawn)"/>
     <arg name="respawn_delay" value="$(arg respawn_delay)"/>
   </include>
