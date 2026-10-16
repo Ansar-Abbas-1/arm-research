@@ -15,7 +15,11 @@
   <arg name="respawn" default="false"/>
   <arg name="respawn_delay" default="2.0"/>
   <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <!-- sag_log_dir: where the sequencer logs its raw end-effector measurements (sag_*.jsonl, the input of scripts/sag_fit.py); empty = the yaml value (the real arm's
+       recordings/sag). Simulated runs (the e2e test, bringups with use_hardware:=false) must log elsewhere, or their zero-sag rows corrupt a refit. -->
+  <arg name="sag_log_dir" default=""/>
   <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="grasp_sequencer" pkg="arm_grasp" type="grasp_sequencer_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
+    <param name="sag_log_dir" value="$(arg sag_log_dir)" unless="$(eval arg('sag_log_dir') == '')"/>
   </node>
 </launch>

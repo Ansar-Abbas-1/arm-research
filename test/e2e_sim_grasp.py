@@ -65,7 +65,7 @@ def main():
                "presets:=true"] + (["velocity_scale:=0.1"] if VISUAL else []), "sim")
         wait_for(lambda: "/trajectory_executor_node" in subprocess.check_output(["rosnode", "list"]).decode(), 40, "the planner stack")
         start(["roslaunch", "arm_grasp", "gripper_control.launch"], "gripper")
-        start(["roslaunch", "arm_grasp", "grasp.launch"], "grasp")
+        start(["roslaunch", "arm_grasp", "grasp.launch", "sag_log_dir:=" + os.path.join(tempfile.gettempdir(), "arm_grasp_e2e_sag")], "grasp")      # never the real arm's sag log
         wait_for(lambda: "/gripper_control/open" in subprocess.check_output(["rosservice", "list"]).decode(), 40, "the gripper_control services")
         wait_for(lambda: "/grasp_sequencer/grasp" in subprocess.check_output(["rosservice", "list"]).decode(), 40, "the grasp service")
         if VISUAL:

@@ -55,3 +55,7 @@
 - Next: (1) measure -20, -10, +10, +20 degrees at grasp heights (needs clear space there) and model the tangential part against the azimuth, then raise `sag_tangent_gain`;
   (2) linear-in-radius terms for PRE radial and LIFT vertical (would roughly halve the spread); (3) let real grasps feed the log and refit.
 - Tools: `scripts/sag_test.py` (the test), `sag_fit.py`, `sag_report.py`, `sag_cv.py`; 21 model tests.
+
+## Simulated runs are kept out of the log (2026-10-16)
+
+The sequencer logs every measurement to `sag_log_dir` (`recordings/sag`), and `sag_fit.py` / `sag_report.py` / `sag_cv.py` read `sag_*.jsonl` there. Simulated grasps measure no sag, so their rows (error 0 at the 90 degree approach) would add a fake zero-sag bucket to a refit. 12 such rows from the e2e test (2026-10-15 and -16) were moved to `recordings/sag/sim/` (not read by the tools). `grasp.launch` has a `sag_log_dir` argument (empty = yaml); `e2e_sim_grasp.py` logs to the temp directory and `bringup_grasp.launch` with `use_hardware:=false` to `recordings/sag/sim`.
