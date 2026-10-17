@@ -1,4 +1,4 @@
-# Arm sag: measurement, model and compensation (2026-10-14)
+# Arm sag: measurement, model and compensation (2026-10-14; final real-grasp experiments 2026-10-16)
 
 ## 1. Experimental setup
 - **Arm:** the 5-DOF Dynamixel arm with the eye-in-hand camera and the gripper; the floor is the plane of `marker_0` (z about -0.605 m in `base_link`).
@@ -14,6 +14,16 @@
 - **Runs:** 45 probes (one aborted at PRE: a corrective aim was unreachable, which is why probes now only measure), 133 first measurements, 109 at grasp heights.
   Order: trial at -40 degrees (12 probes, no model) -> fit -> validation with the model on (-40: 8 probes at held-out radii 0.49 / 0.55 m and heights 6 / 8 cm; +40: 4;
   0: 12 low and 8 high) -> refit.
+
+**Final experiments (2026-10-16, real grasps of a plant, not free air).** 15 detector-driven grasps with the sag model in the loop, started from Mission Control
+(plant chosen by the detector, one dry run per grasp, then GO) from the *left* viewing pose (`viewing-left`, joint 1 +90 degrees):
+- Same 45 degree approach; targets at azimuth 73 to 110 degrees (left of the arm, outside the -40 to +40 degrees of the fit), target radius 0.527 to 0.663 m.
+- Pinch height 9 cm above the floor for the first 12 grasps, 11 cm for the last 3 (target z -0.556 and -0.535 m, floor about -0.646 m); aim bias
+  -10 / +10 mm radial / tangential (-5 / +10 mm for the last grasp); hold load 15 %; correction steps 2, gain 0.7, **trigger 10 mm** (raised from 6 mm after the
+  corrections below 10 mm only chased noise).
+- After the lift the arm returned to `viewing-left` with the plant still gripped (new RETURNING leg of the behavior tree).
+- Logged as before (first measurement of every leg plus every correction step): 57 rows in `recordings/sag/sag_20261016.jsonl`. 12 rows of simulated runs that had
+  landed in the same directory were moved to `recordings/sag/sim/` and are not used.
 
 ## 2. Model (`src/arm_grasp/sag_model.py`, `config/sag_model.json`)
 - The mean sag per approach-angle bucket (15 degrees wide; only 45 degrees is measured) and leg, in the arm's own frame: radial (outward), tangential (along the joint 1
@@ -48,13 +58,44 @@
 - Radius dependence (grasp heights): PRE radial slope -141 mm/m (spread 5.1 mm -> 2.2 mm if linear), LIFT vertical -125 mm/m (4.3 -> 1.3 mm), GRASP vertical -25 mm/m.
 - At 25 to 30 cm the sag is different (PRE radial +9 mm): the model would make PRE worse (23.8 against 16.5 mm), hence the validity range.
 
+### 4.1 Final experiments: real grasps at the left side (2026-10-16)
+Residual to the waypoint at the first measurement of a leg (before any correction), arm frame at the waypoint's azimuth, mm:
+
+| group | leg | n | radial | tangential | vertical | norm mean (max) |
+|---|---|---|---|---|---|---|
+| model on (target radius 0.527 to 0.586 m, azimuth 73 to 103) | PRE | 12 | -7.6 | +0.5 | -0.9 | 11.5 (24.0) |
+| model on | GRASP | 12 | -1.6 | +0.3 | +1.0 | 7.7 (16.4) |
+| no feed-forward (target radius 0.619 to 0.663 m, azimuth 109 to 110) | PRE | 3 | -6.2 | -16.3 | -6.7 | 20.0 (30.3) |
+| no feed-forward | GRASP | 3 | -18.6 | +0.9 | -0.1 | 20.0 (23.2) |
+
+- The three furthest targets are outside the model's radius range (0.46 to 0.55 m, +-5 cm), so it applied no offset to them: that is the "no feed-forward" group.
+- **GRASP, the leg that matters, is as good as in the free-air fit at the new azimuth**: 7.7 mm mean with the model against 6.8 to 7.7 mm at -40, 0 and +40 degrees with the
+  deployed tangent gain, 20.0 mm without it. The model transfers from -40..+40 to about 90 degrees and to a gripped-plant task (the PRE and GRASP legs do not carry the plant).
+- PRE, target radius up to 0.55 m: radial residual within +-1.5 mm in 6 of 7 grasps (one -10.6 mm). Above 0.55 m the fixed radial offset (-30 mm) over-compensates:
+  PRE radial -5, -23, -14, -18 and -19 mm at 0.563, 0.575, 0.582, 0.584 and 0.586 m. Without the offset (0.619, 0.622 m) the radial sag is about 0, and -19 mm at 0.663 m. Read
+  as the radial sag of PRE falling from +30 mm (r <= 0.55 m) to about +11 mm (0.585 m), 0 (0.62 m) and -19 mm (0.663 m): a steeper slope (about -300 to -540 mm/m) than the
+  -141 mm/m measured inside 0.46 to 0.55 m, i.e. not linear. Indicative only: 15 grasps, mixed azimuths and heights.
+- Tangential residual at PRE from -14 to +13 mm without a clear dependence on the azimuth (+13 and +12 mm in the two grasps at 89 degrees, about -7 mm at 99 to 103): the tangential part stays the weakest;
+  the guess `sag_tangent_gain` 0.5 is neither confirmed nor rejected.
+- Correction loop (2 steps, gain 0.7, trigger 10 mm): PRE needed no correction in 5 of 15 grasps (residual below 10 mm). Of the 15 corrected legs 9 ended better than they started:
+  GRASP in 4 of 5 (16 -> 10, 16 -> 11, 16 -> 10, 20 -> 7 mm; one 23 -> 24), PRE in 5 of 10 (13 -> 6, 13 -> 4, 24 -> 16, 20 -> 15, 30 -> 22; the others 13 -> 16, 15 -> 22, 18 -> 20, 15 -> 18, 15 -> 20).
+  The PRE corrections often added error because the gravity sag at PRE changes with the pose of the correcting move.
+- Outcomes: 13 of 15 grasps uprooted a plant (`object`, load 14 to 15 %) and returned to the viewing pose. 2 ended ABORTED by "e-stop engaged or its state unknown", one during CLOSING (r 0.663 m,
+  azimuth 110, GRASP error 24 mm after 3 corrections) and one during LIFTING (r 0.622 m); both were targets outside the model's range. The log cannot say whether the e-stop was pressed
+  or reported by the driver. Whether a grasp pulled the plant out is the operator's observation; the sequencer's `object` outcome only means the load target was reached.
+
 ## 5. Conclusions and limitations
 - The feed-forward cuts the raw error at grasp heights about three times (23.6 -> 8.0 mm; 5.3 mm with the full tangential part where it is validated).
-- Not yet tested with real grasps (a gripped plant adds load at LIFT). Only the 45 degree approach, only grasp heights up to 9 cm, azimuths -40, 0, +40, free air.
-  Joint 2 reached 62 degrees C during the tests; temperature dependence was not examined.
-- Next: (1) measure -20, -10, +10, +20 degrees at grasp heights (needs clear space there) and model the tangential part against the azimuth, then raise `sag_tangent_gain`;
-  (2) linear-in-radius terms for PRE radial and LIFT vertical (would roughly halve the spread); (3) let real grasps feed the log and refit.
-- Tools: `scripts/sag_test.py` (the test), `sag_fit.py`, `sag_report.py`, `sag_cv.py`; 21 model tests.
+- Confirmed on 15 real grasps at azimuth 73 to 110 degrees (section 4.1): GRASP 7.7 mm with the model against 20.0 mm without, 13 of 15 grasps uprooted a plant. The LIFT leg, which
+  carries the plant, is not covered by the first-measurement statistics above (the real grasps measure PRE and GRASP only).
+- Limits: only the 45 degree approach, grasp heights 5 to 11 cm, azimuths -40 to +40 (free air) and 73 to 110 degrees (real grasps). The radius range 0.46 to 0.55 m is too narrow for the
+  left side: targets at 0.575 to 0.586 m got an over-compensating PRE offset, and those at 0.62 to 0.66 m none, and both aborted grasps were in the latter group.
+  Joint 2 reached 62 degrees C during the free-air tests; temperature dependence was not examined.
+- Next: (1) refit with the 57 real rows (`sag_fit.py`; check the buckets at 45 degrees and extend the radius validity to about 0.67 m, or fit the radius dependence of PRE radial, which the
+  new data show is steeper above 0.55 m); (2) measure the azimuths between -40 and 73 degrees (-20, 0 ... +40 are done, 40 to 73 is not) and model the tangential part against the azimuth, then
+  decide `sag_tangent_gain`; (3) log the LIFT leg of real grasps (the correction loop does not measure it) to test the vertical sag with a plant in the gripper;
+  (4) compare the PRE corrections with and without them: they improved only half of the legs.
+- Tools: `scripts/sag_test.py` (the test), `sag_fit.py`, `sag_report.py` (`--since 20261016_000000` gives the table of 4.1), `sag_cv.py`; 21 model tests.
 
 ## Simulated runs are kept out of the log (2026-10-16)
 
