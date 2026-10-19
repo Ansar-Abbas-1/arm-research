@@ -205,3 +205,17 @@ Mean residual norm over PRE, GRASP and LIFT, mm, azimuth 0, 4 points; "0.8 s" is
 
 - At the deployed 0.8 s **no I value beats the feed-forward model** (best: I 128, 9.7 to 10.5 mm, level with the correction loop alone, 10.0 mm). With waiting, I 64 matches the model after about 5 s (6.4 mm), and I 96 and 128 beat it clearly from 3 to 5 s (3.5 / 2.0 mm at 5 s).
 - Gaps: the long-settle curves exist only for I 16, 32, 64, 96, 128 (one run, 4 points each); I 2, 4, 8, 12, 24 and 48 were measured at 0.8 s only; I 128 and I 128 + corrections were not measured in the comparison run (the hold check at 58 C stopped it); no combination of the I gain with the feed-forward model was tried; the model and corrections were not measured at settles above 0.8 s.
+
+### Gap-filling run of 2026-10-19 (stopped by a motor power failure)
+
+Run on master 11313 with a cool-down to 46 C before every configuration (`compare_methods.py`, deployed 0.8 s settle, same grid, 8 probes each). Only two configurations were measured:
+
+| configuration | PRE first / final | GRASP first / final | LIFT first / final | mean (final) |
+|---|---|---|---|---|
+| I 128, nothing else | 21.4 / 21.4 | 3.3 / 3.3 | 4.8 / 4.8 | 9.8 |
+| I 128 + correction loop | 21.0 / 1.8 | 18.7 / 5.2 | 5.1 / 5.1 | **4.0** |
+
+- With the correction loop the I 128 pipeline reaches 4.0 mm at 0.8 s, level with the feed-forward model plus corrections (4.5 mm) and clearly below the model alone (4.9 mm) or I 128 alone (9.8 mm). The PRE offset that the loop learns (about 20 mm radial) is applied to GRASP, whose first measurement jumps to 18.7 mm (the same effect as for the loop without the model) and one more step brings it to 5.2 mm.
+- **Not measured:** I 96 (alone, with corrections, with the model), I 128 with the model, I 128 with model and corrections (the first two aborted at their first probe point, the next ones hit the bus fault below), and the long-settle runs for I 2, 4, 8, 12, 24, 48 and for raw / model / corrections at 10 s (never started).
+- **Stopped at 12:32 UTC:** the motors' input voltage fell to 8.2 to 9.9 V (the driver's limit is 10 V; joints 4 to 6 lowest at 8.2 to 8.4 V), all six motors stopped answering, the driver went into its bus-fault loop and the experiment was stopped by hand. Earlier voltage events: motor 3 hardware error 0x01 (input voltage) at 09:21 UTC, a one-sample loss of all six motors at 12:27 UTC. Suspects: the supply (limit, voltage under load) and the connections along the motor chain. The cause is not established and the arm was not tested further.
+- Script note: the "did not cool within 2400 s" message of `gain_sweep.py` after the bus loss is misleading (the loop also ends when ROS shuts down or no motor status arrives).

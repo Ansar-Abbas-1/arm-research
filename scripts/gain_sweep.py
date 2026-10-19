@@ -67,6 +67,33 @@ def wait_preset(name, timeout=60.0):
     return False, "the move to '%s' did not finish in %.0f s" % (name, timeout)
 
 
+def hottest_now():
+    """Hottest motor temperature [C] from /arm_interface/motor_status, or None."""
+    h = st.hottest_motor()
+    return None if h is None else h[1]
+
+
+def cool_down(target, preset, timeout=2400.0):
+    """Parks the arm at `preset` (the default pose: almost no load) and waits until the hottest motor is at or below `target` C. Returns (ok, text)."""
+    t0 = time.time()
+    hot = hottest_now()
+    if hot is not None and hot <= target:
+        return True, "motors at %.0f C" % hot
+    res = rospy.ServiceProxy("/preset_manager/command", PresetCommand)(action="go", name=preset)
+    if not res.success:
+        return False, "cannot go to '%s' to cool down: %s" % (preset, res.message)
+    ok, why = wait_preset(preset)
+    if not ok:
+        return False, why
+    print("   cooling at '%s' to %.0f C (now %s) ..." % (preset, target, "?" if hot is None else "%.0f" % hot), flush=True)
+    while time.time() - t0 < timeout and not rospy.is_shutdown():
+        rospy.sleep(15.0)
+        hot = hottest_now()
+        if hot is not None and hot <= target:
+            return True, "cooled to %.0f C in %.0f s" % (hot, time.time() - t0)
+    return False, "did not cool to %.0f C within %.0f s" % (target, timeout)
+
+
 def hold_check(seconds, max_std_deg, max_load, max_temp):
     """Watch the held arm: (ok, text). Position std per arm joint, the largest |load| and the hottest motor."""
     samples = []
@@ -240,6 +267,7 @@ def main():
     ap.add_argument("--floor-z", type=float, default=-0.605, help="with --no-marker: the floor z in base_link [m] (the lab floor was measured at -0.596, -0.605 and -0.646)")
     ap.add_argument("--curve-times", default="0.3,0.8,1.5,3,5,8,10", help="seconds after arrival at which the residual is read from the recorded end-effector track (up to the sequencer's correction_settle)")
     ap.add_argument("--allow-sag-model", action="store_true", help="do not require sag_gain 0 (the comparison run with the feed-forward model on; use values 0)")
+    ap.add_argument("--cool-to", type=float, default=0.0, help="before every gain value park the arm at the default pose until the hottest motor is at or below this temperature [C]; 0 = off")
     ap.add_argument("--go", action="store_true", help="WRITE THE GAINS AND MOVE THE ARM (without it: dry runs only)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
     values = [int(v) for v in a.values.split(",")]
@@ -272,6 +300,11 @@ def main():
     print("sequencer settle %.1f s, sag_gain %s" % (settle, rospy.get_param("/grasp_sequencer/sag_gain", "?")))
     try:
         for value in values:
+            if a.go and a.cool_to > 0.0:
+                ok, text = cool_down(a.cool_to, "default")
+                print("   " + text, flush=True)
+                if not ok:
+                    status = 9; break
             if a.go:
                 ok, msg = set_i_gain(value)
                 print("\n== I gain %d: %s" % (value, msg[:160]))

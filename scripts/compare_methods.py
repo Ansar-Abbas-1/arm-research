@@ -31,7 +31,19 @@ CONFIGS = [
     ("sag+corr", 1.0, True, 0),
     ("I128", 0.0, False, 128),
     ("I128+corr", 0.0, True, 128),
+    ("I96", 0.0, False, 96),
+    ("I96+corr", 0.0, True, 96),
+    ("I96+sag", 1.0, False, 96),
+    ("I128+sag", 1.0, False, 128),
+    ("I128+sag+corr", 1.0, True, 128),
+    ("I2", 0.0, False, 2),
+    ("I4", 0.0, False, 4),
+    ("I8", 0.0, False, 8),
+    ("I12", 0.0, False, 12),
+    ("I24", 0.0, False, 24),
+    ("I48", 0.0, False, 48),
 ]
+DEFAULT = ("raw", "sag", "corr", "sag+corr", "I128", "I128+corr")
 
 
 def restart_sequencer(settle, sag_gain, corrects):
@@ -53,12 +65,14 @@ def main():
     ap.add_argument("--settle", type=float, default=0.8, help="the sequencer's measurement settle [s] (the deployed value)")
     ap.add_argument("--log-dir", default="/home/dev/recordings/gain_test")
     ap.add_argument("--only", default="", help="comma list of configuration names to run")
+    ap.add_argument("--curve-times", default="0.8", help="seconds after arrival at which gain_sweep reads the residual (use e.g. 0.8,3,5,10 with --settle 10)")
+    ap.add_argument("--cool-to", type=float, default=0.0, help="park at the default pose before every configuration until the hottest motor is at or below this temperature [C]")
     ap.add_argument("--no-marker", action="store_true")
     ap.add_argument("--floor-z", type=float, default=-0.605)
     ap.add_argument("--max-std-deg", type=float, default=1.0)
     ap.add_argument("--go", action="store_true", help="MOVE THE ARM and write the motor gain (without it: prints the plan)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
-    configs = [c for c in CONFIGS if not a.only or c[0] in a.only.split(",")]
+    configs = [c for c in CONFIGS if (c[0] in a.only.split(",") if a.only else c[0] in DEFAULT)]
     print("configurations: " + ", ".join("%s (sag_gain %g, corrections %s, I %d)" % c for c in configs))
     if not a.go:
         print("dry: nothing run (add --go)")
@@ -74,19 +88,21 @@ def main():
             out = os.path.join(a.log_dir, "compare_%s_%s_%s.json" % (stamp, name.replace("+", "_"), igain))
             cmd = [sys.executable, "-u", os.path.join(here, "gain_sweep.py"), "--azimuth", str(a.azimuth), "--radii", a.radii, "--heights", a.heights,
                    "--repeats", str(a.repeats), "--values", str(igain), "--log-dir", a.log_dir, "--out", out, "--max-std-deg", str(a.max_std_deg),
-                   "--curve-times", "0.8", "--go"] + (["--allow-sag-model"] if sag else []) + (["--no-marker", "--floor-z", str(a.floor_z)] if a.no_marker else [])
+                   "--curve-times", a.curve_times, "--go"] + (["--cool-to", str(a.cool_to)] if a.cool_to > 0 else []) + (["--allow-sag-model"] if sag else []) + (["--no-marker", "--floor-z", str(a.floor_z)] if a.no_marker else [])
             proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, universal_newlines=True)
             print("\n".join(l for l in proc.stdout.splitlines() if "TF_OLD" not in l and "TF_REPEATED" not in l and "buffer_core" not in l), flush=True)
             if proc.returncode != 0 or not os.path.exists(out):
-                print("configuration %s stopped (exit %d): not comparing the rest" % (name, proc.returncode))
-                break
+                print("configuration %s stopped (exit %d): continuing with the next one" % (name, proc.returncode))
+                continue
             results[name] = json.load(open(out))["results"][0]["legs"]
+            results[name]["_curve_times"] = a.curve_times
     finally:
         subprocess.call(["rosparam", "set", "/grasp_sequencer/probe_corrections", "false"], stdout=subprocess.DEVNULL)
         subprocess.call(["rosparam", "set", "/grasp_sequencer/sag_gain", "0.0"], stdout=subprocess.DEVNULL)
         print("\n== comparison (mm to the waypoint, mean of the points; first = first measurement, final = after the correction steps) ==")
         print("%-10s %-14s %-14s %-14s %s" % ("config", "PRE first/final", "GRASP f/f", "LIFT f/f", "mean of the three (final)"))
         for name, legs in results.items():
+            legs = {k: v for k, v in legs.items() if not k.startswith("_")}
             cells, finals = [], []
             for leg in ("PRE", "GRASP", "LIFT"):
                 l = legs.get(leg, {})
