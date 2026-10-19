@@ -18,8 +18,11 @@
   <!-- sag_log_dir: where the sequencer logs its raw end-effector measurements (sag_*.jsonl, the input of scripts/sag_fit.py); empty = the yaml value (the real arm's
        recordings/sag). Simulated runs (the e2e test, bringups with use_hardware:=false) must log elsewhere, or their zero-sag rows corrupt a refit. -->
   <arg name="sag_log_dir" default=""/>
+  <!-- sag_gain: scale of the sag model's feed-forward; empty = the yaml value (1.0), 0 = model off (raw sag, e.g. for the motor gain sweep). -->
+  <arg name="sag_gain" default=""/>
   <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="grasp_sequencer" pkg="arm_grasp" type="grasp_sequencer_node.py" output="screen">
     <rosparam command="load" file="$(arg config)"/>
     <param name="sag_log_dir" value="$(arg sag_log_dir)" unless="$(eval arg('sag_log_dir') == '')"/>
+    <param name="sag_gain" value="$(arg sag_gain)" type="double" unless="$(eval arg('sag_gain') == '')"/>
   </node>
 </launch>
