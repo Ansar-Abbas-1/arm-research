@@ -287,3 +287,18 @@ Per leg and component (arm frame at the waypoint azimuth, mm, measured - waypoin
 - **Differences in how.** The model subtracts a fixed mean per leg and approach angle (its std is 1 to 5 mm over the fitted radius and height range) at once, with no waiting, but is blind outside the fitted range and was not measured at other azimuths for the tangential part. The integral term cancels the actual steady-state error of the pose it is in (radius, height, azimuth, payload) but needs time: the PRE error is 23 mm at 0.3 s and 18 mm at 0.8 s for I 128 and reaches 2.7 mm only after 5 s, while LIFT is at 5 mm at 0.8 s and GRASP at 3.6 mm.
 - **Tangential component.** The model stores -12 / -13 / -13 mm (joint 1, signed by its travel and applied with a flagged gain of 0.5); at azimuth 0 the measured tangential error is only -2.6 to -2.8 mm, and the integral term removes all of it (0.0 mm for I 16 and above). The tangential error is therefore not a gravity effect (joint 1 carries no gravity torque) but a position-loop dead-band or friction offset that the integrator takes out and the travel-signed model cannot.
 - **Gaps in this comparison.** Both columns use the same grid at azimuth 0 only (radii 0.46 / 0.52 m); the left-side grasps (radius up to 0.66 m) where the model's fixed PRE offset over-compensated were not repeated with the integral gain, so whether it adapts there is untested; the integral and the model were not combined; "removed" values come from means of 4 to 8 probes.
+
+### I = 256 (2026-10-19, 5 s settle)
+
+Same set-up as the 5 s rerun (master 11313, no camera, cool-down to 46 C, no model, no correction, azimuth 0, 4 probes per value), run with I 0 and I 128 in the same session as references. Raw files: `recordings/gain_test5/gain_sweep_20261019_143255.json`. No abort. Mean residual norm over PRE, GRASP and LIFT, mm:
+
+| I gain | 0.3 s | 0.8 s | 1.5 s | 3 s | 5 s | PRE / GRASP / LIFT at 5 s |
+|---|---|---|---|---|---|---|
+| 0 | 17.0 | 17.3 | 16.9 | 17.1 | 17.0 | 27.3 / 5.1 / 18.5 |
+| 128 | 11.5 | 8.9 | 6.2 | 3.7 | 2.1 | 2.4 / 1.4 / 2.4 |
+| 256 | 5.6 | 4.7 | 3.1 | 1.9 | 1.6 | 2.2 / 1.3 / 1.3 |
+| 0 (end) | 16.6 | 16.6 | 16.6 | 16.7 | 16.5 | 26.1 / 4.4 / 18.9 |
+
+- Doubling the gain roughly halves the settling time: at 0.8 s I 256 gives 4.7 mm, level with the feed-forward model (4.9 mm at 0.8 s, no waiting), against 8.9 mm for I 128 and 17.3 mm for I 0; at 3 s it is 1.9 mm. The PRE error at 0.3 s falls from 27 (I 0) to 23.4 (I 128) and 10.4 mm (I 256).
+- I 128 reproduces the earlier run (2.1 mm at 5 s now, 2.2 mm before) and the two baselines agree (17.0 and 16.5 mm).
+- Stability: joint 2 hold std 0.00 to 0.01 deg at I 256 (limit 1.0 deg), load 3 %. The motors stayed at 46 to 48 C (cool-down between values), so this is not a hot-motor test.
