@@ -108,6 +108,7 @@ class Node(gt.GraspContext):
             except (IOError, ValueError) as e:
                 rospy.logerr("grasp: cannot load the sag model %s (%s): running without it", self.sag_path, e)
         self.probe = False
+        self.probe_corrects = False
         self.ff = {k: np.zeros(3) for k in sm.KEYS}                   # feed-forward offsets of this grasp (added to the waypoints)
         self.last_aim, self.approach_deg, self.run_id, self.q_start = {}, 90.0, "", [0.0] * 5
         self.sag_scale = 1.0                                          # how much of the model's offset this grasp could use (the full one may be out of reach)
@@ -277,6 +278,7 @@ class Node(gt.GraspContext):
             self.set_state("ABORTED", str(e))
             return GraspResponse(False, "refused: " + str(e), 0.0, 0.0)
         self.probe = bool(req.probe)
+        self.probe_corrects = self.probe and bool(rospy.get_param("~probe_corrections", False))     # a probe whose correction loop re-aims (free air, the gripper still untouched)
         self.approach_deg = float(np.degrees(np.arcsin(np.clip(T[2, 2], -1.0, 1.0))))      # the tool axis below the horizontal (90 = straight down)
         self.q_start = [float(v) for v in self.q]                                       # where the run starts: joint 1 travels from here to the target's azimuth
         az = float(np.arctan2(wps[0].position[1], wps[0].position[0]))

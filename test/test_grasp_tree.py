@@ -188,6 +188,21 @@ class TestGraspTree(unittest.TestCase):
         run(ctx, tree)
         self.assertNotIn("VIEW", [n for n, _ in ctx.started])
 
+    def test_a_probe_with_corrections_re_aims_but_still_never_touches_the_gripper(self):
+        ctx = FakeContext(); ctx.probe = True; ctx.probe_corrects = True
+        ctx.offset = np.array([0.0, 0.0, -0.020])                    # the arm misses its aim by 2 cm
+        ctx, spec, root, tree = make(ctx, correction_steps=2)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertGreaterEqual(len(ctx.corrective), 1)
+        self.assertEqual(ctx.gripper_started, [])
+
+    def test_a_plain_probe_measures_only_even_with_the_misses(self):
+        ctx = FakeContext(); ctx.probe = True
+        ctx.offset = np.array([0.0, 0.0, -0.020])
+        ctx, spec, root, tree = make(ctx, correction_steps=2)
+        self.assertEqual(run(ctx, tree), Status.SUCCESS)
+        self.assertEqual(ctx.corrective, [])
+
     def test_the_tree_never_commands_the_gripper_itself_and_leaves_it_to_the_node_after_the_sequence(self):
         ctx, spec, root, tree = make()
         run(ctx, tree)

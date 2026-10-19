@@ -141,3 +141,23 @@ Same set-up (azimuth 0, 4 points, 45 degrees, no sag model, no correction, 0.8 s
 - Hypothesis (not tested): with a larger gain the integrator converges inside the 0.8 s settle, so the measured residual approaches the true steady state; with a small gain it is a partial, history-dependent state.
 - Joint 2 (MX-106) shows a small oscillation at every I > 0 (std 0.1 to 0.4 deg, 2 to 10 times the baseline) without a trend with the gain; its worst load stays at 54 to 60 %. The hottest motor rose from 54 to 58 C during the run.
 - Not yet answered: whether the improvement continues above 128 (the register allows 16383, the driver caps at 1000), the steady state after a longer settle, the behaviour with a gripped plant, repeatability over more points and azimuths, and the effect on motor temperature and wear in long operation. At I = 128 the mean error (10.5 mm) is close to the feed-forward model's 8.0 mm, with no model and no fit.
+
+### Third run, long settle: the integrator converges (2026-10-19)
+
+The two earlier runs read the residual 0.8 s after arrival, too early for the integrator. Here the sequencer's settle is 10 s (parameter `correction_settle`, then a respawn of the node) and the sweep records the end-effector track (TF from the encoders, about 30 Hz) so the residual of every leg can be read at any time after arrival: `gain_sweep.py` (`--curve-times`), 4 points per value (azimuth 0, radii 0.46 / 0.52 m, heights 7 / 9 cm), no sag model, no correction, no camera. Oscillation limit 1.0 deg; joint 2 stayed at 0.01 to 0.40 deg std, worst load 49 to 56 %, hottest motor 43 -> 54 C. Residual norm to the waypoint, mm, mean of the three legs (PRE, GRASP, LIFT) and of the 4 points:
+
+| I gain | 0.3 s | 0.8 s | 1.5 s | 3 s | 5 s | 8 s | 10 s |
+|---|---|---|---|---|---|---|---|
+| 0 | 17.8 | 16.9 | 16.8 | 16.9 | 16.8 | 16.7 | 17.0 |
+| 16 | 21.2 | 21.5 | 20.2 | 17.5 | 15.5 | 13.9 | 12.6 |
+| 32 | 24.7 | 23.8 | 21.6 | 18.7 | 15.4 | 11.0 | 8.8 |
+| 64 | 21.9 | 18.9 | 16.6 | 10.9 | 6.4 | 4.5 | 2.5 |
+| 96 | 16.4 | 13.6 | 10.4 | 6.2 | 3.5 | 1.9 | 1.5 |
+| 128 | 12.2 | 9.7 | 6.7 | 4.5 | 2.0 | 1.8 | 1.7 |
+| 0 (repeat) | 18.5 | 18.7 | 18.5 | 18.5 | 18.4 | 18.4 | 18.4 |
+
+At 10 s, per leg (PRE / GRASP / LIFT, mm): I 0: 23.8 / 6.4 / 20.7; I 64: 3.9 / 2.1 / 1.5; I 96: 1.9 / 1.4 / 1.2; I 128: 1.3 / 1.9 / 1.8. At I = 128 PRE is below 3 mm after 5 s (2.1), GRASP after 3 s and LIFT after 0.8 s.
+
+- **The earlier results were a settling effect.** The residual falls roughly exponentially toward about 1.5 mm and the time to get there shortens with the gain: with I 0 nothing changes in 10 s (the sag is a steady error of the P loop: PRE 23.8, LIFT 20.7 mm, radial and vertical), with I 128 the error is under 3 mm after 5 s on every leg. The non-monotone picture at 0.8 s (error above the baseline for I up to 32) is the transient: the integrator carries the torque of the previous pose and first pushes the arm the wrong way (PRE 41 to 45 mm at 0.3 s for I 16 to 64, against 24 mm at I 0), then converges.
+- Time constant, read from the table: about 5 s at I 64, 2 to 3 s at I 96, 1.5 to 2 s at I 128 (heuristic, from a 7-point curve). The speed is not "free": the transient at arrival is large with a small gain and shrinks as the gain grows (mean error at 0.3 s: 25 mm at I 32, 12 mm at I 128).
+- Not yet compared in the same session: the feed-forward model (8.0 mm mean at 0.8 s over the validated range, no waiting) and the correction loop (2 steps, trigger 10 mm); `scripts/compare_methods.py` runs raw, sag, corrections, sag + corrections, I 128 and I 128 + corrections on this grid at the deployed 0.8 s settle (`probe_corrections`: a probe whose correction loop re-aims, gripper untouched).

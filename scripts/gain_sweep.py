@@ -28,6 +28,7 @@ import rospy
 import tf2_ros
 from sensor_msgs.msg import JointState
 from geometry_msgs.msg import TransformStamped
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 
 import sag_test as st
@@ -46,6 +47,24 @@ def set_i_gain(value):
     rospy.wait_for_service("/arm_interface/apply_position_gains", 5.0)
     r = rospy.ServiceProxy("/arm_interface/apply_position_gains", Trigger)()
     return r.success, r.message
+
+
+def wait_preset(name, timeout=60.0):
+    """Waits until preset_manager reports the move to `name` done. Returns (True, '') or (False, why)."""
+    t0 = time.time()
+    rospy.sleep(0.5)
+    while time.time() - t0 < timeout and not rospy.is_shutdown():
+        try:
+            msg = rospy.wait_for_message("/preset_manager/state", String, 2.0)
+            move = json.loads(msg.data).get("move", {})
+            if move.get("name") == name and move.get("state") == "done":
+                return True, ""
+            if move.get("name") == name and move.get("state") == "failed":
+                return False, "the move to '%s' failed: %s" % (name, move.get("message", ""))
+        except (rospy.ROSException, ValueError):
+            pass
+        rospy.sleep(0.3)
+    return False, "the move to '%s' did not finish in %.0f s" % (name, timeout)
 
 
 def hold_check(seconds, max_std_deg, max_load, max_temp):
@@ -82,6 +101,61 @@ def hold_check(seconds, max_std_deg, max_load, max_temp):
     return True, text
 
 
+class EeRecorder(object):
+    """Records the end-effector position (TF base_link -> end_effector, from the measured joints) with its time stamp, to read the residual of a leg
+    at any time after the arm arrived (the settling curve), not only at the one instant the sequencer measures."""
+
+    def __init__(self, buf):
+        self.buf, self.t, self.p, self.lock = buf, [], [], threading.Lock()
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def loop(self):
+        last = None
+        while not rospy.is_shutdown():
+            try:
+                tr = self.buf.lookup_transform("base_link", "end_effector", rospy.Time(0))
+                stamp = tr.header.stamp.to_sec()
+                if stamp != last:
+                    last = stamp
+                    with self.lock:
+                        self.t.append(stamp)
+                        self.p.append([tr.transform.translation.x, tr.transform.translation.y, tr.transform.translation.z])
+            except tf2_ros.TransformException:
+                pass
+            rospy.sleep(0.03)
+
+    def at(self, t):
+        """Position of the first sample at or after t (None if there is none yet or it is more than 0.2 s later)."""
+        with self.lock:
+            i = int(np.searchsorted(np.array(self.t), t))
+            if i >= len(self.t) or self.t[i] - t > 0.2:
+                return None
+            return np.array(self.p[i])
+
+
+def residual_xyz(goal, measured):
+    """measured - goal in the arm frame at the goal's azimuth: [radial, tangential, vertical] mm."""
+    g, m = np.asarray(goal, float), np.asarray(measured, float)
+    az = np.arctan2(g[1], g[0])
+    u, w = np.array([np.cos(az), np.sin(az), 0.0]), np.array([-np.sin(az), np.cos(az), 0.0])
+    e = m - g
+    return 1000.0 * np.array([e @ u, e @ w, e[2]])
+
+
+def settle_curves(rows, rec, settle, times):
+    """{leg: {tau: [residual vectors mm]}}: for every logged leg the residual `tau` seconds after the arm arrived (arrival = the measurement time minus the settle)."""
+    out = {}
+    for r in rows:
+        t_arrived = r["time"] - settle
+        for tau in times:
+            if tau > settle + 0.05:
+                continue
+            p = rec.at(t_arrived + tau)
+            if p is not None:
+                out.setdefault(r["key"], {}).setdefault(tau, []).append(residual_xyz(r["goal"], p))
+    return out
+
+
 class FixedTarget(object):
     """--no-marker: publishes the `grasp_target` frame (base_link) itself, at a fixed point of the base frame, with the frame of the approach angle
     (target_offset.angled_frame) and the current time stamp, so the sequencer's freshness check passes. Replaces marker_0 + the grasp_target node."""
@@ -107,6 +181,22 @@ class FixedTarget(object):
                 m.transform.rotation.x, m.transform.rotation.y, m.transform.rotation.z, m.transform.rotation.w = q
                 self.br.sendTransform(m)
             rospy.sleep(0.1)
+
+
+def read_final(log_dir, since):
+    """The LAST logged measurement of every (run, leg) of the probes since `since`: what is left after the correction steps (the first one when there were none)."""
+    last = {}
+    for f in sorted(glob.glob(os.path.join(log_dir, "sag_*.jsonl"))):
+        for line in open(f):
+            try:
+                r = json.loads(line)
+            except ValueError:
+                continue
+            if r.get("time", 0) >= since and r.get("mode") == "probe":
+                k = (r["run"], r["key"])
+                if k not in last or int(r["step"]) >= int(last[k]["step"]):
+                    last[k] = r
+    return list(last.values())
 
 
 def read_rows(log_dir, since):
@@ -148,6 +238,8 @@ def main():
     ap.add_argument("--max-temp", type=float, default=70.0)
     ap.add_argument("--no-marker", action="store_true", help="no marker_0 (no camera): the points are fixed in the base frame at --floor-z + height and this script publishes the target frame")
     ap.add_argument("--floor-z", type=float, default=-0.605, help="with --no-marker: the floor z in base_link [m] (the lab floor was measured at -0.596, -0.605 and -0.646)")
+    ap.add_argument("--curve-times", default="0.3,0.8,1.5,3,5,8,10", help="seconds after arrival at which the residual is read from the recorded end-effector track (up to the sequencer's correction_settle)")
+    ap.add_argument("--allow-sag-model", action="store_true", help="do not require sag_gain 0 (the comparison run with the feed-forward model on; use values 0)")
     ap.add_argument("--go", action="store_true", help="WRITE THE GAINS AND MOVE THE ARM (without it: dry runs only)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
     values = [int(v) for v in a.values.split(",")]
@@ -157,7 +249,7 @@ def main():
     rospy.wait_for_service("/grasp_sequencer/grasp", 10.0)
     grasp = rospy.ServiceProxy("/grasp_sequencer/grasp", Grasp)
     preset = rospy.ServiceProxy("/preset_manager/command", PresetCommand)
-    if rospy.get_param("/grasp_sequencer/sag_gain", 1.0) != 0.0:
+    if not a.allow_sag_model and rospy.get_param("/grasp_sequencer/sag_gain", 1.0) != 0.0:
         print("the sag model is ON (sag_gain %s): start the stack with sag_gain:=0 for this test" % rospy.get_param("/grasp_sequencer/sag_gain", 1.0))
         return 1
     if a.go and os.path.realpath(rospy.get_param("/grasp_sequencer/sag_log_dir", "")) != os.path.realpath(a.log_dir):
@@ -174,6 +266,10 @@ def main():
     print("%d points x %d repeats x %d gain values; approach %.0f deg; %s" % (len(points), a.repeats, len(values), a.angle, "WRITING GAINS AND MOVING THE ARM" if a.go else "dry runs only"))
     results = []
     status = 0
+    settle = float(rospy.get_param("/grasp_sequencer/correction_settle", 0.8))
+    times = [float(v) for v in a.curve_times.split(",")]
+    rec = EeRecorder(buf)
+    print("sequencer settle %.1f s, sag_gain %s" % (settle, rospy.get_param("/grasp_sequencer/sag_gain", "?")))
     try:
         for value in values:
             if a.go:
@@ -193,7 +289,10 @@ def main():
                         res = preset(action="go", name=a.preset)
                         if not res.success:
                             print(tag, "cannot go to the viewing pose:", res.message); status = 4; raise StopIteration
-                        rospy.sleep(2.0)
+                        ok, text = wait_preset(a.preset)
+                        if not ok:
+                            print(tag, text); status = 4; raise StopIteration
+                        rospy.sleep(1.5)
                         st.wait_state(("IDLE", "DONE", "ABORTED"), 5.0)
                         ok, text = hold_check(2.0, a.max_std_deg, a.max_load, a.max_temp)       # the gain may build an oscillation up over time: look again before every probe
                         if not ok:
@@ -228,13 +327,28 @@ def main():
             by_leg = {}
             for r in rows:
                 by_leg.setdefault(r["key"], []).append(residual(r))
+            curves = settle_curves(rows, rec, settle, times)
+            final = {}
+            for r in read_final(a.log_dir, t_start - 1.0):
+                final.setdefault(r["key"], []).append((residual(r), int(r["step"])))
             summary = {leg: {"n": len(v), "mean_mm": np.mean(v, axis=0).round(1).tolist(), "norm_mean_mm": round(float(np.mean(np.linalg.norm(v, axis=1))), 1),
                              "norm_max_mm": round(float(np.max(np.linalg.norm(v, axis=1))), 1)} for leg, v in by_leg.items()}
-            results.append({"i_gain": value, "legs": summary})
+            for leg, v in final.items():
+                e = np.array([x[0] for x in v])
+                summary.setdefault(leg, {})["final"] = {"n": len(v), "mean_mm": np.mean(e, axis=0).round(1).tolist(), "norm_mean_mm": round(float(np.mean(np.linalg.norm(e, axis=1))), 1),
+                                                        "norm_max_mm": round(float(np.max(np.linalg.norm(e, axis=1))), 1), "steps_mean": round(float(np.mean([x[1] for x in v])), 2)}
+            for leg, by_tau in curves.items():
+                summary.setdefault(leg, {})["curve"] = {"%g" % tau: {"n": len(v), "mean_mm": np.mean(v, axis=0).round(1).tolist(),
+                                                                     "norm_mean_mm": round(float(np.mean(np.linalg.norm(v, axis=1))), 1)} for tau, v in sorted(by_tau.items())}
+            results.append({"i_gain": value, "settle_s": settle, "sag_gain": rospy.get_param("/grasp_sequencer/sag_gain", None), "legs": summary})
             for leg in sm.KEYS:
                 if leg in summary:
                     s = summary[leg]
-                    print("   %-5s n %d  mean r/t/v %s mm  norm %.1f (max %.1f)" % (leg, s["n"], s["mean_mm"], s["norm_mean_mm"], s["norm_max_mm"]))
+                    print("   %-5s n %d  at the sequencer's measurement: mean r/t/v %s mm  norm %.1f (max %.1f)" % (leg, s["n"], s["mean_mm"], s["norm_mean_mm"], s["norm_max_mm"]))
+                    if "final" in s:
+                        print("         after the correction steps: norm %.1f (max %.1f), %.1f steps used on average" % (s["final"]["norm_mean_mm"], s["final"]["norm_max_mm"], s["final"]["steps_mean"]))
+                    if "curve" in s:
+                        print("         norm vs time after arrival: " + "  ".join("%ss %.1f" % (k, v["norm_mean_mm"]) for k, v in s["curve"].items()))
     except StopIteration:
         pass
     finally:

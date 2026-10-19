@@ -47,6 +47,7 @@ class GraspContext(object):
     """Interface the leaves use. The node implements it with ROS; tests with a fake."""
 
     probe = False       # True: a SAG PROBE: PRE, GRASP and LIFT are moved to and measured, the gripper is never commanded (see build_tree)
+    probe_corrects = False   # True (a probe only): the correction loop also re-aims, to measure what it achieves in free air (sequencer parameter ~probe_corrections)
 
     def log_measurement(self, key, step, measured):
         """One raw end-effector measurement of position `key` (PRE | GRASP | LIFT); `step` 0 is the first, before any corrective move. Default: ignore."""
@@ -246,7 +247,7 @@ class CorrectPosition(_Leaf):
             self.ctx.fail("cannot measure the end effector for the %s correction" % self.key)
             return Status.FAILURE
         self.ctx.log_measurement(self.key, c.used, measured)
-        if self.ctx.probe:                                              # a sag probe only MEASURES: the raw sag is the data, a corrective move would hide it
+        if self.ctx.probe and not self.ctx.probe_corrects:              # a sag probe only MEASURES: the raw sag is the data, a corrective move would hide it
             self.ctx.set_state("CORRECTING", "%s: sag probe, measured %.1f mm from the waypoint" % (
                 self.key, 1000.0 * float(np.linalg.norm(np.asarray(self.ctx.waypoint(self.key), float) - np.asarray(measured, float)))))
             return Status.SUCCESS
