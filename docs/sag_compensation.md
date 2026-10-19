@@ -180,3 +180,28 @@ At 10 s, per leg (PRE / GRASP / LIFT, mm): I 0: 23.8 / 6.4 / 20.7; I 64: 3.9 / 2
 - **Model + correction loop** (deployed): the corrections never trigger here (0.0 steps on average, every residual is below the 10 mm trigger), so it equals the model alone (4.5 against 4.9 mm, within the spread). The loop only matters outside the model's validated range, as in the grasps at azimuth 73 to 110 degrees.
 - **Motor I gain**: the best error (1.3 to 1.9 mm per leg) but only after 3 to 5 s of settling, with a large transient (more than 20 mm at PRE after 0.3 s) and a stability margin that is thin on the loaded joints: in this run the hold check at I 128 measured joint 2 at std 1.09 deg (joints 3 to 5 0.2 to 0.5 deg), hottest motor 58 C, above the 1.0 deg limit, while the previous run at 54 C read 0.04 deg. The I 128 and I 128 + correction configurations of this comparison were therefore not measured.
 - Reading: for a grasp sequence (0.8 s per leg) the model + correction pipeline is the right choice; the motor integral gain would pay if the arm could wait several seconds per leg, or as a complement for the model's blind spots (the arm outside the fitted radius). Not tested: both together, I below 128 at 0.8 s with corrections, other azimuths, a gripped plant.
+
+### All I values against the other methods (2026-10-19, from the files in `recordings/gain_test/`)
+
+Mean residual norm over PRE, GRASP and LIFT, mm, azimuth 0, 4 points; "0.8 s" is the deployed measurement time (range over the runs where an I value was measured twice); "-" = not measured. The runs differ in motor temperature (43 to 58 C) and session, so differences below about 2 mm are not significant.
+
+| I gain | 0.8 s | 3 s | 5 s | 10 s |
+|---|---|---|---|---|
+| 0 | 16.6 to 19.4 | 16.9 | 16.8 | 17.0 |
+| 2 | 17.5 | - | - | - |
+| 4 | 17.8 | - | - | - |
+| 8 | 19.1 | - | - | - |
+| 12 | 19.2 | - | - | - |
+| 16 | 20.5 to 21.5 | 17.5 | 15.5 | 12.6 |
+| 24 | 20.9 | - | - | - |
+| 32 | 20.1 to 23.8 | 18.7 | 15.4 | 8.8 |
+| 48 | 17.8 | - | - | - |
+| 64 | 16.1 to 18.9 | 10.9 | 6.4 | 2.5 |
+| 96 | 13.6 to 13.8 | 6.2 | 3.5 | 1.5 |
+| 128 | 9.7 to 10.5 | 4.5 | 2.0 | 1.7 |
+| *reference, same grid, 0.8 s:* feed-forward model | 4.9 | | | |
+| correction loop only | 10.0 | | | |
+| model + correction loop | 4.5 | | | |
+
+- At the deployed 0.8 s **no I value beats the feed-forward model** (best: I 128, 9.7 to 10.5 mm, level with the correction loop alone, 10.0 mm). With waiting, I 64 matches the model after about 5 s (6.4 mm), and I 96 and 128 beat it clearly from 3 to 5 s (3.5 / 2.0 mm at 5 s).
+- Gaps: the long-settle curves exist only for I 16, 32, 64, 96, 128 (one run, 4 points each); I 2, 4, 8, 12, 24 and 48 were measured at 0.8 s only; I 128 and I 128 + corrections were not measured in the comparison run (the hold check at 58 C stopped it); no combination of the I gain with the feed-forward model was tried; the model and corrections were not measured at settles above 0.8 s.
