@@ -100,3 +100,23 @@ Residual to the waypoint at the first measurement of a leg (before any correctio
 ## Simulated runs are kept out of the log (2026-10-16)
 
 The sequencer logs every measurement to `sag_log_dir` (`recordings/sag`), and `sag_fit.py` / `sag_report.py` / `sag_cv.py` read `sag_*.jsonl` there. Simulated grasps measure no sag, so their rows (error 0 at the 90 degree approach) would add a fake zero-sag bucket to a refit. 12 such rows from the e2e test (2026-10-15 and -16) were moved to `recordings/sag/sim/` (not read by the tools). `grasp.launch` has a `sag_log_dir` argument (empty = yaml); `e2e_sim_grasp.py` logs to the temp directory and `bringup_grasp.launch` with `use_hardware:=false` to `recordings/sag/sim`.
+
+## Motor integral gain in free air (2026-10-19)
+
+Question: can an integral term in the motors' position loop remove the sag instead of the feed-forward model? Test: `scripts/gain_sweep.py` writes the Position I gain (register 82, RAM; baseline P 850, I 0, D 0 on all motors) of joints 1 to 5 through the new driver service `/arm_interface/apply_position_gains`, then runs the free-air probe (PRE, GRASP, LIFT, no correction, sag model off) at azimuth 0, 45 degree approach, radii 0.46 and 0.52 m, heights 7 and 9 cm (4 points per value, no camera: fixed target frame, floor z -0.596 m). Raw files: `recordings/gain_test/`.
+
+| I gain | PRE norm (radial, vertical) | GRASP norm (vertical) | LIFT norm (vertical) | mean of the three |
+|---|---|---|---|---|
+| 0 | 27.9 (27.4, +2.5) | 7.3 (-4.3) | 20.2 (-18.1) | 18.5 |
+| 2 | 31.4 (30.1, +7.3) | 5.3 (-0.1) | 15.7 (-14.1) | 17.5 |
+| 4 | 33.4 (30.5, +12.8) | 8.3 (+6.8) | 11.8 (-10.2) | 17.8 |
+| 8 | 37.5 (33.4, +16.8) | 9.9 (+9.1) | 9.9 (-6.5) | 19.1 |
+| 12 | 39.1 (34.5, +18.1) | 9.3 (+8.6) | 9.3 (-7.1) | 19.2 |
+| 0 (repeat, end) | 29.4 (29.2, +2.9) | 6.9 (-4.7) | 20.2 (-18.7) | 18.8 |
+
+(mm, residual to the waypoint, mean of 4 points; first run, I = 16 on joints 1 to 5 already made joint 2 oscillate: position std 0.33 deg against the 0.30 deg limit, joint 3 0.20 deg, joint 2 load 52 %. No other value tripped the checks; the hottest motor rose from 43 to 48 C during the run.)
+
+- The integral term does lift the vertical droop of LIFT (-18 -> -10 -> -7 mm) but it shifts PRE and GRASP **upward** (+3 -> +18 mm at PRE, -4 -> +9 mm at GRASP), and PRE gets worse in total (radial sag grows too). The mean error over the three legs stays at 17.5 to 19.2 mm against 18.5 mm without it: no net gain. Only GRASP at I = 2 is better (5.3 against 7.3 and 6.9 mm, n = 4 each).
+- Likely cause (a hypothesis, not tested): the probe measures 0.8 s after each move, long before the integrator has converged, and it carries the state of the previous pose (the viewing pose and PRE need different torques than LIFT), so the effect depends on the order and timing of the legs, not on the pose alone. A real steady-state test needs a settle of several seconds per leg.
+- The baseline repeat agrees with the first one (LIFT 20.2 / 20.2, GRASP 7.3 / 6.9, PRE 27.9 / 29.4 mm), so the differences above are not drift.
+- Conclusion: an integral gain in the motors is not a replacement for the feed-forward model (8.0 mm mean on the validated range). Limits: one azimuth, 4 points per value, uniform I on joints 1 to 5, no per-joint split (the loaded MX-106 joints 2 and 3 oscillate first), settle time of 0.8 s.

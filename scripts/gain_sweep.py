@@ -11,11 +11,13 @@ The gain is put back to 0 at the end and on any abort. Start the stack with the 
     roslaunch arm_bringup bringup_grasp.launch use_hardware:=true mission_control:=none detector:=false sag_gain:=0 sag_log_dir:=/home/dev/recordings/gain_test
     rosrun arm_grasp gain_sweep.py --azimuth 0 --log-dir /home/dev/recordings/gain_test            # dry runs only: lists the points, nothing moves, no gain written
     rosrun arm_grasp gain_sweep.py --azimuth 0 --log-dir /home/dev/recordings/gain_test --go       # the real sweep (e-stop in reach, the area under every point clear)
+    ... --no-marker --floor-z -0.596       # without a camera: points at fixed base coordinates (start the stack with camera:=false target:=false)
 
 The values are heuristic and ascend: the sweep stops at the first sign of trouble. The conversion of the register to a physical gain is not verified here.
 """
 import argparse
 import glob
+import threading
 import json
 import os
 import sys
@@ -25,9 +27,11 @@ import numpy as np
 import rospy
 import tf2_ros
 from sensor_msgs.msg import JointState
+from geometry_msgs.msg import TransformStamped
 from std_srvs.srv import Trigger
 
 import sag_test as st
+from arm_grasp import grasp_plan as gp
 from arm_grasp import sag_model as sm
 from arm_grasp import target_offset as to
 from arm_grasp.srv import Grasp
@@ -78,6 +82,33 @@ def hold_check(seconds, max_std_deg, max_load, max_temp):
     return True, text
 
 
+class FixedTarget(object):
+    """--no-marker: publishes the `grasp_target` frame (base_link) itself, at a fixed point of the base frame, with the frame of the approach angle
+    (target_offset.angled_frame) and the current time stamp, so the sequencer's freshness check passes. Replaces marker_0 + the grasp_target node."""
+
+    def __init__(self, angle):
+        self.angle, self.p, self.lock = angle, None, threading.Lock()
+        self.br = tf2_ros.TransformBroadcaster()
+        threading.Thread(target=self.loop, daemon=True).start()
+
+    def set(self, p):
+        with self.lock:
+            self.p = np.array(p, float)
+
+    def loop(self):
+        while not rospy.is_shutdown():
+            with self.lock:
+                p = None if self.p is None else self.p.copy()
+            if p is not None:
+                m = TransformStamped()
+                m.header.stamp, m.header.frame_id, m.child_frame_id = rospy.Time.now(), "base_link", "grasp_target"
+                m.transform.translation.x, m.transform.translation.y, m.transform.translation.z = [float(v) for v in p]
+                q = gp.quaternion_from_matrix(to.angled_frame(p, self.angle))
+                m.transform.rotation.x, m.transform.rotation.y, m.transform.rotation.z, m.transform.rotation.w = q
+                self.br.sendTransform(m)
+            rospy.sleep(0.1)
+
+
 def read_rows(log_dir, since):
     rows = []
     for f in sorted(glob.glob(os.path.join(log_dir, "sag_*.jsonl"))):
@@ -115,6 +146,8 @@ def main():
     ap.add_argument("--max-std-deg", type=float, default=0.3)
     ap.add_argument("--max-load", type=float, default=80.0)
     ap.add_argument("--max-temp", type=float, default=70.0)
+    ap.add_argument("--no-marker", action="store_true", help="no marker_0 (no camera): the points are fixed in the base frame at --floor-z + height and this script publishes the target frame")
+    ap.add_argument("--floor-z", type=float, default=-0.605, help="with --no-marker: the floor z in base_link [m] (the lab floor was measured at -0.596, -0.605 and -0.646)")
     ap.add_argument("--go", action="store_true", help="WRITE THE GAINS AND MOVE THE ARM (without it: dry runs only)")
     a, _ = ap.parse_known_args(rospy.myargv()[1:])
     values = [int(v) for v in a.values.split(",")]
@@ -130,11 +163,14 @@ def main():
     if a.go and os.path.realpath(rospy.get_param("/grasp_sequencer/sag_log_dir", "")) != os.path.realpath(a.log_dir):
         print("the sequencer logs to %s, not %s: start it with sag_log_dir:=%s" % (rospy.get_param("/grasp_sequencer/sag_log_dir", "?"), a.log_dir, a.log_dir))
         return 1
-    m = st.wait_marker(buf, 10.0)
-    if m is None:
-        print("marker_0 is not in view: put the arm in the viewing pose first")
-        return 1
-    points = sm.grid_points(a.azimuth, [float(v) for v in a.radii.split(",")], [float(v) for v in a.heights.split(",")], m[0][2])
+    fixed = FixedTarget(a.angle) if a.no_marker else None
+    if not a.no_marker:
+        m = st.wait_marker(buf, 10.0)
+        if m is None:
+            print("marker_0 is not in view: put the arm in the viewing pose first (or use --no-marker)")
+            return 1
+    floor_z = a.floor_z if a.no_marker else m[0][2]
+    points = sm.grid_points(a.azimuth, [float(v) for v in a.radii.split(",")], [float(v) for v in a.heights.split(",")], floor_z)
     print("%d points x %d repeats x %d gain values; approach %.0f deg; %s" % (len(points), a.repeats, len(values), a.angle, "WRITING GAINS AND MOVING THE ARM" if a.go else "dry runs only"))
     results = []
     status = 0
@@ -159,13 +195,17 @@ def main():
                             print(tag, "cannot go to the viewing pose:", res.message); status = 4; raise StopIteration
                         rospy.sleep(2.0)
                         st.wait_state(("IDLE", "DONE", "ABORTED"), 5.0)
-                    m = st.wait_marker(buf, 40.0)
-                    if m is None:
-                        print(tag, "marker_0 not seen: stopping"); status = 5; raise StopIteration
-                    offset = to.vertical_frame(m[1]).T.dot(p - m[0])
-                    rospy.set_param("/grasp_target/approach", "%g" % a.angle)
-                    rospy.set_param("/grasp_target/offset", [float(v) for v in offset])
-                    rospy.sleep(3.0)
+                    if fixed is not None:
+                        fixed.set(p)
+                        rospy.sleep(1.5)
+                    else:
+                        m = st.wait_marker(buf, 40.0)
+                        if m is None:
+                            print(tag, "marker_0 not seen: stopping"); status = 5; raise StopIteration
+                        offset = to.vertical_frame(m[1]).T.dot(p - m[0])
+                        rospy.set_param("/grasp_target/approach", "%g" % a.angle)
+                        rospy.set_param("/grasp_target/offset", [float(v) for v in offset])
+                        rospy.sleep(3.0)
                     dry = grasp(target_frame="grasp_target", dry_run=True, probe=False)
                     if not dry.success:
                         print("%-28s SKIPPED: %s" % (tag, dry.message[:100])); continue
