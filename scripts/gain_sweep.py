@@ -251,7 +251,7 @@ def residual(r):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--azimuth", type=float, required=True)
-    ap.add_argument("--values", default="0,16,32,64,128,256,512,0", help="I-gain values in order; the last 0 repeats the baseline to show drift")
+    ap.add_argument("--values", default="16,32,64,128,256,512", help="I-gain values in order (add a 0 yourself when a baseline is wanted); the gain is reset to 0 once, when the sweep ends or aborts")
     ap.add_argument("--radii", default="0.46,0.52")
     ap.add_argument("--heights", default="0.07,0.09", help="grasp-point heights above the floor [m]")
     ap.add_argument("--angle", type=float, default=45.0)
