@@ -241,3 +241,26 @@ The sequencer's measurement settle was raised from 0.8 to 10 s (`correction_sett
 - **Oscillation and load:** joint 2 oscillates a little at I = 16 to 64 while holding (std 0.2 to 0.4 deg, 0.02 to 0.04 deg at I = 96 and 128, baseline 0.01 to 0.05), worst load 49 to 56 %; the hottest motor rose from 43 to 54 C during the 40-minute run (joint 2, extended poses held for 10 s per leg).
 - **Not tested, and the main risk of using it:** with an integrator in the motors, any contact (descent onto a plant or the floor, the closed gripper on a stem, a lift against the root) makes the torque grow while the position error persists, up to the overload shutdown (0x20 on joints 2 and 4 has already happened); a grasp holds each pose for seconds, not tens of seconds; the effect with a gripped plant, other azimuths and heights, and the thermal behaviour in long operation were not measured. The feed-forward model has none of these problems and is already in the loop.
 - **Conclusion:** keep the feed-forward model for grasping. An integral gain gives a better steady-state accuracy (1.5 to 2.5 mm) only for a pose held several seconds (I >= 64 for 10 s, I = 128 for 3 s); a combination (model for the transient, a small I for the slow residual) is untested and the model's offset would be partly removed by the integrator, so it would need to be re-fitted with I on.
+
+### Rerun from scratch with a 5 s settle (2026-10-19, after the supply repair)
+
+New run, no data reused: master 11313, no camera (fixed target frame, floor z -0.596 m), motors cooled to 46 C before every value, sequencer `correction_settle` 5 s, no sag model, no correction, azimuth 0, 45 degree approach, radii 0.46 / 0.52 m, heights 7 / 9 cm, 4 probes per value; the residual is read from the recorded end-effector track at 0.3 to 5 s after arrival. Raw files: `recordings/gain_test5/`. All ten values completed, no abort (joint 2 hold std 0.0 to 0.04 deg at every value, hottest motor 42 to 48 C). Mean residual norm over PRE, GRASP and LIFT, mm:
+
+| I gain | 0.3 s | 0.8 s | 1.5 s | 3 s | 5 s | PRE / GRASP / LIFT at 5 s |
+|---|---|---|---|---|---|---|
+| 0 | 18.3 | 17.9 | 18.1 | 18.1 | 18.1 | 26.9 / 7.7 / 19.7 |
+| 4 | 17.1 | 16.9 | 17.3 | 17.2 | 16.9 | 30.3 / 8.1 / 12.4 |
+| 8 | 19.1 | 19.0 | 18.5 | 18.4 | 17.5 | 33.2 / 9.1 / 10.2 |
+| 16 | 18.4 | 17.9 | 17.1 | 15.9 | 14.9 | 28.3 / 4.7 / 11.6 |
+| 32 | 18.5 | 17.1 | 16.5 | 13.2 | 10.8 | 21.7 / 2.8 / 8.0 |
+| 48 | 18.3 | 16.7 | 14.1 | 11.2 | 8.2 | 15.6 / 2.7 / 6.2 |
+| 64 | 16.3 | 15.1 | 12.6 | 8.7 | 4.2 | 9.3 / 1.3 / 1.9 |
+| 96 | 13.7 | 11.6 | 9.4 | 5.2 | 2.7 | 5.6 / 1.1 / 1.4 |
+| 128 | 11.5 | 8.9 | 6.7 | 4.2 | 2.2 | 2.7 / 1.1 / 2.7 |
+| 0 (repeat, end) | 17.0 | 17.0 | 16.8 | 16.9 | 16.7 | 26.6 / 4.9 / 18.6 |
+
+- I 0: the error does not change with time (17 to 18 mm); the two baselines agree.
+- I 4 to 16: no real improvement within 5 s (15 to 17.5 mm at 5 s); PRE gets worse (26.9 mm at I 0, up to 33.2 mm at I 8) while LIFT improves.
+- I 64: 4.2 mm at 5 s (LIFT 1.9 mm). I 96 and 128: 2.7 and 2.2 mm at 5 s; I 128 is at 4.2 mm after 3 s. For comparison the feed-forward model gives 4.9 mm at 0.8 s with no waiting; at 0.8 s the best I value (128) is at 8.9 mm.
+- The earlier long-settle and 0.8 s runs agree with these curves (for example I 96 at 5 s: 3.5 mm then, 2.7 mm now; I 128 at 5 s: 2.0 then, 2.2 now). The one-time oscillation above 1.0 deg at I 128 (58 C, joint 2) did not reproduce here with the motors cooled to 46 C.
+- Not in this run: the model, the correction loop, a gripped plant, other azimuths. The 0.8 s comparison with both is in the section above (I 128 + correction loop: 4.0 mm; model + corrections: 4.5 mm).
