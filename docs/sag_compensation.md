@@ -120,3 +120,24 @@ Question: can an integral term in the motors' position loop remove the sag inste
 - Likely cause (a hypothesis, not tested): the probe measures 0.8 s after each move, long before the integrator has converged, and it carries the state of the previous pose (the viewing pose and PRE need different torques than LIFT), so the effect depends on the order and timing of the legs, not on the pose alone. A real steady-state test needs a settle of several seconds per leg.
 - The baseline repeat agrees with the first one (LIFT 20.2 / 20.2, GRASP 7.3 / 6.9, PRE 27.9 / 29.4 mm), so the differences above are not drift.
 - Conclusion: an integral gain in the motors is not a replacement for the feed-forward model (8.0 mm mean on the validated range). Limits: one azimuth, 4 points per value, uniform I on joints 1 to 5, no per-joint split (the loaded MX-106 joints 2 and 3 oscillate first), settle time of 0.8 s.
+
+### Second run, larger I values (2026-10-19, oscillation limit raised from 0.30 to 1.0 deg, a 2 s hold check before every probe point)
+
+Same set-up (azimuth 0, 4 points, 45 degrees, no sag model, no correction, 0.8 s settle). All nine values completed, no abort. Residual norm to the waypoint, mm, mean of 4 points (components radial / vertical in brackets):
+
+| I gain | PRE | GRASP | LIFT | mean of the three | joint 2 std while holding | worst load |
+|---|---|---|---|---|---|---|
+| 0 | 29.0 (28.8 / +2.7) | 6.2 (-2.3 / -4.1) | 21.3 (4.3 / -20.1) | 18.8 | 0.04 deg | 53 % |
+| 16 | 42.0 (37.3 / +19.0) | 9.9 | 9.5 | 20.5 | 0.43 deg | 58 % |
+| 24 | 44.3 (38.9 / +21.0) | 9.7 | 8.8 | 20.9 | 0.19 deg | 55 % |
+| 32 | 44.0 (38.8 / +20.6) | 7.8 | 8.6 | 20.1 | 0.28 deg | 54 % |
+| 48 | 41.1 (36.7 / +18.3) | 4.1 | 8.1 | 17.8 | 0.39 deg | 60 % |
+| 64 | 36.2 (32.8 / +15.2) | 4.2 | 8.0 | 16.1 | 0.31 deg | 56 % |
+| 96 | 29.2 (27.0 / +11.1) | 5.3 | 6.9 | 13.8 | 0.37 deg | 57 % |
+| 128 | 21.8 (20.5 / +7.4) | 4.7 (-4.5 / -1.0) | 4.9 (-2.2 / -4.3) | **10.5** | 0.11 deg | 57 % |
+| 0 (repeat, end) | 29.4 | 6.8 | 22.1 | 19.4 | 0.09 deg | 11 % |
+
+- Together with the first run (I = 2 to 12, mean 17.5 to 19.2 mm) the curve is **not monotone**: up to I = 32 the mean stays at or above the I = 0 value (the arm is pushed up at PRE and GRASP while LIFT improves), and from I = 48 it falls steadily to 10.5 mm at 128 (LIFT 21.3 -> 4.9, GRASP 6.2 -> 4.7, PRE 29.0 -> 21.8 mm). The tangential residual (joint 1) is 0 at every value. The baselines at the start and the end agree (18.8 / 19.4 mm).
+- Hypothesis (not tested): with a larger gain the integrator converges inside the 0.8 s settle, so the measured residual approaches the true steady state; with a small gain it is a partial, history-dependent state.
+- Joint 2 (MX-106) shows a small oscillation at every I > 0 (std 0.1 to 0.4 deg, 2 to 10 times the baseline) without a trend with the gain; its worst load stays at 54 to 60 %. The hottest motor rose from 54 to 58 C during the run.
+- Not yet answered: whether the improvement continues above 128 (the register allows 16383, the driver caps at 1000), the steady state after a longer settle, the behaviour with a gripped plant, repeatability over more points and azimuths, and the effect on motor temperature and wear in long operation. At I = 128 the mean error (10.5 mm) is close to the feed-forward model's 8.0 mm, with no model and no fit.

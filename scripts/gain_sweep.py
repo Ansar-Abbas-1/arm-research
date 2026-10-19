@@ -195,6 +195,9 @@ def main():
                             print(tag, "cannot go to the viewing pose:", res.message); status = 4; raise StopIteration
                         rospy.sleep(2.0)
                         st.wait_state(("IDLE", "DONE", "ABORTED"), 5.0)
+                        ok, text = hold_check(2.0, a.max_std_deg, a.max_load, a.max_temp)       # the gain may build an oscillation up over time: look again before every probe
+                        if not ok:
+                            print("%-28s %s" % (tag, text)); status = 3; raise StopIteration
                     if fixed is not None:
                         fixed.set(p)
                         rospy.sleep(1.5)
