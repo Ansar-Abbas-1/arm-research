@@ -264,3 +264,26 @@ New run, no data reused: master 11313, no camera (fixed target frame, floor z -0
 - I 64: 4.2 mm at 5 s (LIFT 1.9 mm). I 96 and 128: 2.7 and 2.2 mm at 5 s; I 128 is at 4.2 mm after 3 s. For comparison the feed-forward model gives 4.9 mm at 0.8 s with no waiting; at 0.8 s the best I value (128) is at 8.9 mm.
 - The earlier long-settle and 0.8 s runs agree with these curves (for example I 96 at 5 s: 3.5 mm then, 2.7 mm now; I 128 at 5 s: 2.0 then, 2.2 now). The one-time oscillation above 1.0 deg at I 128 (58 C, joint 2) did not reproduce here with the motors cooled to 46 C.
 - Not in this run: the model, the correction loop, a gripped plant, other azimuths. The 0.8 s comparison with both is in the section above (I 128 + correction loop: 4.0 mm; model + corrections: 4.5 mm).
+
+### The integral gain against the sag model's compensation values (2026-10-19)
+
+Per leg and component (arm frame at the waypoint azimuth, mm, measured - waypoint; radial / tangential / vertical). "Model sag" is what the model stores and cancels (`config/sag_model.json`, mean of 36 to 37 free-air samples at 45 degrees, grasp heights, azimuths -40 to +40; std in brackets); "raw" is the I 0 run of the 5 s sweep (azimuth 0, radii 0.46 / 0.52 m, heights 7 / 9 cm, mean of the two baselines); the integral columns are the sag removed, raw minus the residual left, at 5 s after arrival; "model residual" is the 0.8 s run of the model on the same grid (`compare_methods.py`).
+
+| leg | model sag (stored) | raw sag today | removed by I 64 | removed by I 96 | removed by I 128 | residual of the model at 0.8 s |
+|---|---|---|---|---|---|---|
+| PRE radial | +29.9 (5.2) | +26.4 | 17.7 | 21.2 | 24.0 | 2.4 |
+| PRE tangential | -12.0 (1.2) | -2.6 | -2.4 | -2.6 | -2.6 | -0.6 |
+| PRE vertical | +1.8 (0.7) | +2.3 | -0.9 | 0.3 | 1.3 | 1.1 |
+| GRASP radial | +0.5 (2.4) | +2.8 | 4.0 | 3.5 | 3.6 | -2.2 |
+| GRASP tangential | -13.1 (1.3) | -2.8 | -2.8 | -2.8 | -2.8 | -0.7 |
+| GRASP vertical | -4.5 (1.2) | -3.4 | -3.3 | -3.0 | -3.0 | 0.0 |
+| LIFT radial | -0.9 (5.0) | +1.2 | 2.5 | 2.0 | 2.9 | 1.4 |
+| LIFT tangential | -13.1 (1.2) | -2.7 | -2.7 | -2.7 | -2.7 | -0.8 |
+| LIFT vertical | -22.6 (4.3) | -18.1 | 17.4 | 18.3 | 18.2 | 0.8 |
+
+(A removed value of the same sign as the raw sag means the error was reduced by that amount; a vertical raw error of -18.1 mm removed by 18.2 mm leaves +0.1 mm.)
+
+- **The integral term removes the same quantities the model stores.** At I 128 (5 s) it cancels 24.0 of the 26.4 mm of PRE radial sag, 18.2 of the 18.1 mm of LIFT vertical sag and the 3 mm of GRASP vertical sag; the model, at 0.8 s, cancels 22.8 / 19.7 / 4.2 mm of the corresponding raw values of its own run. Both therefore act on the gravity sag of the arm (PRE: joint 2 and 3 torque at the extended pose; LIFT: the lift along the vertical), and both leave 1 to 3 mm.
+- **Differences in how.** The model subtracts a fixed mean per leg and approach angle (its std is 1 to 5 mm over the fitted radius and height range) at once, with no waiting, but is blind outside the fitted range and was not measured at other azimuths for the tangential part. The integral term cancels the actual steady-state error of the pose it is in (radius, height, azimuth, payload) but needs time: the PRE error is 23 mm at 0.3 s and 18 mm at 0.8 s for I 128 and reaches 2.7 mm only after 5 s, while LIFT is at 5 mm at 0.8 s and GRASP at 3.6 mm.
+- **Tangential component.** The model stores -12 / -13 / -13 mm (joint 1, signed by its travel and applied with a flagged gain of 0.5); at azimuth 0 the measured tangential error is only -2.6 to -2.8 mm, and the integral term removes all of it (0.0 mm for I 16 and above). The tangential error is therefore not a gravity effect (joint 1 carries no gravity torque) but a position-loop dead-band or friction offset that the integrator takes out and the travel-signed model cannot.
+- **Gaps in this comparison.** Both columns use the same grid at azimuth 0 only (radii 0.46 / 0.52 m); the left-side grasps (radius up to 0.66 m) where the model's fixed PRE offset over-compensated were not repeated with the integral gain, so whether it adapts there is untested; the integral and the model were not combined; "removed" values come from means of 4 to 8 probes.
