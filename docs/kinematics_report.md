@@ -676,6 +676,31 @@ $$c_{k+1}+s=(1-\gamma)(c_k+s)$$
 
 **Results.** Free air, 45 probes at azimuths −40, 0, +40°, grasp heights 5–9 cm: raw error 23.6 mm (PRE ≈31, LIFT ≈26, GRASP 10–15), 8.0 mm with the deployed model, 5.3 mm with the full tangential part; held-out validation PRE 4.7, GRASP 3.1, LIFT 8.5 mm *(H)*. Real grasps at azimuth 73–110° (§22) agree for GRASP (7.7 mm with the model, 20.0 mm without).
 
+**Motor integral gain: can the servo loop absorb the sag?** The sag of §20 is a steady-state error of the motors' position loop, so an integral term in the loop should remove it. With a joint as a rigid body of inertia $J$ held by a servo with proportional gain $K_p$ (the motors run $P=850$, $I=0$, $D=0$; register values, not SI), a constant gravity torque $\tau_g$ at the joint leaves the error $e_{ss}=\tau_g/K_p$, which is the sag *(derived)*. Adding an integral term $K_i\int e\,dt$ and a derivative term $K_d$ gives, for a load step $\tau_g/s$,
+$$e(s)=\frac{-\,s\,\tau_g/s}{Js^3+K_ds^2+K_ps+K_i}\ \Rightarrow\ \lim_{t\to\infty}e(t)=\lim_{s\to0}s\,e(s)=\lim_{s\to0}\frac{-s\,\tau_g}{K_i+K_ps+\dots}=0 ,$$
+so the steady error vanishes (final-value theorem), valid while the closed loop is stable: for $Js^3+K_ds^2+K_ps+K_i$ the Routh condition is $K_pK_d>JK_i$ *(derived; rigid joint, no friction, backlash or motor current loop)*. For $K_i\ll K_p$ the slowest pole is near $-K_i/K_p$, so the settling time constant is about $K_p/K_i$: it falls as the gain rises, while a large $K_i$ erodes the stability margin. The conversion of the motors' $I$ register to a physical gain was not verified, so the gains below are register values.
+
+*Experiment (H, 2026-10-19).* The Position I gain (register 82, RAM, joints 1 to 5, never the gripper) was written through a new driver service and the free-air probe of the sag study was repeated: azimuth 0, 45 degrees, radii 0.46 and 0.52 m, heights 7 and 9 cm, 4 points per value, sag model and correction loop off, motors cooled to 46 C before each value, the end-effector error read from the recorded track $t$ seconds after the arm reached each of PRE, GRASP and LIFT. Mean residual to the waypoint over the three legs, mm:
+
+| I gain (register) | 0.8 s after arrival | 5 s after arrival |
+|---|---|---|
+| 0 | 17.3 | 17.0 |
+| 8 | 19.0 | 17.5 |
+| 16 | 17.9 | 14.9 |
+| 32 | 17.1 | 10.8 |
+| 64 | 15.1 | 4.2 |
+| 96 | 11.6 | 2.7 |
+| 128 | 8.9 | 2.1 |
+| 256 | 4.7 | 1.6 |
+| 512 | 1.6 | 1.1 |
+
+For comparison at 0.8 s (the settle of the grasp sequence), same grid: raw 16.6, feed-forward model 4.9, correction loop alone 10.0, model plus correction loop 4.5, I 128 plus correction loop 4.0 mm.
+
+- **Small gains do nothing within a few seconds.** Up to $I=16$ the error at 5 s is 15 to 17.5 mm (PRE even gets worse, 27 to 33 mm, while LIFT improves): the integrator carries the torque of the previous pose and first pushes the wrong way. A single-exponential fit of the 5-point curves gives a time constant of about 2.5 s at $I=64$, 1.8 s at 128 and 1 s at 256 *(heuristic, rough)*; a 10 s run reached the same floor of about 1.5 mm for $I=64$ to $128$ (2.5, 1.5 and 1.7 mm).
+- **What it removes matches the sag model.** At $I=128$ (5 s) it cancels 24.0 of the 26.4 mm of PRE radial sag and 18.2 of the 18.1 mm of LIFT vertical sag (the model stores +29.9 and -22.6 mm). It also removes the 2.6 to 2.8 mm tangential error of joint 1, which is not gravity but a position-loop offset that the model's travel-signed offset cannot remove.
+- **Cost and limits.** Accuracy comparable to or better than the model needs a large gain: $I=256$ reaches the model's 4.9 mm at 0.8 s and $I=512$ reaches 1.6 mm. The stability margin shrinks with the gain: joints 2 and 3 (MX-106) showed a small oscillation at every non-zero gain in warm runs (position std 0.1 to 0.4 deg) and once 1.09 deg at 58 C ($I=128$); with the motors cooled to 46 C no value up to 256 oscillated (0.00 to 0.04 deg), and at 512 the wrist joints 4 and 5 reached 0.37 and 0.23 deg (the abort limit used was 1.0 deg). Not tested: values above 512, a gripped plant, other azimuths and radii, hot motors, longer holds (heating and wear), and the integral gain together with the model.
+- **Status.** Measurements of one session, 4 probes per value. The integral gain was not adopted in the grasp pipeline, which still uses the feed-forward model with the correction loop.
+
 ## 21. Behavior tree, gripper control and mission control
 
 **Behavior tree.** The sequence is a py_trees tree (`grasp_tree.py`, ROS-free, tested with a fake context) under a guard decorator that, on a stop request or an engaged/unknown e-stop, cancels the running leaf:
@@ -722,6 +747,7 @@ with key = (plant, offset, approach, bias, height). One dry run releases one go;
 | 6 | safety | e-stop aborts at the far targets are not attributed (operator press or driver report); the first real return swing of 90° with a plant, and the rviz/rqt panels, were exercised only in this session |
 | 7 | camera | the USB webcam drops off the bus occasionally (restart `camera.launch device:=`); the marker is hidden while the gripper holds a plant, so the plant must be released before the next refresh |
 | 8 | bringup | respawn restarts the sequencer idle (a run is aborted; the driver holds) and the gripper node without regulation (jaws stay); the driver is never respawned by default |
+| 9 | motor integral gain | measured in free air only (section 20): removes the sag after a wait, I 256 to 512 matches or beats the model at 0.8 s; stability at higher gains, a gripped plant, other poses and long-hold heating are open; not used in the pipeline |
 
 ---
 
