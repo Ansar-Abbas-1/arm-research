@@ -302,3 +302,19 @@ Same set-up as the 5 s rerun (master 11313, no camera, cool-down to 46 C, no mod
 - Doubling the gain roughly halves the settling time: at 0.8 s I 256 gives 4.7 mm, level with the feed-forward model (4.9 mm at 0.8 s, no waiting), against 8.9 mm for I 128 and 17.3 mm for I 0; at 3 s it is 1.9 mm. The PRE error at 0.3 s falls from 27 (I 0) to 23.4 (I 128) and 10.4 mm (I 256).
 - I 128 reproduces the earlier run (2.1 mm at 5 s now, 2.2 mm before) and the two baselines agree (17.0 and 16.5 mm).
 - Stability: joint 2 hold std 0.00 to 0.01 deg at I 256 (limit 1.0 deg), load 3 %. The motors stayed at 46 to 48 C (cool-down between values), so this is not a hot-motor test.
+
+### I = 512 (2026-10-19, 5 s settle)
+
+Same set-up as the I 256 run (same stack session, motors cooled to 46 C first, no model, no correction, azimuth 0, 4 probes), I 512 alone; the gain was reset to 0 at the end. Raw file: `recordings/gain_test5/gain_sweep_20261019_143955.json`. No abort. Mean residual norm over PRE, GRASP and LIFT, mm:
+
+| I gain | 0.3 s | 0.8 s | 1.5 s | 3 s | 5 s | PRE / GRASP / LIFT at 5 s |
+|---|---|---|---|---|---|---|
+| 512 | 2.3 | 1.6 | 1.4 | 1.1 | 1.1 | 1.5 / 0.5 / 1.4 |
+| (256, previous run) | 5.6 | 4.7 | 3.1 | 1.9 | 1.6 | 2.2 / 1.3 / 1.3 |
+| (128, previous run) | 11.5 | 8.9 | 6.2 | 3.7 | 2.1 | 2.4 / 1.4 / 2.4 |
+| (0, previous run) | 17.0 | 17.3 | 16.9 | 17.1 | 17.0 | 27.3 / 5.1 / 18.5 |
+
+- At 0.8 s, the time of the grasp sequence, I 512 leaves 1.6 mm against 4.9 mm for the feed-forward model and 17 mm without; the error is already 2.3 mm at 0.3 s and does not improve further after about 3 s (1.1 mm, the floor of the measurement and of the arm's repeatability).
+- The curve flattens: the error at 0.8 s is 8.9 / 4.7 / 1.6 mm for I 128 / 256 / 512, so each doubling roughly halves it until it reaches the floor.
+- **First sign of oscillation:** the hold check right after writing I 512 measured joints 4 and 5 (MX-28, the wrist) at a position std of 0.37 and 0.23 deg (limit 1.0 deg; at I 256 all joints were at 0.00 to 0.01 deg), joint 2 at 0.06 deg, worst load 18 %. This margin is untested for longer holds, hot motors, a gripped plant and other poses; the motors were at 46 C.
+- Not tested: values above 512 (the driver caps at 1000), a gripped plant, other azimuths and radii, the combination with the model or the correction loop.
