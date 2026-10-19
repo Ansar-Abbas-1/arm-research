@@ -26,6 +26,7 @@
 #include "arm_interface/drive_state.h"
 #include "arm_interface/goal_slew.h"
 #include "arm_interface/motor_health.h"
+#include "arm_interface/position_gains.h"
 
 
 class DynamixelArmInterface {
@@ -53,6 +54,10 @@ public:
         joint_out_sub_ = nh_.subscribe("/joint_states_out", 10, &DynamixelArmInterface::jointStatesOutCb, this);
         reenable_srv_ = nh_.advertiseService("/arm_interface/reenable_failed_motors", &DynamixelArmInterface::handleReenableMotors, this);
         set_torque_srv_ = nh_.advertiseService("/arm_interface/set_torque", &DynamixelArmInterface::handleSetTorque, this);
+        // Position-loop gains of the motors (RAM only), set from the parameters ~position_i_gain (and ~position_p_gain /
+        // ~position_d_gain when ~allow_pd_gain_write): `rosparam set /arm_interface/position_i_gain "[64,64,64,64,64,-1]"`
+        // then call this service; -1 = leave a joint alone. Refused while the e-stop is latched; the gripper is never written.
+        apply_gains_srv_ = nh_.advertiseService("/arm_interface/apply_position_gains", &DynamixelArmInterface::handleApplyGains, this);
         // Software e-stop (docs/sim_to_real.md section 15): latched "hold
         // in place", applied by the control loop. Service = blocking with a
         // real result; the Empty topic is the fire-and-forget path (e.g.
@@ -1131,6 +1136,62 @@ private:
 
     // Both directions are executed by the control loop (the single owner of
     // the drive state), and this call waits for the real outcome.
+    // Writes the position gains named by the parameters (see apply_gains_srv_) and reports every motor's P/I/D as read back afterwards.
+    bool handleApplyGains(std_srvs::Trigger::Request&, std_srvs::Trigger::Response& res) {
+        if (estop_.latched()) {
+            res.success = false;
+            res.message = "E-stop is latched: gain writes refused. Call /arm_interface/estop_reset first.";
+            return true;
+        }
+        ros::NodeHandle pnh("~");
+        arm_interface::GainLimits limits;
+        pnh.param("max_i_gain", limits.max_i, limits.max_i);
+        pnh.param("allow_pd_gain_write", limits.allow_pd, limits.allow_pd);
+        arm_interface::GainRequest req;
+        pnh.getParam("position_p_gain", req.p);
+        pnh.getParam("position_i_gain", req.i);
+        pnh.getParam("position_d_gain", req.d);
+        const std::string why = arm_interface::ValidateGains(req, dxl_ids_.size(), limits);
+        if (!why.empty()) {
+            res.success = false;
+            res.message = "Gain write refused: " + why;
+            return true;
+        }
+        bool ok = true;
+        std::string message;
+        std::lock_guard<std::mutex> lock(port_mutex_);
+        const struct { const char* name; int addr; const std::vector<int>* values; } regs[] = {
+            {"P", addr_position_p_gain_, &req.p}, {"I", addr_position_i_gain_, &req.i}, {"D", addr_position_d_gain_, &req.d}};
+        for (const auto& reg : regs) {
+            for (size_t i = 0; i < dxl_ids_.size(); ++i) {
+                const int value = arm_interface::GainFor(*reg.values, i);
+                if (value == arm_interface::kGainUnchanged) continue;
+                uint8_t dxl_error = 0;
+                const int result = packetHandler_->write2ByteTxRx(portHandler_, dxl_ids_[i], reg.addr, static_cast<uint16_t>(value), &dxl_error);
+                if (result != COMM_SUCCESS || dxl_error != 0) {
+                    ok = false;
+                    message += std::string("joint ") + std::to_string(i + 1) + " " + reg.name + " write failed (" + packetHandler_->getTxRxResult(result) + "); ";
+                } else {
+                    ROS_WARN("Position %s gain of joint %zu (motor %d) set to %d (RAM).", reg.name, i + 1, dxl_ids_[i], value);
+                }
+            }
+        }
+        message += "read back (P/I/D): ";
+        for (size_t i = 0; i < dxl_ids_.size(); ++i) {
+            uint16_t p = 0, in = 0, d = 0;
+            const bool read_ok = packetHandler_->read2ByteTxRx(portHandler_, dxl_ids_[i], addr_position_p_gain_, &p, nullptr) == COMM_SUCCESS &&
+                                 packetHandler_->read2ByteTxRx(portHandler_, dxl_ids_[i], addr_position_i_gain_, &in, nullptr) == COMM_SUCCESS &&
+                                 packetHandler_->read2ByteTxRx(portHandler_, dxl_ids_[i], addr_position_d_gain_, &d, nullptr) == COMM_SUCCESS;
+            ok = ok && read_ok;
+            message += "j" + std::to_string(i + 1) + (read_ok ? " " + std::to_string(p) + "/" + std::to_string(in) + "/" + std::to_string(d) : " ?") + "; ";
+            const int want = arm_interface::GainFor(req.i, i);
+            if (read_ok && want != arm_interface::kGainUnchanged && in != want) ok = false;
+        }
+        res.success = ok;
+        res.message = message;
+        return true;
+    }
+
     bool handleSetTorque(std_srvs::SetBool::Request& req, std_srvs::SetBool::Response& res) {
         if (estop_.latched()) {
             // Disabling torque would drop the lock (the arm falls); enabling
@@ -1177,6 +1238,7 @@ private:
     ros::Subscriber joint_out_sub_;
     ros::ServiceServer reenable_srv_;
     ros::ServiceServer set_torque_srv_;
+    ros::ServiceServer apply_gains_srv_;
     ros::ServiceServer estop_srv_;
     ros::ServiceServer estop_reset_srv_;
     ros::Subscriber estop_trigger_sub_;
@@ -1263,6 +1325,9 @@ private:
     double status_period_s_ = 0.5;
     bool estop_on_hardware_error_ = true;
     int addr_temperature_limit_ = 31;
+    int addr_position_d_gain_ = 80;   // Protocol 2.0 X/MX table, RAM, 2 bytes
+    int addr_position_i_gain_ = 82;
+    int addr_position_p_gain_ = 84;
     int addr_present_load_ = 126;
     int addr_present_voltage_ = 144;
     int addr_present_temperature_ = 146;

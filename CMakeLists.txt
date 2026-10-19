@@ -244,6 +244,7 @@ catkin_add_gtest(${PROJECT_NAME}-test-estop test/test_estop.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-drive-state test/test_drive_state.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-motor-status test/test_motor_status.cpp)
 catkin_add_gtest(${PROJECT_NAME}-test-motor-health test/test_motor_health.cpp)
+catkin_add_gtest(${PROJECT_NAME}-test-position-gains test/test_position_gains.cpp)
 
 ## Python tests (URDF vs. hardware encoder limits)
 catkin_add_nosetests(test/test_limits_consistent.py)
