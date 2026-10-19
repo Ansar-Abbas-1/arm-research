@@ -161,3 +161,22 @@ At 10 s, per leg (PRE / GRASP / LIFT, mm): I 0: 23.8 / 6.4 / 20.7; I 64: 3.9 / 2
 - **The earlier results were a settling effect.** The residual falls roughly exponentially toward about 1.5 mm and the time to get there shortens with the gain: with I 0 nothing changes in 10 s (the sag is a steady error of the P loop: PRE 23.8, LIFT 20.7 mm, radial and vertical), with I 128 the error is under 3 mm after 5 s on every leg. The non-monotone picture at 0.8 s (error above the baseline for I up to 32) is the transient: the integrator carries the torque of the previous pose and first pushes the arm the wrong way (PRE 41 to 45 mm at 0.3 s for I 16 to 64, against 24 mm at I 0), then converges.
 - Time constant, read from the table: about 5 s at I 64, 2 to 3 s at I 96, 1.5 to 2 s at I 128 (heuristic, from a 7-point curve). The speed is not "free": the transient at arrival is large with a small gain and shrinks as the gain grows (mean error at 0.3 s: 25 mm at I 32, 12 mm at I 128).
 - Not yet compared in the same session: the feed-forward model (8.0 mm mean at 0.8 s over the validated range, no waiting) and the correction loop (2 steps, trigger 10 mm); `scripts/compare_methods.py` runs raw, sag, corrections, sag + corrections, I 128 and I 128 + corrections on this grid at the deployed 0.8 s settle (`probe_corrections`: a probe whose correction loop re-aims, gripper untouched).
+
+### Comparison on one grid: raw, feed-forward model, correction loop, motor I gain (2026-10-19)
+
+`scripts/compare_methods.py`, free air, azimuth 0, 45 degree approach, radii 0.46 / 0.52 m, heights 7 / 9 cm, 2 repeats (8 probes per configuration), no camera (fixed target frame, floor z -0.596 m), the deployed measurement settle of 0.8 s, the gripper never commanded; the correction loop is the deployed one (2 steps, gain 0.7, trigger 10 mm), run inside the probe (`probe_corrections`). Residual norm to the waypoint, mm, mean of the 8 probes ("first" = at the first measurement, "final" = after the correction steps):
+
+| configuration | PRE first / final | GRASP first / final | LIFT first / final | mean of the three (final) |
+|---|---|---|---|---|
+| raw (no model, no correction, I 0) | 25.3 / 25.3 | 4.8 / 4.8 | 19.8 / 19.8 | 16.6 |
+| feed-forward model | 5.9 / 5.9 | 3.0 / 3.0 | 5.8 / 5.8 | **4.9** |
+| correction loop only | 26.4 / 8.8 | 20.0 / 14.7 | 16.0 / 6.4 | 10.0 |
+| model + correction loop (deployed) | 4.9 / 4.9 | 2.9 / 2.9 | 5.7 / 5.7 | **4.5** |
+| motor I gain 128, long settle (previous run, 5 s / 10 s) | 2.1 / 1.3 | 2.4 / 1.9 | 1.6 / 1.8 | 2.0 / 1.7 |
+| motor I gain 128 at 0.8 s (previous run) | 20.8 | 6.0 | 2.3 | 9.7 |
+
+- **The feed-forward model** takes the mean from 16.6 to 4.9 mm immediately, with no waiting. It is partly in-sample: the model was fitted on free-air probes that include azimuth 0 at these radii and heights.
+- **The correction loop alone is not enough and can hurt**: it learns the PRE compensation (radial -25 mm) and carries it to the later legs, but the sag differs per leg (GRASP has almost none, LIFT is vertical), so the GRASP first measurement goes from 4.8 to 20.0 mm and two steps (gain 0.7) leave 14.7 mm. PRE (8.8 mm) and LIFT (6.4 mm) improve. It needs the model's per-leg offsets, which is how it is deployed.
+- **Model + correction loop** (deployed): the corrections never trigger here (0.0 steps on average, every residual is below the 10 mm trigger), so it equals the model alone (4.5 against 4.9 mm, within the spread). The loop only matters outside the model's validated range, as in the grasps at azimuth 73 to 110 degrees.
+- **Motor I gain**: the best error (1.3 to 1.9 mm per leg) but only after 3 to 5 s of settling, with a large transient (more than 20 mm at PRE after 0.3 s) and a stability margin that is thin on the loaded joints: in this run the hold check at I 128 measured joint 2 at std 1.09 deg (joints 3 to 5 0.2 to 0.5 deg), hottest motor 58 C, above the 1.0 deg limit, while the previous run at 54 C read 0.04 deg. The I 128 and I 128 + correction configurations of this comparison were therefore not measured.
+- Reading: for a grasp sequence (0.8 s per leg) the model + correction pipeline is the right choice; the motor integral gain would pay if the arm could wait several seconds per leg, or as a complement for the model's blind spots (the arm outside the fitted radius). Not tested: both together, I below 128 at 0.8 s with corrections, other azimuths, a gripped plant.
