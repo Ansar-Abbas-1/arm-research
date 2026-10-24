@@ -1,0 +1,13 @@
+# (served by gripper_control, defined here like PresetCommand: the rviz panel is the client.)
+# Changes the gripper's steady-state load target AT RUN TIME (the rviz panel slider calls it), also while the gripper is closing or holding: the load
+# PI moves to the new target at its own rate limit. The value is clamped to [0, load_target_max] (38.5 % by default, the operator's steady-state number;
+# the 45 % peak ceiling is NOT adjustable). contact_load (the slow-down level and the grip-lost level) follows the target. 0 = no squeeze: the grip is
+# relaxed to no load and loss detection is off. The change is not saved: a restart of gripper_control goes back to the launch / yaml value.
+# Sends nothing to the gripper by itself while IDLE; while HOLDING the regulation (already running) moves the jaws toward the new target.
+float64 load_target      # % of max torque
+---
+bool success             # false: refused (not a number)
+string message
+float64 load_target      # the target that was applied (after clamping)
+float64 contact_load     # the contact / grip-lost level that now goes with it
+float64 load_target_max  # the upper limit of the target
