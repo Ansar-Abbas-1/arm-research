@@ -1,0 +1,6 @@
+# Deployment profile of the object detector, loaded by bringup_detect.launch into /object_detector AFTER arm_perception/config/objects.yaml, so only the
+# values that differ from the package defaults belong here. Arguments model / device_ep / grasp_height of the launch file override these.
+model: /home/dev/models/vignax_small_v45A.onnx   # yolo26s-seg trained on the lab photos (2026-10-14), see arm_perception/docs/yolo_detector.md
+device: auto                    # onnxruntime provider: auto (CUDA when available) | cuda | cpu
+target_point: mask              # the aim point is the centroid of the segmentation mask (the box centre missed the stem by 3.9 cm)
+grasp_class: ""                 # no automatic grasp_target from the detector: Mission Control picks the plant nearest the gripper axis
