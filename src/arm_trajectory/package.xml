@@ -1,0 +1,41 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>arm_trajectory</name>
+  <version>0.0.0</version>
+  <description>Point-to-point joint-space and Cartesian-space trajectory generation for the 5-DOF arm, on top of arm_kinematics.</description>
+
+  <maintainer email="riccardo.aliotta.ra@gmail.com">Riccardo Aliotta</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>arm_kinematics</depend>
+  <depend>urdf</depend>
+  <depend>eigen</depend>
+  <depend>geometry_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <depend>trajectory_msgs</depend>
+  <depend>control_msgs</depend>
+  <depend>actionlib</depend>
+  <depend>actionlib_msgs</depend>
+  <depend>visualization_msgs</depend>
+  <depend>interactive_markers</depend>
+  <depend>rospy</depend>
+
+  <build_depend>message_generation</build_depend>
+  <exec_depend>message_runtime</exec_depend>
+
+  <!-- test-time: real arm_interface urdf/sim, headless rostest -->
+  <exec_depend>arm_interface</exec_depend>
+  <depend>arm_gui</depend>
+  <exec_depend>xacro</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+
+  <!-- interactive_reach.launch's optional rviz node (use_rviz:=true, the
+       default): not needed by any headless/test path above. -->
+  <exec_depend>rviz</exec_depend>
+
+  <test_depend>rostest</test_depend>
+  <test_depend>roslib</test_depend>
+</package>

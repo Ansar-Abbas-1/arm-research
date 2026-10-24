@@ -1,0 +1,32 @@
+<launch>
+  <!-- Headless integration test: /reach_target_pose against the real
+       simulator, exercising the full generate+execute+verify path this
+       branch's milestone adds. fk_node (arm_kinematics) is included
+       purely so the test can read a real, guaranteed-reachable target
+       pose off /computed_end_effector_pose rather than hand-computing
+       one: same "target from the sim's own TF/FK" pattern M2's own
+       rostest used. No rviz: needs a display, not available here. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+  <node name="reach_target_pose_node" pkg="arm_trajectory" type="reach_target_pose_node" />
+
+  <test test-name="reach_target_pose_test" pkg="arm_trajectory" type="reach_target_pose_test.py"
+        time-limit="90.0" />
+</launch>

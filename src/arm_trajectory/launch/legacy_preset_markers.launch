@@ -1,0 +1,35 @@
+<launch>
+  <!-- LEGACY, NOT ENABLED BY DEFAULT: the 3D version of the preset / e-stop / torque / motor controls (interactive
+       markers floating in the rviz scene), kept as a quirky alternative to the 2D "Arm Control" panel of arm_gui
+       that interactive_reach.launch and arm_camera/arm_with_camera.launch use. This starts the same arm stack
+       WITHOUT the preset backend and the panel, plus the marker node and an rviz config with the two marker
+       displays:
+
+         roslaunch arm_trajectory legacy_preset_markers.launch use_hardware:=true
+
+       How the markers work: legacy_preset_buttons_node.py documents it (two clicks to move, red E-STOP, torque
+       and motors buttons). Do not run it together with the panel's preset_manager: use this launch file instead
+       of interactive_reach.launch, not next to it. -->
+  <arg name="use_hardware" default="false"/>
+  <arg name="use_rviz" default="true"/>
+  <arg name="velocity_scale" default="1.0"/>
+  <arg name="max_joint_acceleration" default="$(eval 1.0 if arg('use_hardware') else 0.0)"/>
+  <arg name="preset_max_delta" default="3.2"/>
+
+  <include file="$(find arm_trajectory)/launch/interactive_reach.launch">
+    <arg name="use_hardware" value="$(arg use_hardware)"/>
+    <arg name="use_rviz" value="false"/>
+    <arg name="presets" value="false"/>
+    <arg name="velocity_scale" value="$(arg velocity_scale)"/>
+    <arg name="max_joint_acceleration" value="$(arg max_joint_acceleration)"/>
+  </include>
+
+  <node name="preset_buttons" pkg="arm_trajectory" type="legacy_preset_buttons_node.py" output="screen">
+    <rosparam command="load" file="$(find arm_trajectory)/config/presets.yaml"/>
+    <param name="max_delta" value="$(arg preset_max_delta)"/>
+  </node>
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find arm_trajectory)/rviz/legacy_preset_markers.rviz"/>
+  </group>
+</launch>

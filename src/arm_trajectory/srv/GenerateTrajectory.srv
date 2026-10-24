@@ -1,0 +1,33 @@
+# Start configuration. Empty: use the latest /joint_states_in.
+float64[] start_joint_positions
+
+# Goal type A -- joint-space (used if non-empty):
+float64[] goal_joint_positions
+
+# Goal type B -- Cartesian (used if goal_joint_positions is empty):
+geometry_msgs/Pose goal_pose
+# true: end-effector must trace the interpolated straight-line+SLERP path
+# from the start pose to goal_pose (per-sample IK, warm-started).
+# false: solve IK once for goal_pose, then a plain joint-space trajectory
+# to that solution -- use this when only the endpoint matters.
+bool cartesian_path
+
+float64 sample_rate  # Hz; 0 = default (50.0)
+---
+bool success
+# On failure (only possible cause: goal_pose/goal_joint_positions itself
+# isn't reachable) -- why. Never a partial/truncated trajectory.
+string message
+trajectory_msgs/JointTrajectory trajectory
+# cartesian_path only: worst-case interior-waypoint tracking residual.
+# This chain is 5-DOF over the 4D position+pitch task IK actually solves
+# (see arm_kinematics/docs/position_pitch_ik.md), so an arbitrary Cartesian
+# path is generally only approximately traceable -- interior samples are
+# best-effort and never fail the call, but a large value here means the
+# actual path deviated substantially from the requested straight
+# line+SLERP. 0 for a joint-space goal or cartesian_path=false.
+float64 peak_position_deviation     # meters
+# Full rotation-vector-norm residual, informational only -- only its
+# pitch-axis component is actually driven toward zero by IK (roll/yaw are
+# free); see arm_kinematics/docs/position_pitch_ik.md.
+float64 peak_orientation_deviation  # radians

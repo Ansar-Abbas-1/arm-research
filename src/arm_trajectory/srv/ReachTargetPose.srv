@@ -1,0 +1,34 @@
+# Thin, non-interactive entry point over the existing /generate_trajectory
+# service + follow_joint_trajectory action: generate a trajectory to
+# target_pose, execute it, wait for completion, and report where the arm
+# ACTUALLY ended up (not just "a trajectory was generated"). Synchronous --
+# blocks until the motion finishes or fails. See docs/trajectory_generation.md.
+
+geometry_msgs/Pose target_pose
+
+# false (default): solve IK once for target_pose, plain joint-space move.
+# true: trace the interpolated Cartesian path there (see
+# GenerateTrajectory.srv/docs/trajectory_generation.md for the tradeoffs --
+# best-effort interior tracking, slower to generate for a large move).
+bool cartesian_path
+
+float64 sample_rate  # Hz; 0 = trajectory_service_node's default
+---
+bool success
+# Failure reasons: target_pose unreachable (generation failed), the
+# follow_joint_trajectory goal was rejected/preempted/aborted mid-motion,
+# or (rare) the arm finished executing but ended up outside tolerance --
+# distinguished in the message text, not a separate field, since a caller
+# handles "didn't get there" the same way regardless of which of these it was.
+string message
+
+# Measured, not requested: FK(final /joint_states_in) vs target_pose, taken
+# after execution completes. This is what actually answers "did it get
+# there", independent of whether trajectory generation *claimed* success.
+float64 final_position_error     # meters
+# Pitch-axis-projected rotation error only (about the achieved pose's own
+# local Y axis) -- NOT the full 3D orientation angle. /generate_trajectory's
+# IK never enforces roll/yaw (mechanically irrelevant on this arm; see
+# arm_kinematics/docs/position_pitch_ik.md), so they're free and not part
+# of this check.
+float64 final_orientation_error  # radians
