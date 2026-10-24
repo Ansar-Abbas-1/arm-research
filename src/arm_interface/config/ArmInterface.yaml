@@ -1,0 +1,88 @@
+num_joints: 6
+
+device_name: /dev/ttyUSB0
+protocol_version: 2.0
+baudrate: 1000000
+
+debug: false
+debug_error: false
+threshold: 10.0
+
+addr_torque_enable: 64
+torque_enable: 1
+torque_disable: 0
+addr_goal_position: 116
+len_goal_position: 4
+addr_present_position: 132
+len_present_position: 4
+addr_hardware_error_status: 70
+len_hardware_error_status: 1
+command_timeout: 0.5
+
+
+dxl_resolution: 4096.0
+
+ids: [1, 2, 3, 4, 5, 6]
+bias: [1800.0, 3071.0, 2047.0, 300.0, 2570.0, 1354.0]
+sign: [1, -1, -1, 1, 1, 1]
+encoder_min: [0, 1023, 2047, 300, 180, 512]
+encoder_max: [3584, 3071, 3495, 3248, 2570, 2190]
+
+# Gripper (joint_6, index 5): kinematically prismatic (see urdf/arm.urdf)
+# but actuated by this same rotational motor -- rotational_min/max are
+# derived from this file's own bias/sign/encoder_min/max at that index
+# (code, not duplicated here); only the linear side needs stating.
+# UNCALIBRATED PLACEHOLDER, see include/arm_interface/gripper_conversion.h.
+gripper_joint_index: 5
+gripper_linear_min: 0.0
+gripper_linear_max: 0.025
+# Confirmed live (2026-10-01, Stage 1 read-only session): with invert
+# false, the gripper's reported open/close sense was opposite
+# arm_sim_validator_node's for the same physical motion. true matches
+# them -- see gripper_conversion.h's own comment.
+gripper_invert: true
+
+# robot_interface_velocity (M5 scaffolding, see docs/sim_to_real.md) --
+# unused by robot_interface (position mode).
+addr_operating_mode: 11
+velocity_control_mode_value: 1
+addr_goal_velocity: 104
+len_goal_velocity: 4
+velocity_unit_rev_per_min_per_lsb: 0.229
+# Deliberately slow (ROADMAP M5 "reduced speed on first real-hardware run
+# of any new motion") -- this node has no real caller yet, so these are
+# never actually exercised, but a safety clamp should not default to
+# "unclamped" even so.
+max_velocity_rad_s: [0.1, 0.1, 0.1, 0.1, 0.1, 0.1]
+
+# Position-mode goal rate limit, rad/s per joint (goal_slew.h). The goal
+# written to a motor never moves faster than this from the goal last written,
+# which removes steps/jumps on resume-from-hold and torque re-enable. It is
+# also a hard speed cap on whatever a sender commands. 2.0 equals the URDF
+# velocity limit, so at velocity_scale 1.0 it no longer throttles normal
+# tracking (operator decision 2026-10-05: full speed as before the
+# restructure); it still catches steps. If velocity_scale is lowered nothing
+# else needs to change. Setting it BELOW the planned peak speed makes the goal
+# lag the plan, and the reach node's correction loop then integrates that
+# transient (seen 2026-10-05 at scale 1.0 with a 0.5 slew).
+max_goal_slew_rad_s: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0]
+
+# Motor health monitoring (motor_health.h, docs/sim_to_real.md section 17).
+# Load, voltage and temperature (126..146) ride along with every position read
+# (one widened bulk-read block, no extra bus transaction). The hardware error
+# register (70) is read when a position read reports the Hardware Alert bit and
+# every error_poll_period_s as a safety net. status_rate_hz is only the
+# publishing rate of /arm_interface/motor_status and /arm_interface/motor_load (10 Hz: the grasp sequence reads the
+# gripper load from it). A latched hardware error raises the software e-stop
+# (estop_on_hardware_error) and excludes that motor from torque writes.
+# Thresholds below are heuristic starting values, not from the datasheets.
+status_rate_hz: 10.0
+error_poll_period_s: 2.0
+estop_on_hardware_error: true
+temperature_limit_default_c: 80.0   # used only if a motor's own limit cannot be read
+temp_warn_margin_c: 3.0             # warn when within this of the motor's own limit
+load_full_scale_raw: 1000.0         # MX series: 0.1 % of max torque per count
+load_warn_fraction: 0.8
+load_sustain_s: 5.0
+voltage_min_v: 10.0
+voltage_max_v: 14.5

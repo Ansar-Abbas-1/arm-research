@@ -1,0 +1,50 @@
+<launch>
+    <!-- Simulation variant with control validation closed-loop feedback.
+         Reads /joint_states_out from control stack and publishes simulated /joint_states_in.
+         
+         Args:
+           sim_mode: "ideal" (passthrough) or "lag" (first-order dynamics, default)
+    -->
+
+    <arg name="sim_mode" default="ideal"/>
+    <arg name="tau" default="0.1"/>  <!-- Time constant for lag mode (seconds) -->
+    <arg name="use_hardware" default="false"/>
+    <!-- use_hardware:=true launches the real robot_interface driver
+         (opens /dev/ttyUSB0, enables servo torque) instead of
+         arm_sim_validator_node: same /joint_states_in-publish,
+         /joint_states_out-subscribe interface either way, so nothing
+         else in this file needs to change. sim_mode/tau only apply to
+         the simulator, ignored here. -->
+
+    <!-- Load URDF -->
+    <param name="robot_description"
+           command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+    <!-- Robot state publisher: generates TF tree from /joint_states_in -->
+    <node name="robot_state_publisher" pkg="robot_state_publisher"
+          type="robot_state_publisher" output="screen">
+        <param name="publish_frequency" type="double" value="50.0" />
+        <remap from="joint_states" to="/joint_states_in" />
+    </node>
+
+    <!-- Arm simulation validator: reads /joint_states_out, publishes /joint_states_in -->
+    <group unless="$(arg use_hardware)">
+        <node name="arm_sim_validator_node" pkg="arm_interface"
+              type="arm_sim_validator_node" output="screen">
+            <param name="sim_mode" type="string" value="$(arg sim_mode)"/>
+            <param name="tau" type="double" value="$(arg tau)"/>
+            <param name="publish_rate" type="double" value="50.0"/>
+            <param name="num_joints" type="int" value="6"/>
+        </node>
+    </group>
+    <!-- Real hardware driver, same /joint_states_in/out interface -->
+    <group if="$(arg use_hardware)">
+        <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+            <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+        </node>
+    </group>
+
+    <!-- RViz for visualization -->
+    <node name="rviz" pkg="rviz" type="rviz" output="screen"
+          args="-d $(find arm_interface)/rviz/arm.rviz" />
+</launch>

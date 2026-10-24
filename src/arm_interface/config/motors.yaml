@@ -1,0 +1,61 @@
+# Motor and Structure Configuration Parameters for Motorized Arm URDF/Xacro
+# Total target mass: 1.815 kg
+
+motors:
+  # Joint 1: Base Yaw Motor (Dynamixel MX-28AT)
+  joint_1:
+    mass: 0.077
+    effort_limit: 3.1
+    velocity_limit: 6.0
+    damping: 0.05
+    friction: 0.02
+
+  # Joint 2: Shoulder Pitch Motor (Dynamixel MX-106)
+  joint_2:
+    mass: 0.153
+    effort_limit: 8.4
+    velocity_limit: 4.7
+    damping: 0.10
+    friction: 0.05
+
+  # Joint 3: Elbow Pitch Motor (Dynamixel MX-106)
+  joint_3:
+    mass: 0.153
+    effort_limit: 8.4
+    velocity_limit: 4.7
+    damping: 0.10
+    friction: 0.05
+
+  # Joint 4: Wrist Roll Motor (Dynamixel MX-28AT)
+  joint_4:
+    mass: 0.077
+    effort_limit: 3.1
+    velocity_limit: 6.0
+    damping: 0.05
+    friction: 0.02
+
+  # Joint 5: Wrist Pitch Motor (Dynamixel MX-28AT)
+  joint_5:
+    mass: 0.077
+    effort_limit: 3.1
+    velocity_limit: 6.0
+    damping: 0.05
+    friction: 0.02
+
+  # Joint 6: Gripper Control Motor (Dynamixel MX-28AT)
+  joint_6:
+    mass: 0.077
+    effort_limit: 3.1
+    velocity_limit: 6.0
+    damping: 0.05
+    friction: 0.02
+
+structure:
+  base_link_mass: 0.380
+  link_1_mass: 0.060
+  link_2_mass: 0.190
+  link_intermediate_mass: 0.120
+  link_3_mass: 0.120
+  link_4_mass: 0.160
+  link_5_mass: 0.090
+  end_effector_mass: 0.081
