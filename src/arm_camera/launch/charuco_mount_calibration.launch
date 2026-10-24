@@ -1,0 +1,34 @@
+<launch>
+  <!-- Camera mount calibration with a ChArUco board lying on the ground. Start the arm stack first (TF
+       base_link to end_effector). Then move the arm (marker or reach_pose_cli), hold still, and
+         rosservice call /charuco_mount_calibration/capture
+       from 6 to 15 different poses (tilted at least 10 degrees to the board, board partly in view is fine), then
+         rosservice call /charuco_mount_calibration/solve
+       With known_pose:=true the board pose in base_link comes from x y z yaw (metres, degrees): the board lies
+       face up and level, origin=corner means x y z locate its bottom-left outer corner as printed
+       (see the _frame.png of make_charuco_board.py), origin=center the middle of the board; z is the height
+       of the printed surface. Without it hand-eye is used (8 or more poses, rotation about two axes).
+       The node never moves the arm. -->
+  <arg name="device" default="/dev/video2"/>
+  <arg name="camera" default="true"/>
+  <arg name="known_pose" default="false"/>
+  <arg name="x" default="0.0"/>
+  <arg name="y" default="0.0"/>
+  <arg name="z" default="0.0"/>
+  <arg name="yaw" default="0.0"/>
+  <arg name="origin" default="corner"/>
+  <arg name="output_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+
+  <include if="$(arg camera)" file="$(find arm_camera)/launch/camera.launch">
+    <arg name="device" value="$(arg device)"/>
+  </include>
+
+  <node name="charuco_mount_calibration" pkg="arm_camera" type="charuco_mount_calibration.py" output="screen">
+    <rosparam param="board" command="load" file="$(find arm_camera)/config/charuco.yaml"/>
+    <rosparam if="$(arg known_pose)" param="board_pose" subst_value="true">[$(arg x), $(arg y), $(arg z), $(arg yaw)]</rosparam>
+    <param name="board_origin" value="$(arg origin)"/>
+    <param name="output_file" value="$(arg output_file)"/>
+  </node>
+
+  <node name="debug_view" pkg="rqt_image_view" type="rqt_image_view" args="/charuco_mount_calibration/debug_image"/>
+</launch>

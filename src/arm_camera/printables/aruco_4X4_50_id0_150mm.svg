@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="225.00mm" height="233.00mm" viewBox="0 0 225.000 233.000">
+<rect width="225.000" height="233.000" fill="white"/>
+<rect x="37.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="62.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="87.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="112.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="137.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="37.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="37.5000" y="62.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="87.5000" y="62.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="62.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="37.5000" y="87.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="62.5000" y="87.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="112.5000" y="87.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="87.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="37.5000" y="112.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="62.5000" y="112.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="87.5000" y="112.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="112.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="37.5000" y="137.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="62.5000" y="137.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="87.5000" y="137.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="137.5000" y="137.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="137.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="37.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="62.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="87.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="112.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="137.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<rect x="162.5000" y="162.5000" width="25.0010" height="25.0010" fill="black"/>
+<text x="37.50" y="230.00" font-size="3.2" font-family="monospace">4X4_50 id 0, black square 150.0 mm</text>
+</svg>

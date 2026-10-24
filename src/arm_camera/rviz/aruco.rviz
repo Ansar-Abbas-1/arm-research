@@ -1,0 +1,57 @@
+Panels:
+  - Class: rviz/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz/TF
+      Enabled: true
+      Frame Timeout: 15
+      Name: TF
+      Show Arrows: false
+      Show Axes: true
+      Show Names: true
+      Marker Scale: 0.3
+    - Class: rviz/MarkerArray
+      Enabled: true
+      Marker Topic: /aruco_detector/markers
+      Name: Markers, camera to marker line and distance
+      Queue Size: 100
+    - Class: rviz/Image
+      Enabled: true
+      Image Topic: /aruco_detector/image
+      Max Value: 1
+      Median window: 5
+      Min Value: 0
+      Name: Detections (annotated)
+      Normalize Range: true
+      Queue Size: 2
+      Transport Hint: raw
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: camera_optical_frame
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz/MoveCamera
+  Value: true
+  Views:
+    Current:
+      Class: rviz/Orbit
+      Distance: 0.9
+      Focal Point:
+        X: 0
+        Y: 0
+        Z: 0.4
+      Name: Current View
+      Pitch: -0.3
+      Target Frame: camera_optical_frame
+      Value: Orbit (rviz)
+      Yaw: 3.14
+    Saved: ~
+Window Geometry:
+  Displays:
+    collapsed: false
+  Height: 900
+  Width: 1500

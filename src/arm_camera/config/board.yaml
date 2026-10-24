@@ -1,0 +1,11 @@
+# The printed chessboard used for calibration.
+#
+# EDIT THESE TO MATCH YOUR PRINT. cols and rows count INNER corners (where four squares
+# meet), not squares: a board of 10 x 7 squares has 9 x 6 inner corners. Use an even x odd
+# count (9 x 6, 8 x 5, ...): with both even or both odd the detector can flip the board by
+# 180 degrees between frames. square_size is the edge of one square in METRES, measured with
+# a ruler on the printed sheet (printers rescale, and a 1 % error is a 1 % scale error in
+# the whole calibration). The board must be flat: glue it to a rigid plate.
+cols: 9
+rows: 6
+square_size: 0.023

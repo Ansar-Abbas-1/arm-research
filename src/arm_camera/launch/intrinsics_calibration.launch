@@ -1,0 +1,21 @@
+<launch>
+  <!-- Intrinsic calibration with the standard ROS GUI (camera_calibration). Move the printed
+       chessboard around until the X, Y, Size and Skew bars are all green, press CALIBRATE,
+       then SAVE and COMMIT. COMMIT writes ~/.ros/camera_info/vitade_af.yaml; copy it to
+       config/camera_info.yaml (docs/camera_calibration.md).
+       cols and rows are INNER corners, square is the measured edge in metres: keep them equal
+       to config/board.yaml. The camera must be fixed focus: lock the autofocus first. -->
+  <arg name="device" default="/dev/video2"/>
+  <arg name="cols" default="9"/>
+  <arg name="rows" default="6"/>
+  <arg name="square" default="0.023"/>
+
+  <!-- No camera_info file: the calibrator must start from an uncalibrated camera. -->
+  <include file="$(find arm_camera)/launch/camera.launch">
+    <arg name="device" value="$(arg device)"/>
+    <arg name="camera_info_url" value=""/>
+  </include>
+
+  <node name="cameracalibrator" pkg="camera_calibration" type="cameracalibrator.py" output="screen"
+        args="--size $(arg cols)x$(arg rows) --square $(arg square) --no-service-check image:=/usb_cam/image_raw camera:=/usb_cam"/>
+</launch>

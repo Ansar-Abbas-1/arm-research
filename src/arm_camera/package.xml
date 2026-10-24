@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>arm_camera</name>
+  <version>0.1.0</version>
+  <description>
+    M6: eye-in-hand camera integration for the arm. usb_cam bring-up, intrinsic
+    calibration with a printed chessboard, hand-eye calibration (camera pose in
+    the end_effector frame), and an rviz overlay that shows how well the whole
+    chain (joint states, forward kinematics, hand-eye, intrinsics) agrees with
+    what the camera sees.
+  </description>
+  <maintainer email="riccardo.aliotta.ra@gmail.com">rialiotta</maintainer>
+  <license>TODO</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <build_depend>rospy</build_depend>
+  <build_depend>roslaunch</build_depend>
+  <exec_depend>rospy</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>cv_bridge</exec_depend>
+  <exec_depend>python3-opencv</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- Camera driver and the standard calibration GUI; not installed in the
+       container at the time of writing (see docs/camera_calibration.md). -->
+  <exec_depend>usb_cam</exec_depend>
+  <exec_depend>camera_calibration</exec_depend>
+  <exec_depend>image_proc</exec_depend>
+  <exec_depend>rviz</exec_depend>
+  <exec_depend>arm_trajectory</exec_depend>
+  <exec_depend>rqt_image_view</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+</package>

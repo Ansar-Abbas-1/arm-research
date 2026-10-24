@@ -1,0 +1,23 @@
+<launch>
+  <!-- Hand-eye data collection. Start the arm stack first (use_hardware:=true launch of
+       arm_trajectory/interactive_reach.launch) so TF base_link to end_effector exists.
+       Then: move the arm (marker or reach_pose_cli), hold still, and
+         rosservice call /hand_eye_collector/capture
+       about 15 times from varied poses, then
+         rosservice call /hand_eye_collector/solve
+       The result is written to output_file. The node never moves the arm. -->
+  <arg name="device" default="/dev/video2"/>
+  <arg name="output_file" default="$(find arm_camera)/config/hand_eye.yaml"/>
+  <arg name="camera" default="true"/>
+
+  <include if="$(arg camera)" file="$(find arm_camera)/launch/camera.launch">
+    <arg name="device" value="$(arg device)"/>
+  </include>
+
+  <node name="hand_eye_collector" pkg="arm_camera" type="hand_eye_collector.py" output="screen">
+    <rosparam param="board" command="load" file="$(find arm_camera)/config/board.yaml"/>
+    <param name="output_file" value="$(arg output_file)"/>
+  </node>
+
+  <node name="debug_view" pkg="rqt_image_view" type="rqt_image_view" args="/hand_eye_collector/debug_image"/>
+</launch>
