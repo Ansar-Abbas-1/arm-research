@@ -1,0 +1,21 @@
+<launch>
+  <!-- Hardware monitoring of the gripper load: records what the real motor does, so the flagged close/* values can be set
+       from data (analyse with: rosrun arm_grasp gripper_load_report.py latest, add a png option for the plot). Needs the driver running
+       (arm_interface robot_interface publishing /joint_states_in and /arm_interface/motor_load at status_rate_hz = 10 Hz).
+       This launch SENDS NOTHING to the arm. It records, and starts the gripper_control node, which also sends nothing until
+       you call its service with execute: true.
+       While recording, open and close the gripper by hand-driven commands (for example the Arm Control panel, or later
+       gripper_control with execute: true) and, for the load-versus-error relation, let it push against something. -->
+  <arg name="dir" default="/home/dev/recordings/gripper"/>
+  <arg name="control_node" default="true"/>
+  <arg name="close_speed" default=""/>
+  <arg name="load_target" default=""/>
+  <arg name="contact_load" default=""/>
+  <node name="gripper_recorder" pkg="rosbag" type="record" output="screen"
+        args="-o $(arg dir)/gripper /arm_interface/motor_load /arm_interface/motor_status /arm_interface/estop_state /arm_interface/drive_state /joint_states_in /joint_states_out /gripper_control/status /grasp_sequencer/status"/>
+  <include if="$(arg control_node)" file="$(find arm_grasp)/launch/gripper_control.launch">
+    <arg name="close_speed" value="$(arg close_speed)"/>
+    <arg name="load_target" value="$(arg load_target)"/>
+    <arg name="contact_load" value="$(arg contact_load)"/>
+  </include>
+</launch>

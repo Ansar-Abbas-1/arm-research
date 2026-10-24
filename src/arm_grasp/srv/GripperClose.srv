@@ -1,0 +1,11 @@
+# Load-limited gripper close BY ITSELF (no planner, executor or arm motion): close slowly until the gripper's motor load
+# reaches close/load_target, hold there, and report. Blocks until finished (call it from a client with no short timeout).
+# execute:=false only watches the load and sends nothing to the gripper. Refused (success=false, nothing sent) when the
+# e-stop is engaged or unknown, or when there is no joint_6 measurement or no fresh /arm_interface/motor_load.
+bool execute             # false: watch only, the gripper is not commanded
+bool open_first          # ramp to gripper_open first (at gripper_speed), then close
+---
+bool success             # the close finished (outcome set); false: refused, faulted or timed out (see message)
+string outcome           # 'object' (load target reached and held) | 'thin' (closed completely below it) | 'not executed' | ''
+string message
+float64 load_percent     # gripper |load| in % of max torque at the end

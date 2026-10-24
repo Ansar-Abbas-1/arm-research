@@ -1,0 +1,88 @@
+# Grasp sequence (arm_grasp). EVERY value here is a FLAGGED DEFAULT, not a measurement: confirm or replace each one
+# before a real grasp. Heights are along the target's +z (up from a floor marker), measured from the target point.
+pre_height: 0.10          # m: the grasp point above the target at PRE (matches the visual servo stand-off)
+grasp_height: 0.02        # m: at GRASP. UNCONFIRMED: depends on the gripper's finger geometry and the object
+lift_height: 0.15         # m: at LIFT
+tool_offset: 0.0          # m: distance from the end_effector origin to the grasp point (fingertips) along the tool axis.
+                          # UNKNOWN: the URDF fingers are placeholders. With 0 the end_effector origin itself goes to the heights above.
+side_grasp_height: 0.0    # m: for a SIDE or TILTED grasp (grasp_target approach:=forward or an angle such as 45: the tool looks outward, horizontally or down): how far short of the target point the fingertips stop, back toward the base. 0 = the fingertips reach the target (a stem). FLAGGED
+side_lift: up             # LIFT of a side grasp: up (straight up from GRASP: pulls a plant out) or back (straight back along the approach). FLAGGED
+grasp_offset: [0.0, 0.0]  # m: x, y of the grasp point in the target frame
+
+# Gripper (joint_6, metres). From the URDF placeholder: 0 = closed (4 cm jaw gap), 0.025 = open (9 cm gap). The real
+# gripper's open/close sense is handled by gripper_invert in arm_interface/config/ArmInterface.yaml; the closed value
+# of the REAL gripper on a real object is unknown.
+gripper_open: 0.025
+gripper_closed: 0.0
+gripper_speed: 0.02       # m/s ramp of the OPENING command (URDF velocity limit 0.05); closing uses close/close_speed
+gripper_settle: 0.6       # s to wait after reaching the target
+gripper_tolerance: 0.002  # m
+gripper_timeout: 5.0      # s
+require_object: false     # true: closing completely below the load target ('thin') aborts. False (the user's choice): it counts as a
+                          # grasp of an element thinner than expected, although the load cannot tell it from an empty closure
+
+# Motion
+descent_slow_factor: 3.0  # the descent takes this many times the planner's time (>= 1)
+lift_slow_factor: 2.0
+max_cartesian_deviation: 0.005   # m: a straight leg that is only followed to worse than this refuses the whole sequence
+endpoint_tolerance_rad: 0.03     # a leg that ends further than this from its goal aborts (relaxed to correction_endpoint_tolerance_rad when correction_steps > 0)
+
+# Target
+target_max_age: 5.0       # s: the target TF must be this fresh (marker_localizer publishes only while the camera is still)
+recheck_translation_mm: 5.0
+recheck_rotation_deg: 3.0
+base_frame: base_link
+
+# Behavior tree
+tick_rate: 20.0           # Hz: the tree is ticked at this rate during a run (view it with rqt_py_trees)
+
+# Load-limited closing (arm_grasp/grasp_plan.py LoadLimitedCloser). The motor load is /arm_interface/motor_load joint_6, |% of max torque|,
+# published by the driver at status_rate_hz (10 Hz). HARD FACT (2026-10-09): the gripper motor tripped its overload protection (error 0x20,
+# software e-stop) holding 43 to 48 %. The operator's numbers: PEAK 45 % (load_limit), STEADY STATE 37.5 % (load_target); the steady state
+# must stay under 40 %, hence the +-2 % band. Everything else is a FLAGGED, UNVALIDATED default: tune it on the hardware, stepwise,
+# watching the peak and held load in the recorded bags (gripper_load_report.py).
+close:
+  load_limit: 45.0        # %: PEAK CEILING (operator). At or above it the command opens at once (at relief_speed); persisting for hold_timeout aborts
+  load_target: 38.5       # %: STEADY-STATE load to hold the grasp at (operator's 37.5, raised on request; with the band it stays at or under 39.5); the close stops when the PREDICTED load reaches it
+  load_lead_s: 0.25       # s: look-ahead of the stop decision: predicted = load + (rate of rise) x this (10 Hz samples and lag). FLAGGED
+  load_band: 1.0          # %: the grasp counts as settled within this band of load_target (so it stays at or under 39.5 %). FLAGGED
+  hold_kp: 3.0e-6         # m per % of load error: proportional gain of the hold PI (it keeps the load as close as possible to load_target). FLAGGED
+  hold_ki: 1.4e-5         # m per (% s): integral gain of the hold PI; from the measured 65-80 %/mm, loop time constant ~1 s. FLAGGED
+  close_speed: 0.004      # m/s: APPROACH speed of the close, until the load reaches contact_load. Operator: 4 mm/s. Set it here or with the close_speed launch arg. FLAGGED
+  contact_speed: 0.002    # m/s: speed after the load has reached contact_load (the final trim approach). Operator: 2 mm/s. FLAGGED
+  relief_speed: 0.001     # m/s: how fast the command opens at the peak limit (apart from contact_speed so the relief stays gentle). FLAGGED
+  load_target_max: 38.5   # %: upper limit of the target when it is changed at run time (service /gripper_control/set_load_target, rviz panel slider): the operator's steady-state number. The 45 % peak ceiling (load_limit) is not adjustable.
+  contact_floor: 2.0      # %: the lowest contact_load a run-time change of the target may give (free closing measured 0.8 to 1.8 %). FLAGGED
+  contact_load: 15.0      # %: the load at which the close slows from close_speed to contact_speed. Operator: raised from 4 %. A higher value keeps the fast approach longer; the PREDICTED-load stop and the 45 % peak relief still apply. FLAGGED
+  trim_speed: 0.002       # m/s: rate limit of the hold PI's command, the final trim. Operator: 2 mm/s. FLAGGED
+  confirm_samples: 1      # consecutive NEW samples with predicted load >= target before the close stops. FLAGGED
+  load_max_age: 0.5       # s: older load = no measurement = abort. FLAGGED
+  hold_time: 1.0          # s in the band and still before it counts as done. FLAGGED
+  hold_timeout: 10.0      # s of holding without settling in the band. FLAGGED
+  still_time: 0.5         # s of the jaws within still_tol. FLAGGED
+  still_tol: 0.0003       # m. FLAGGED
+  closed_settle: 0.6      # s after reaching fully closed before calling it 'thin'. FLAGGED
+  lost_time: 0.3          # s below contact_load, once settled, before the grip counts as LOST (status GRIP_LOST). FLAGGED
+  over_time: 2.0          # s at or above load_limit, once settled, before the hold fails. FLAGGED
+
+# Correction steps (arm_grasp/correction.py): the arm SAGS under gravity at a far reach, so a commanded pose is missed (hardware, 2026-10-09: joint 3
+# 0.053 rad off at the PRE pose, the end effector 3.7 cm away; the 0.03 rad endpoint check correctly aborted the first real run). After PRE and after
+# the descent the end effector is measured (TF from the measured joints) and re-aimed, adding the measured error to a running compensation, up to
+# correction_steps times; the descent and the lift are then re-planned from the actual joints with the compensation. 0 disables all of it.
+view_preset: viewing-left  # preset (arm_trajectory preset_manager, e.g. saved from the panel) the arm returns to after a successful lift of a real grasp, the plant stays gripped. "" = no return. A preset that does not exist refuses the grasp. Operator: the viewing pose, turned 90 degrees to the left (2026-10-16; the front one is Pre-approach-New). FLAGGED name
+correction_steps: 2            # re-aims per position (PRE, GRASP). Operator: 2. FLAGGED
+correction_trigger: 0.010      # m: at or below this error nothing is corrected. Raised from 0.006: below ~10 mm the steps worsened the error. FLAGGED
+correction_gain: 0.7           # fraction of the measured error added to the compensation per step. Operator: 0.7 (at 1.0 the first PRE step overshot: 14 -> 20 mm, the sag changes with the pose). FLAGGED
+correction_max_total: 0.06     # m: cap on the compensation. FLAGGED
+correction_max_error: 0.05     # m: after the steps, a pose still further off than this aborts the sequence. FLAGGED
+correction_settle: 0.8         # s to wait after a move before measuring the end effector. FLAGGED
+correction_endpoint_tolerance_rad: 0.12   # rad: the joint-space endpoint check while correction is on (the Cartesian check above replaces it). FLAGGED
+
+# Arm sag (sag_model.py, scripts/sag_fit.py, scripts/sag_test.py). Every correction measurement is logged to sag_log_dir; sag_fit.py fits the mean sag per leg and
+# approach angle into a model file; with sag_model set, each plan aims at waypoint + (-gain x sag) and the running compensation starts from the PRE offset.
+sag_model: /home/dev/src/arm_grasp/config/sag_model.json   # path of the fitted model (json), made by scripts/sag_fit.py from the free-air test of 2026-10-14; "" = the sag is only corrected by the correction steps
+sag_tangent_gain: 0.5          # scales only the tangential (sideways) part of the offset. FLAGGED GUESS: that part is measured at azimuth -40, 0 and +40 degrees only (+12, +8, -12 mm along +azimuth) and does not follow the model's simple sign-of-travel rule; raise to 1 after the azimuths in between are measured
+sag_gain: 1.0                  # 0 = off, 1 = the full learned offset. FLAGGED
+sag_min_samples: 2             # a bucket needs this many first measurements per leg to be used. FLAGGED
+sag_max_offset: 0.08           # m: a learned offset is limited to this length
+sag_log_dir: /home/dev/recordings/sag

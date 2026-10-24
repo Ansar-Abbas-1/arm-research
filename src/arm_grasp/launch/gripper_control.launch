@@ -1,0 +1,35 @@
+<launch>
+  <!-- The gripper_control node: it OWNS joint_6. Open, slow load-limited close, and then it KEEPS REGULATING the load (PI) until the
+       gripper is opened or stopped, also while the arm moves and after a grasp sequence ends. A load that collapses after the grasp
+       settled is GRIP_LOST (the command freezes, /gripper_control/grip_lost goes true). Needs only the driver (arm_interface
+       robot_interface) or the simulator publishing /joint_states_in and /arm_interface/motor_load. Nothing moves until you call it.
+       First WATCH ONLY:
+         rosservice call /gripper_control/close "{execute: false, open_first: false}"
+       then, with the e-stop in reach:
+         rosservice call /gripper_control/open
+         rosservice call /gripper_control/close_on_load        (returns when the grasp has settled; the regulation goes on)
+         rostopic echo /gripper_control/status                 (phase, grip held|thin|lost|none, load)
+         rosservice call /gripper_control/stop                 (ends the action AND the regulation; the driver holds the last goal)
+       Parameters (load target, speeds, PI gains) come from config/grasp.yaml; every value there except the operator's numbers is flagged. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="respawn_driver" default="false"/>
+  <arg name="config" default="$(find arm_grasp)/config/grasp.yaml"/>
+  <!-- close_speed: m/s approach speed of the close, overriding the yaml (empty: keep the yaml value). The node reads it at
+       startup, so a change needs a restart of this launch. Example: roslaunch arm_grasp gripper_control.launch close_speed:=0.003 -->
+  <arg name="close_speed" default=""/>
+  <!-- load_target / contact_load: % of max torque, overriding the yaml (empty: keep the yaml values). For a LIGHT grip (uprooting) use
+       load_target:=15 contact_load:=5: contact_load must stay well BELOW load_target, since it is the load at which the close slows down AND the
+       level under which a settled grip counts as lost (with the yaml's 15 % a 15 % target would be flagged lost). The load rises about
+       65 to 80 %/mm, so even at 15 % the squeeze is only a fraction of a millimetre. Needs a restart of this launch. -->
+  <arg name="load_target" default=""/>
+  <arg name="contact_load" default=""/>
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="gripper_control" pkg="arm_grasp" type="gripper_control_node.py" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="close/close_speed" value="$(arg close_speed)" type="double" unless="$(eval arg('close_speed') == '')"/>
+    <param name="close/load_target" value="$(arg load_target)" type="double" unless="$(eval arg('load_target') == '')"/>
+    <param name="close/contact_load" value="$(arg contact_load)" type="double" unless="$(eval arg('contact_load') == '')"/>
+  </node>
+</launch>

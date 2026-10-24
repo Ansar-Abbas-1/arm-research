@@ -1,0 +1,11 @@
+# Plan (and, unless dry_run, execute) a grasp of the target at a TF frame: open the gripper, move above it, descend
+# straight down onto it, close the gripper, lift. The WHOLE sequence is planned first: if any leg is unreachable or
+# the Cartesian legs deviate too much, nothing moves. Heights and gripper values: config/grasp.yaml (flagged defaults).
+string target_frame      # TF frame of the target in base_link; its +z is the surface normal (up for a floor marker)
+bool dry_run             # plan and check only: the arm and the gripper do not move
+bool probe               # a SAG PROBE (not with dry_run): moves to and measures PRE, GRASP and LIFT in free air and logs the arm's sag; the gripper is never commanded
+---
+bool success             # dry run: the plan is feasible; otherwise: the sequence was accepted and started (see ~status)
+string message
+float64 plan_duration_s  # predicted time of all the motions
+float64 max_cartesian_deviation_m
