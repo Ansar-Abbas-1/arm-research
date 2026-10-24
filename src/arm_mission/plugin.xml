@@ -1,0 +1,10 @@
+<library path="src">
+  <class name="Mission Control" type="arm_mission.rqt_plugin.MissionPlugin" base_class_type="rqt_gui_py::Plugin">
+    <description>Grasp mission control: pick the plant, dry run, go, stop, and the approach / aim bias / height settings.</description>
+    <qtgui>
+      <group><label>Arm</label></group>
+      <label>Mission Control</label>
+      <statustip>Plant selection, dry run and gated go of the grasp pipeline</statustip>
+    </qtgui>
+  </class>
+</library>

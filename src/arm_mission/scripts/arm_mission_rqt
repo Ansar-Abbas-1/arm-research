@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Starts the Mission Control rqt plugin alone: rosrun arm_mission arm_mission_rqt"""
+import sys
+
+from rqt_gui.main import Main
+
+if __name__ == "__main__":
+    sys.exit(Main().main(sys.argv, standalone="arm_mission.rqt_plugin.MissionPlugin"))
