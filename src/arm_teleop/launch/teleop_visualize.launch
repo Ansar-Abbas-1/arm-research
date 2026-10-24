@@ -1,0 +1,99 @@
+<launch>
+  <!-- Full teleop demo stack + rviz: simulator, fk_node,
+       trajectory_service_node + trajectory_executor_node (needed for
+       SET_REFERENCE's commit path), teleop_node, and a second
+       robot_state_publisher + RobotModel display for the SET_REFERENCE
+       "ghost" preview (/ghost_joint_states -> a link-renamed copy of the
+       same URDF, sharing base_link as its root with the real robot so
+       both render in the same TF tree, see docs/teleop.md).
+
+       By default drives from scripts/manual_teleop_check.py's keyboard-
+       driven synthetic /joy (no real joystick assumed). Pass
+       use_joystick:=true to instead launch joy_node against a real
+       controller.
+
+       For a PS5 DualSense specifically, its axes/buttons were confirmed
+       empirically (not assumed, see docs/teleop.md), and happen to
+       match teleop_node's own defaults for everything except mode-toggle/
+       commit: L1 (button 4) is the deadman, left stick is X/Y, right
+       stick is Z/pitch, Cross/Circle are gripper close/open, all
+       already correct out of the box. Only these two need overriding:
+         roslaunch arm_teleop teleop_visualize.launch use_joystick:=true \
+           mode_toggle_button:=8 commit_button:=9
+       (8=Share/Create, 9=Options on this controller, vs. this launch
+       file's defaults of 6/7, which match manual_teleop_check.py's own
+       keyboard bindings instead.) -->
+
+  <arg name="use_rviz" default="true"/>
+  <!-- use_rviz:=false lets this run without a display, e.g. for automated
+       checks: rviz needs one and none is available in an automated/CI
+       context (confirmed the hard way in M0). -->
+  <arg name="use_joystick" default="false"/>
+  <arg name="joystick_dev" default="/dev/input/js0"/>
+  <arg name="mode_toggle_button" default="6"/>
+  <arg name="commit_button" default="7"/>
+  <!-- Speed settings. max_joint_velocity: per-joint cap in rad/s applied as
+       min(URDF limit, cap), 0 = URDF limits. linear_gain: end-effector speed
+       in m/s at full stick. pitch_gain: pitch rate in rad/s at full stick.
+       gripper_rate: gripper speed in rad/s while the button is held. -->
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="linear_gain" default="0.1"/>
+  <arg name="pitch_gain" default="0.5"/>
+  <arg name="gripper_rate" default="0.5"/>
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+  <!-- Ghost URDF: same file, with every non-root link renamed
+       ghost_<name> so its TF frames never collide with the real robot's.
+       Piping xacro's output through sed needs a real shell: <param
+       command="..."> execs its argument list directly, with no shell, so
+       "|" would otherwise be passed to xacro as a literal argument
+       (confirmed the hard way while building this). -->
+  <param name="ghost_robot_description"
+         command="bash -c &quot;$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf' | sed
+           -e 's/link_intermediate/ghost_link_intermediate/g'
+           -e 's/link_1/ghost_link_1/g' -e 's/link_2/ghost_link_2/g'
+           -e 's/link_3/ghost_link_3/g' -e 's/link_4/ghost_link_4/g'
+           -e 's/link_5/ghost_link_5/g' -e 's/end_effector/ghost_end_effector/g'&quot;" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+  <node name="ghost_robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="robot_description" to="ghost_robot_description" />
+    <remap from="joint_states" to="/ghost_joint_states" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+
+  <group if="$(arg use_joystick)">
+    <node name="joy_node" pkg="joy" type="joy_node">
+      <param name="dev" value="$(arg joystick_dev)"/>
+    </node>
+  </group>
+
+  <node name="teleop_node" pkg="arm_teleop" type="teleop_node" output="screen">
+    <param name="mode_toggle_button" type="int" value="$(arg mode_toggle_button)"/>
+    <param name="commit_button" type="int" value="$(arg commit_button)"/>
+    <param name="max_joint_velocity" type="double" value="$(arg max_joint_velocity)"/>
+    <param name="linear_gain" type="double" value="$(arg linear_gain)"/>
+    <param name="pitch_gain" type="double" value="$(arg pitch_gain)"/>
+    <param name="gripper_rate" type="double" value="$(arg gripper_rate)"/>
+  </node>
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_teleop)/rviz/teleop_visualize.rviz" />
+  </group>
+</launch>

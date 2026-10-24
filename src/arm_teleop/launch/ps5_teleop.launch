@@ -1,0 +1,34 @@
+<launch>
+  <!-- One-command entry point: full stack (simulator, fk_node,
+       arm_trajectory nodes, teleop_node) + rviz (real arm + semi-
+       transparent SET_REFERENCE ghost) + joy_node against a PS5 DualSense,
+       with its confirmed button mapping already applied (see
+       docs/teleop.md); no args needed for the common case.
+
+         roslaunch arm_teleop ps5_teleop.launch
+
+       Controls: hold L1 (deadman) + left stick for X/Y, right stick for
+       Z/pitch, Cross/Circle for gripper close/open, Share to toggle
+       DIRECT_JOG <-> SET_REFERENCE, Options to commit a reference.
+       Check /teleop_mode (rostopic echo /teleop_mode) if you ever need to
+       confirm the current mode directly. -->
+
+  <arg name="joystick_dev" default="/dev/input/js0"/>
+  <arg name="use_rviz" default="true"/>
+  <arg name="max_joint_velocity" default="0.0"/>
+  <arg name="linear_gain" default="0.1"/>
+  <arg name="pitch_gain" default="0.5"/>
+  <arg name="gripper_rate" default="0.5"/>
+
+  <include file="$(find arm_teleop)/launch/teleop_visualize.launch">
+    <arg name="use_joystick" value="true"/>
+    <arg name="joystick_dev" value="$(arg joystick_dev)"/>
+    <arg name="mode_toggle_button" value="8"/>
+    <arg name="commit_button" value="9"/>
+    <arg name="use_rviz" value="$(arg use_rviz)"/>
+    <arg name="max_joint_velocity" value="$(arg max_joint_velocity)"/>
+    <arg name="linear_gain" value="$(arg linear_gain)"/>
+    <arg name="pitch_gain" value="$(arg pitch_gain)"/>
+    <arg name="gripper_rate" value="$(arg gripper_rate)"/>
+  </include>
+</launch>

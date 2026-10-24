@@ -1,0 +1,42 @@
+<launch>
+  <!-- Headless integration test, isolated from teleop_modes.test: verifies
+       the null-space secondary task (docs/teleop.md) actually moves the
+       real arm toward keeping link_4 vertical when idle, end to end
+       (real robot_state_publisher TF, not just the pure-function gtest
+       cross-check in test_resolved_rate.cpp). Kept separate from
+       teleop_modes.test because that suite assumes deadman-held-but-idle
+       means no motion at all, which this feature deliberately violates
+       by design. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <!-- teleop_node's constructor blocks on these at startup even though
+       this test never exercises SET_REFERENCE/commit. -->
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+
+  <node name="teleop_node" pkg="arm_teleop" type="teleop_node">
+    <param name="rate" type="double" value="50.0"/>
+    <param name="deadman_button" type="int" value="4"/>
+    <param name="axis_x" type="int" value="1"/>
+    <param name="linear_gain" type="double" value="0.1"/>
+    <param name="nullspace_gain" type="double" value="0.6"/>
+    <param name="nullspace_tip_link" type="string" value="link_4"/>
+  </node>
+
+  <test test-name="teleop_nullspace_test" pkg="arm_teleop" type="teleop_nullspace_test.py"
+        time-limit="60.0" />
+</launch>

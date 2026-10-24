@@ -1,0 +1,51 @@
+<launch>
+  <!-- Headless integration test: /joy -> teleop_node, against the real
+       simulator, fk_node (test's own independent position readout),
+       trajectory_service_node + trajectory_executor_node (needed for
+       SET_REFERENCE's commit path). Explicit axis/button params here are
+       the single source of truth this test's synthetic Joy messages
+       (teleop_modes_test.py) are written against, rather than relying on
+       teleop_node's own defaults happening to match. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="arm_sim_validator_node" pkg="arm_interface"
+        type="arm_sim_validator_node">
+    <param name="sim_mode" type="string" value="ideal"/>
+    <param name="publish_rate" type="double" value="50.0"/>
+    <param name="num_joints" type="int" value="6"/>
+  </node>
+
+  <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
+  <node name="trajectory_service_node" pkg="arm_trajectory" type="trajectory_service_node" />
+  <node name="trajectory_executor_node" pkg="arm_trajectory" type="trajectory_executor_node" />
+
+  <node name="teleop_node" pkg="arm_teleop" type="teleop_node">
+    <param name="rate" type="double" value="50.0"/>
+    <param name="deadman_button" type="int" value="4"/>
+    <param name="axis_x" type="int" value="1"/>
+    <param name="axis_pitch" type="int" value="3"/>
+    <param name="gripper_open_button" type="int" value="1"/>
+    <param name="gripper_close_button" type="int" value="0"/>
+    <param name="mode_toggle_button" type="int" value="6"/>
+    <param name="commit_button" type="int" value="7"/>
+    <param name="linear_gain" type="double" value="0.1"/>
+    <param name="pitch_gain" type="double" value="0.5"/>
+    <param name="gripper_rate" type="double" value="0.5"/>
+    <!-- Disabled here: these tests assume deadman-held-but-idle means no
+         motion at all, which the null-space secondary task deliberately
+         violates by design (it biases DIRECT_JOG toward vertical whenever
+         there's spare capacity, even with a centered stick). Covered on
+         its own in teleop_nullspace.test instead. -->
+    <param name="nullspace_gain" type="double" value="0.0"/>
+  </node>
+
+  <test test-name="teleop_modes_test" pkg="arm_teleop" type="teleop_modes_test.py"
+        time-limit="90.0" />
+</launch>
