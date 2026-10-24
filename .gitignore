@@ -1,15 +1,24 @@
-# This is a multi-repo catkin workspace, not a monorepo: each package under
-# src/ is its own independently-versioned git repo (arm_interface, and
-# future milestone packages). This top-level repo only tracks cross-cutting
-# project docs (ROADMAP.md, etc.) — it does not track package contents.
-src/*/
-
-# catkin build artifacts (including catkin_make's generated toplevel symlink
-# and workspace marker)
+# arm_master: one repository, all packages under src/ (history of each imported), DynamixelSDK is a submodule.
+# catkin build artifacts (and catkin_make's generated toplevel symlink and workspace marker)
 build/
 devel/
 install/
 .catkin_workspace
 /src/CMakeLists.txt
 
+# large local data, not for git (back it up separately): trained models, recordings and logs, datasets and training runs,
+# Python environments of the detector, workspace point clouds, generated reports
+/models/
+/recordings/
+/yolo/
+/pylibs_gpu/
+/pylibs_yolo/
+/venv_yolo/
+/*.log
+/*.csv
+/*.pdf
+graphify-out/
+
+__pycache__/
+*.pyc
 *.swp
