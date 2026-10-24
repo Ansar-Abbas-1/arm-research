@@ -1,0 +1,18 @@
+<launch>
+  <!-- Saves camera frames (+ a JSON sidecar with the camera pose, camera model and marker_0 pose) on demand, for offline tests. Read-only.
+       Needs the camera (arm_camera camera.launch with its static mount TF); marker_0's pose is recorded when marker_localizer sees it.
+         rosservice call /frame_capture/capture
+         rosservice call /frame_capture/capture_burst -->
+  <arg name="out_dir" default="/home/dev/models/samples"/>
+  <arg name="prefix" default="arm"/>
+  <arg name="burst_count" default="5"/>
+  <arg name="burst_period_s" default="2.0"/>
+  <arg name="note" default=""/>
+  <node name="frame_capture" pkg="arm_perception" type="frame_capture_node.py" output="screen">
+    <param name="out_dir" value="$(arg out_dir)"/>
+    <param name="prefix" value="$(arg prefix)"/>
+    <param name="burst_count" value="$(arg burst_count)"/>
+    <param name="burst_period_s" value="$(arg burst_period_s)"/>
+    <param name="note" value="$(arg note)"/>
+  </node>
+</launch>

@@ -1,0 +1,21 @@
+<launch>
+  <!-- YOLO object detector on the eye-in-hand camera (read-only: it never commands the arm). Needs the camera (arm_camera camera.launch with its
+       static mount TF) and, for the floor, marker_localizer seeing marker_0 (otherwise the floor_z parameter). The model is YOURS: export it to ONNX
+       (docs/yolo_detector.md) and point model at it. Detections: /object_detector/detections, annotated image: /object_detector/image (rqt_image_view),
+       TF object_<class>_<rank>. To feed the grasp sequence, pick a class (at start or at runtime) and plan as usual:
+         rostopic pub -1 /object_detector/select_class std_msgs/String "data: cup"
+         rosservice call /grasp_sequencer/grasp "{target_frame: grasp_target, dry_run: true}"
+       The grasp point is the detection's box centre at floor + grasp_height[class]; the sequence's own grasp_height (above the target) is added. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="model" default=""/>
+  <arg name="grasp_class" default=""/>
+  <arg name="config" default="$(find arm_perception)/config/objects.yaml"/>
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="object_detector" pkg="arm_perception" type="object_detector_node.py" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="model" value="$(arg model)" unless="$(eval arg('model') == '')"/>
+    <param name="grasp_class" value="$(arg grasp_class)" unless="$(eval arg('grasp_class') == '')"/>
+  </node>
+</launch>

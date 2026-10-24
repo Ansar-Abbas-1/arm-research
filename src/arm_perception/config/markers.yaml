@@ -1,0 +1,28 @@
+# The markers the localizer looks for, and their MEASURED printed size.
+# size: side of the BLACK square including its black border, in metres. Measure each print with a ruler:
+# the reported distance scales linearly with it. A marker that is seen but not listed here is ignored (it is
+# listed under "ignored" in the report, which is how a wrong dictionary shows up).
+# dictionary: the default for entries without their own; an entry may name its own. Ids must be unique across the
+# whole table (they name the TF frames marker_<id>) and below the dictionary's capacity. The detector runs once
+# per dictionary used here. The first ids of the 4X4, 5X5 and 6X6 families are shared between their 50-, 100-,
+# 250- and 1000-id sizes (id 0 printed from 4X4_50 is also id 0 of 4X4_1000).
+dictionary: 4X4_1000
+
+markers:
+  - {id: 0, size: 0.100}                                  # the 100 mm marker (4x4)
+  # The 50 mm markers: the ORIGINAL 5x5 ArUco dictionary (1024 ids; identified from a live frame on 2026-10-07: it read
+  # 94, 102, 118, 137 at about 155 px; 5X5_1000 is a different set of patterns and reads none of them)
+  - {id: 984, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 952, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 864, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 786, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 650, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 398, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 167, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 267, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 232, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 161, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 137, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 118, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 102, size: 0.050, dictionary: ARUCO_ORIGINAL}
+  - {id: 94, size: 0.050, dictionary: ARUCO_ORIGINAL}

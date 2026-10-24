@@ -1,0 +1,34 @@
+<launch>
+  <!-- M7: reports the pose of an ArUco marker in base_link. READ-ONLY (subscribes to the image, camera_info and
+       TF; commands nothing). Start the arm stack and the camera first, with the camera mount TF:
+         roslaunch arm_camera arm_with_camera.launch use_hardware:=true camera_tf:=static x:=-0.025 y:=0 z:=-0.06 yaw:=1.5708 pitch:=0 roll:=0
+       then
+         roslaunch arm_perception marker_localizer.launch
+         rosrun arm_perception marker_pose_cli.py
+       The markers to look for, with their MEASURED sizes and dictionaries, are in config/markers.yaml (markers_file):
+       the pose scales with the size, so measure every print. The pose is only as good as the camera mount (a hand-measured TF is a few degrees and
+       a few mm off: 1 degree is about 7 mm at 0.4 m) and is reported only while the camera has been still. -->
+  <!-- respawn: restart a node that dies, after respawn_delay seconds (default off here; the arm_bringup launch files turn it on). rviz is never respawned: closing it is deliberate.
+       The hardware DRIVER has its own switch, respawn_driver (default off): a driver that crashes on a motor error would otherwise re-enable the torque again and again. -->
+  <arg name="respawn" default="false"/>
+  <arg name="respawn_delay" default="2.0"/>
+  <arg name="markers_file" default="$(find arm_perception)/config/markers.yaml"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="window_s" default="0.5"/>
+  <arg name="still_translation_mm" default="2.0"/>
+  <arg name="still_rotation_deg" default="0.3"/>
+  <arg name="quad_decimate" default="2.0"/>
+  <arg name="image_topic" default="/usb_cam/image_raw"/>
+  <arg name="camera_info_topic" default="/usb_cam/camera_info"/>
+
+  <node respawn="$(arg respawn)" respawn_delay="$(arg respawn_delay)" name="marker_localizer" pkg="arm_perception" type="marker_localizer_node.py" output="screen">
+    <param name="markers_file" value="$(arg markers_file)"/>
+    <param name="base_frame" value="$(arg base_frame)"/>
+    <param name="window_s" value="$(arg window_s)"/>
+    <param name="still_translation_mm" value="$(arg still_translation_mm)"/>
+    <param name="still_rotation_deg" value="$(arg still_rotation_deg)"/>
+    <param name="quad_decimate" value="$(arg quad_decimate)"/>
+    <param name="image_topic" value="$(arg image_topic)"/>
+    <param name="camera_info_topic" value="$(arg camera_info_topic)"/>
+  </node>
+</launch>
