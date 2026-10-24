@@ -1,0 +1,35 @@
+# Visual servo (M8). Every limit here is a HEURISTIC first-run value, not derived from the motors: tighten or loosen
+# only with the arm supervised and the e-stop in reach. Derivation of the control law: include/arm_servo/servo_law.h.
+
+# Task: the marker (the closest 50 mm one, chosen at start) ends up this far ahead of the end_effector origin along
+# the tool axis, centred: the end effector is 10 cm "above" it with the tool axis pointing down.
+standoff: [0.0, 0.0, 0.10]       # m, in the end_effector frame
+
+# Law (lambda T must stay below 2 sin(pi / (2 (2 d + 1))) for a measurement delay of d vision periods: 0.618 for d = 2)
+lambda: 1.0                      # 1/s, position gain (time constant 1 s)
+lambda_pitch: 1.0                # 1/s
+v_max: 0.04                      # m/s, end-effector speed cap
+omega_max: 0.15                  # rad/s, pitch rate cap
+max_joint_velocity: 0.3          # rad/s per joint (also capped by the URDF limits)
+nullspace_gain: 0.05             # keeps link_4 near vertical (protects motor 4), as in the reach pipeline
+joint_limit_margin: 0.05         # rad kept from the URDF joint limits
+
+# Safety
+min_camera_distance: 0.08        # m, abort closer than this (camera to marker)
+min_ee_distance: 0.08            # m, abort closer than this (end-effector origin to marker)
+min_height_above_ground: 0.04    # m, end-effector origin above the ground marker's height
+vision_max_age: 0.3              # s, older measurement: hold still
+lost_timeout: 1.0                # s, marker unseen for this long: abort (hold) ...
+lost_near_goal_tol: 0.02         # m ... unless the last error was below this: then DONE (at 10 cm the marker is ~6 mm from the image border)
+run_timeout: 60.0                # s
+converge_tol: 0.005              # m
+converge_pitch_tol: 0.05         # rad
+converge_time: 1.0               # s
+
+# Target selection
+target_max_size: 0.06            # m: markers up to this size are candidates (the 50 mm ones)
+ground_id: 0                     # the marker lying on the ground (floor guard); its TF comes from marker_localizer
+require_ground: true             # refuse to start unless the ground marker was localised in the last ground_max_age s
+ground_max_age: 10.0
+selection_frames: 5
+selection_timeout: 3.0           # s: no consistent target in this time -> aborted (nothing moved)
