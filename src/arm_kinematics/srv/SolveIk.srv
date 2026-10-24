@@ -1,0 +1,21 @@
+# Target end_effector pose in base_link.
+geometry_msgs/Pose target_pose
+
+# Seed joint configuration for the iterative solve, in the order
+# ForwardKinematicsSolver::GetActuatedJointNames() reports (joint_1..joint_5).
+# Empty: use the latest /joint_states_in as the seed (falls back to all-zero
+# with a logged warning if none has been received yet).
+float64[] seed_joint_positions
+---
+bool converged
+float64[] joint_positions
+# [position(m) x,y,z ; orientation(rad, axis-angle) x,y,z] at the returned
+# joint_positions, unweighted physical units -- see InverseKinematicsSolver.
+float64[] residual
+int32 iterations
+# Random restarts needed beyond the given/default seed to reach this
+# result (0 = converged from that seed directly). This chain is
+# redundant, so a fixed seed alone converges only a fraction of the time
+# -- see InverseKinematicsSolver's class comment; a nonzero value here
+# most of the time isn't a bug, it's expected for this manipulator.
+int32 restarts_used

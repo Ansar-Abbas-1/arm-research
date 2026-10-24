@@ -1,0 +1,26 @@
+# Target pose in base_link. Only position + the pitch component (about
+# target_pose's own local Y axis) are actually driven to zero -- roll/yaw
+# are read only to report residual against, never enforced. See
+# PositionPitchIkSolver / docs/position_pitch_ik.md.
+geometry_msgs/Pose target_pose
+
+# Seed joint configuration for the iterative solve, in the order
+# ForwardKinematicsSolver::GetActuatedJointNames() reports (joint_1..joint_5).
+# Empty: use the latest /joint_states_in as the seed (falls back to
+# all-zero with a logged warning if none has been received yet) -- same
+# convention as SolveIk.srv.
+float64[] seed_joint_positions
+---
+# true iff position+pitch converged -- roll/yaw are never part of this,
+# regardless of whether a null-space secondary task is configured (see
+# ~nullspace_gain).
+bool converged
+float64[] joint_positions
+# [position(m) x,y,z ; orientation(rad, axis-angle) x,y,z] at the returned
+# joint_positions -- same layout as SolveIk.srv's residual. Only the
+# position and pitch-axis-projected component of the orientation part are
+# actually minimized; the rest is informational (whatever roll/yaw the
+# solve, and any configured secondary task, happened to settle at).
+float64[] residual
+int32 iterations
+int32 restarts_used

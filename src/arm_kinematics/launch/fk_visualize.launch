@@ -1,0 +1,59 @@
+<launch>
+  <!-- Visualizes forward kinematics against the kinematic simulator:
+       arm_sim_validator_node (from arm_interface) + fk_node + rviz, with
+       /computed_end_effector_pose overlaid as its own Pose display
+       (magenta axes) directly on end_effector's own TF frame for a
+       visual cross-check: the same comparison test/fk_validation_test.py
+       makes numerically. Self-contained here rather than including
+       arm_interface's own sim launch files, since none of those expose a
+       way to disable rviz. -->
+
+  <arg name="sim_mode" default="lag"/>
+  <arg name="tau" default="0.1"/>
+  <arg name="use_rviz" default="true"/>
+  <!-- use_rviz:=false lets this run without a display, e.g. for automated
+       checks: rviz needs one and none is available in an automated/CI
+       context (confirmed the hard way in M0). -->
+  <arg name="use_hardware" default="false"/>
+  <!-- use_hardware:=true launches the real robot_interface driver (opens
+       /dev/ttyUSB0, enables servo torque) instead of the kinematic
+       simulator: same /joint_states_in-publish, /joint_states_out-
+       subscribe interface either way, so nothing else in this file needs
+       to change. sim_mode/tau only apply to the simulator, ignored here. -->
+
+  <param name="robot_description"
+         command="$(find xacro)/xacro '$(find arm_interface)/urdf/arm.urdf'" />
+
+  <node name="robot_state_publisher" pkg="robot_state_publisher"
+        type="robot_state_publisher">
+    <param name="publish_frequency" type="double" value="50.0" />
+    <remap from="joint_states" to="/joint_states_in" />
+  </node>
+
+  <node name="joint_state_publisher_gui" pkg="joint_state_publisher_gui"
+        type="joint_state_publisher_gui">
+    <remap from="joint_states" to="/joint_states_out" />
+  </node>
+
+  <group unless="$(arg use_hardware)">
+    <node name="arm_sim_validator_node" pkg="arm_interface"
+          type="arm_sim_validator_node">
+      <param name="sim_mode" type="string" value="$(arg sim_mode)"/>
+      <param name="tau" type="double" value="$(arg tau)"/>
+      <param name="publish_rate" type="double" value="50.0"/>
+      <param name="num_joints" type="int" value="6"/>
+    </node>
+  </group>
+  <group if="$(arg use_hardware)">
+    <node name="arm_interface" pkg="arm_interface" type="robot_interface" output="screen">
+      <rosparam command="load" file="$(find arm_interface)/config/ArmInterface.yaml" />
+    </node>
+  </group>
+
+  <node name="fk_node" pkg="arm_kinematics" type="fk_node" />
+
+  <group if="$(arg use_rviz)">
+    <node name="rviz" pkg="rviz" type="rviz"
+          args="-d $(find arm_kinematics)/rviz/fk_visualize.rviz" />
+  </group>
+</launch>
