@@ -80,13 +80,13 @@ class CartesianTrajectoryTest : public ::testing::Test {
 };
 
 TEST_F(CartesianTrajectoryTest, ReachesGuaranteedReachableGoal) {
-  // Not {0,0,0,0,0}: that configuration is a genuine kinematic singularity
-  // of this arm (all four parallel-axis "elbow" joints sit simultaneously
-  // at a limit boundary there -- confirmed via Jacobian SVD, smallest
-  // singular value ~1e-33 -- the classic fully-extended-arm singularity).
-  // IK correctly can't make progress from exactly on top of a singularity,
-  // no matter how tiny the required correction; that's not a solver bug
-  // to work around here, see docs/trajectory_generation.md.
+  // Not {0,0,0,0,0}: that configuration is poorly conditioned (smallest
+  // singular value of the 4x5 position+pitch task Jacobian 0.039) and all
+  // four parallel-axis "elbow" joints sit simultaneously on a joint limit
+  // there, so Newton steps are clipped and IK cannot make progress. (The
+  // ~1e-33 singular value of the 6x5 Jacobian is a structural zero present
+  // at every configuration, not evidence of a singularity.) Not a solver
+  // bug to work around here, see docs/trajectory_generation.md Finding 1.
   std::vector<double> q_start = {0.1, 0.5, -0.5, 0.5, -0.5};
   std::vector<double> q_goal_config = {0.4, 0.7, -0.3, 0.6, -0.5};
   Eigen::Isometry3d goal_pose = fk_->ComputePose(q_goal_config);

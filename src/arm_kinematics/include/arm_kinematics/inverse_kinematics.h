@@ -72,10 +72,14 @@ struct IkOptions {
 // substitutes for the other.
 //
 // See docs/inverse_kinematics.md for the full derivation; short version:
-// task space here is 6D (position+orientation) over 5 joints, so the
-// Jacobian has more rows than columns (overdetermined) -- this uses the
-// corresponding *left* pseudo-inverse / normal-equations form, not the
-// redundant-manipulator (right pseudo-inverse) form.
+// task space here is 6D (position+orientation) over 5 joints, but the
+// Jacobian has rank 4 at every configuration (roll is identically 0 and
+// yaw is slaved to the position azimuth), so a generic target is off the
+// 4-D reachable-pose manifold and this returns a least-squares residual.
+// The normal-equations form used here equals the right-pseudo-inverse
+// form (push-through identity); the damping is what keeps J^T W J +
+// lambda^2 I invertible despite the rank deficiency. See
+// docs/kinematics_report.md sections 4-5.
 class InverseKinematicsSolver {
  public:
   // `solver` must outlive this object -- stored by reference, not copied,

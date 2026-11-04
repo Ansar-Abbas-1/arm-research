@@ -51,10 +51,10 @@ struct PositionPitchIkOptions {
   // the extra budget is needed -- see nullspace_tolerance below.
   int max_iterations = 200;
   // Chiaverini variable-damping threshold (see resolved_rate.h/.md) --
-  // this chain is redundant for the 4D task here (5 joints, 4 rows), the
-  // opposite situation from InverseKinematicsSolver's overdetermined 6D
-  // case, so it reuses resolved_rate's damping/null-space math (shared
-  // via task_space_math.h) for the step DIRECTION. Chiaverini damping only
+  // this chain is redundant for the 4D task here (5 joints, 4 rows): the
+  // reachable-pose manifold is 4-D and this task asks for exactly its 4
+  // independent coordinates, so it reuses resolved_rate's damping/null-space
+  // math (shared via task_space_math.h) for the step DIRECTION. Chiaverini damping only
   // conditions the step near a singularity, though -- it says nothing
   // about whether a step is actually a good idea, which is what
   // max_inner_retries (below) is for.
@@ -222,21 +222,20 @@ struct PositionPitchIkOptions {
 
 // Reduced-task IK: solves for position (3) + pitch (1, about the CURRENT
 // iterate's own local Y axis, exactly ComputeResolvedRateVelocity's own
-// convention -- see resolved_rate.h) only, leaving roll and yaw
-// unconstrained. Exists because InverseKinematicsSolver's full 6D pose
-// task is OVERDETERMINED on this 5-joint chain (6 task rows > 5 joints,
-// generically full column rank away from singularities => trivial null
-// space => nothing for a secondary objective to bias into, and no
-// orientation freedom to leave unconstrained even if a caller doesn't
-// care about roll/yaw). Dropping roll/yaw from the task -- the same
-// choice ComputeResolvedRateVelocity already made for velocity control,
-// now applied to the iterative position solve -- makes the task 4D over
-// 5 joints, genuinely redundant, with a real null space the optional
-// secondary task (below) can use.
+// convention -- see resolved_rate.h) only. Roll is identically 0 and yaw
+// is slaved to the position azimuth on this arm (the Jacobian has rank 4
+// everywhere), so they are not independent targets; the reachable poses
+// are a 4-D manifold and this solver asks for exactly its 4 coordinates.
+// It is the full-pose solve restricted to that manifold. The 1-D null
+// space (the planar self-motion of the four parallel joints) exists for
+// the full-pose Jacobian as well; this solver is the one that exposes it
+// to the optional secondary task (below), on every Solve(). A generic 6D
+// target is off the manifold, so InverseKinematicsSolver can only return
+// a least-squares residual for it.
 //
 // See docs/resolved_rate.md for the shared damping/null-space derivation
-// and docs/inverse_kinematics.md for why InverseKinematicsSolver itself
-// can't do this. Full derivation of this solver's iteration is in
+// and docs/inverse_kinematics.md for the rank-4 structure of the Jacobian
+// that makes this the right task. Full derivation of this solver's iteration is in
 // docs/position_pitch_ik.md.
 class PositionPitchIkSolver {
  public:
